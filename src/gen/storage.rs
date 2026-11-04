@@ -1833,7 +1833,11 @@ impl<'a> Gen<'a> {
             }
             | Expr::Case { .. }
             | Expr::Tuple { .. }
-            | Expr::Record { .. } => self.value_buf(e),
+            | Expr::Record { .. }
+            | Expr::Call {
+                builtin: Some(Builtin::ImmutableRead),
+                ..
+            } => self.value_buf(e),
             Expr::List { ty, .. } if self.fixed_list(*ty) => self.value_buf(e),
             Expr::Query { .. }
             | Expr::Call {

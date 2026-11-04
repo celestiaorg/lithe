@@ -914,9 +914,14 @@ fn creation(
     shape: &Shape,
 ) -> Result<(Vec<u8>, Vec<Facet>), Error> {
     let mut g = Gen::new(checked, plan.clone(), shape)?;
+    let plain = !checked.prog.upgradeable && !shape.part;
+    // A dynamic immutable's bytes follow the code even when no `deploy` writes them.
+    let appended = plain && !checked.immutable_values.is_empty() && !marks.is_empty();
     let Some(func) = g
         .deploy_func()
-        .filter(|_| !checked.prog.upgradeable && !shape.part)
+        .filter(|_| plain)
+        .map(Some)
+        .or_else(|| appended.then_some(None))
     else {
         let parts = shape.prerequisites();
         if checked.prog.upgradeable && !marks.is_empty() {
@@ -958,7 +963,7 @@ fn init_constants(checked: &Checked, shape: &Shape) -> Vec<Option<Word>> {
     let Some(func) = g.deploy_func() else {
         return none;
     };
-    if g.emit_init(func, Vec::new(), &[]).is_err() {
+    if g.emit_init(Some(func), Vec::new(), &[]).is_err() {
         return none;
     }
     (0..n as u32)
@@ -1013,7 +1018,9 @@ fn place_marked(
 /// Every call inlined, memory as emitted, no bytecode passes. Only placement and encoding.
 #[cfg(test)]
 pub(crate) fn codegen_unoptimized(checked: Checked) -> Result<Vec<u8>, Error> {
-    let shape = Shape::default();
+    // Unoptimized code may be past the size limit; it only runs in tests.
+    let mut shape = Shape::default();
+    shape.opts.size_limit = usize::MAX;
     let mut g = Gen::new(&checked, Plan::default(), &shape)?;
     g.emit()?;
     let code = g.resolve()?;
@@ -1673,6 +1680,9 @@ enum Sub {
     /// `[base, ret]` becomes the layout of the record of this frame's memory it saves from
     /// slot `~(base | 2)`.
     SaveRecord,
+    /// `[header, ret]` becomes a blob of the bytes a dynamic immutable's header locates in
+    /// the code: this code's, or, in a facet, its router's.
+    ImmutableBytes(bool),
 }
 
 impl Sub {
@@ -1726,7 +1736,8 @@ impl Sub {
             | Sub::TreeCheck(..)
             | Sub::TreeCdEnc(_)
             | Sub::TreePayload(_)
-            | Sub::SaveRecord => false,
+            | Sub::SaveRecord
+            | Sub::ImmutableBytes(_) => false,
         }
     }
 }

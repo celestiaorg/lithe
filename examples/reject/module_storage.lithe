@@ -4,7 +4,7 @@ module Ledger is {
   }
 
   function peek() : bool is
-    Pausable.settings.paused
+    Pausable.storage.settings.paused
 }
 
 module Pausable is {
@@ -13,7 +13,7 @@ module Pausable is {
   }
 
   external function pause() is {
-    settings.paused := true;
+    storage.settings.paused := true;
   }
 }
 

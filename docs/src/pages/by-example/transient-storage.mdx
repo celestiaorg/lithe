@@ -27,8 +27,8 @@ storage is record {
 }
 
 external function lend(const to : Callback; const amount : uint) is {
-  flash.active := true;
-  flash.lent := amount;
+  transient.flash.active := true;
+  transient.flash.lent := amount;
   storage.totalLent += amount;
   defer to.onFlash(amount);
 }
@@ -37,8 +37,8 @@ external function lend(const to : Callback; const amount : uint) is {
 external view function currentLoan() : uint
   raises NotInFlash
 is {
-  assert(flash.active, NotInFlash);
-} with flash.lent
+  assert(transient.flash.active, NotInFlash);
+} with transient.flash.lent
 ```
 
 - Transient storage never appears in the storage layout or the upgrade layout.

@@ -19,7 +19,8 @@
 
    The name and version are kept for `eip712Domain` much as OpenZeppelin's `ShortStrings`
    keeps them: a string under 32 bytes is an immutable word of its bytes and its length.
-   If either is longer, both are stored, and the name's word is 255. *)
+   If either is longer, both are immutable strings after the code, and the name's word is
+   255. *)
 
 import "std/interfaces/erc5267";
 
@@ -41,7 +42,7 @@ module EIP712 is {
     version : string;
   }
 
-  storage eip712Strings at "lithe.std.eip712.strings" is record {
+  immutable eip712Strings at "lithe.std.eip712.strings" is record {
     long : Names;
   }
 
@@ -50,13 +51,13 @@ module EIP712 is {
   );
 
   function init(const name : string; const version : string) is {
-    eip712.hashedName := Crypto.keccak256(name);
-    eip712.hashedVersion := Crypto.keccak256(version);
-    eip712.name := bytes32(uint(bytes32(bytes(name))) | name.length);
-    eip712.version := bytes32(uint(bytes32(bytes(version))) | version.length);
+    immutable.eip712.hashedName := Crypto.keccak256(name);
+    immutable.eip712.hashedVersion := Crypto.keccak256(version);
+    immutable.eip712.name := bytes32(uint(bytes32(bytes(name))) | name.length);
+    immutable.eip712.version := bytes32(uint(bytes32(bytes(version))) | version.length);
     if name.length > 31 or version.length > 31 then {
-      eip712.name := bytes32(255);
-      eip712Strings.long := { name = name; version = version; };
+      immutable.eip712.name := bytes32(255);
+      immutable.eip712Strings.long := { name = name; version = version; };
     }
   }
 
@@ -66,8 +67,8 @@ module EIP712 is {
   view function domainSeparator() : bytes32 is
     Crypto.keccak256(Abi.encode(
       domainTypehash,
-      eip712.hashedName,
-      eip712.hashedVersion,
+      immutable.eip712.hashedName,
+      immutable.eip712.hashedVersion,
       Evm.chainId(),
       Evm.self()
     ))
@@ -85,9 +86,9 @@ module EIP712 is {
 
   external view function eip712Domain() : flat EIP712Domain is {
     const extensions : list(uint) := [];
-    const both : Names := if eip712.name = bytes32(255) then eip712Strings.long else {
-      name = fromShortString(eip712.name);
-      version = fromShortString(eip712.version);
+    const both : Names := if immutable.eip712.name = bytes32(255) then immutable.eip712Strings.long else {
+      name = fromShortString(immutable.eip712.name);
+      version = fromShortString(immutable.eip712.version);
     };
   } with {
     fields = 0x0f;

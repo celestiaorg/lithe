@@ -28,26 +28,26 @@ storage stats at "example.stats" is record {
   users : map(address, bool);
 }
 
-(* A named domain is accessed by its name, not `storage.` *)
+(* A named domain is reached through `storage`, then its name. *)
 external function configure(const fee : uint; const treasury : address) is {
-  config.fee := fee;
-  config.treasury := treasury;
+  storage.config.fee := fee;
+  storage.config.treasury := treasury;
 }
 
 external function trade(const amount : uint) is {
   storage.count += 1;
-  stats.volume += amount;
-  stats.users[Evm.sender()] := true;
+  storage.stats.volume += amount;
+  storage.stats.users[Evm.sender()] := true;
 }
 
 external view function fee() : uint is
-  config.fee
+  storage.config.fee
 ```
 
 `lithe storage named-storage.lithe` prints each domain's root and slots:
 
 ```text
-config "example.config"
+storage.config "example.config"
   root: 0x6169440e53b52b8b82649b9dc5d8cd0b3a6620a5608957f4eba1e677ed793300
   fee: uint256       slot 0
   treasury: address  slot 1, offset 0, 20 bytes

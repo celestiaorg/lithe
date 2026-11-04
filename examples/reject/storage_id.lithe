@@ -4,7 +4,7 @@ module Alpha is {
   }
 
   external function go() is {
-    foo.n := 1;
+    storage.foo.n := 1;
   }
 }
 

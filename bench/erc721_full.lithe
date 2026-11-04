@@ -123,8 +123,8 @@ contract BenchNFTFull is {
       | ERC721NonexistentToken | ERC721InsufficientApproval | forwarded
   is {
     Ownable.checkOwner();
-    const tokenId : uint := benchNft.nextTokenId;
-    benchNft.nextTokenId := tokenId + 1;
+    const tokenId : uint := storage.benchNft.nextTokenId;
+    storage.benchNft.nextTokenId := tokenId + 1;
     assert(to <> Address.zero, ERC721InvalidReceiver(Address.zero));
     const previous : address := ERC721.update(to, tokenId, Address.zero);
     assert(previous = Address.zero, ERC721InvalidSender(Address.zero));

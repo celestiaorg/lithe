@@ -35,18 +35,18 @@ module Votes is {
     raises ZeroWeight
   is {
     assert(weight > 0, ZeroWeight);
-    Tally.add(votes.byVoter, Evm.sender(), weight);
-    Tally.add(votes.byTopic, topic, weight);
+    Tally.add(storage.votes.byVoter, Evm.sender(), weight);
+    Tally.add(storage.votes.byTopic, topic, weight);
   }
 
   external view function votesOf(const voter : address) : uint is
-    Tally.count(votes.byVoter, voter)
+    Tally.count(storage.votes.byVoter, voter)
 
   external view function votesFor(const topic : bytes32) : uint is
-    Tally.count(votes.byTopic, topic)
+    Tally.count(storage.votes.byTopic, topic)
 
   external view function totalVotes() : uint is
-    Tally.total(votes.byTopic)
+    Tally.total(storage.votes.byTopic)
 }
 
 interface ITally is {

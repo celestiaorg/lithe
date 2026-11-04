@@ -483,12 +483,12 @@ module Claims is {
     spent : map(uint, uint);
   }
 
-  view function spent(const i : uint) : bool is Bits.get(claims.spent, i)
+  view function spent(const i : uint) : bool is Bits.get(storage.claims.spent, i)
 
-  external view function isSpent(const i : uint) : bool is Bits.get(claims.spent, i)
+  external view function isSpent(const i : uint) : bool is Bits.get(storage.claims.spent, i)
 
   external function spend(const i : uint) is {
-    Bits.set(claims.spent, i);
+    Bits.set(storage.claims.spent, i);
   }
 
   external view function viaInternal(const i : uint) : bool is spent(i)
@@ -609,14 +609,14 @@ import \"std/evm\"; module VaultOps is {{
   storage vault at \"vault.ops\" is record {{ deposits : map(address, wei); }}
   error TooMuch of wei;
   function take(const amount : wei) raises TooMuch is {{
-    assert(amount <= vault.deposits[Evm.sender()], TooMuch(amount));
-    vault.deposits[Evm.sender()] := vault.deposits[Evm.sender()] - amount;
+    assert(amount <= storage.vault.deposits[Evm.sender()], TooMuch(amount));
+    storage.vault.deposits[Evm.sender()] := storage.vault.deposits[Evm.sender()] - amount;
   }}
   external function withdraw(const amount : wei) raises TooMuch is take(amount)
   external payable function deposit() is {{
-    vault.deposits[Evm.sender()] := vault.deposits[Evm.sender()] + Evm.value();
+    storage.vault.deposits[Evm.sender()] := storage.vault.deposits[Evm.sender()] + Evm.value();
   }}
-  external view function depositOf(const who : address) : wei is vault.deposits[who]
+  external view function depositOf(const who : address) : wei is storage.vault.deposits[who]
   external pure function fee(const amount : wei) : wei is amount / 100wei
   external view function hidden() : wei is 0wei
 }}
@@ -645,7 +645,7 @@ use VaultOps exposing {{
     assert!(abi.contains("\"stateMutability\": \"pure\""), "{abi}");
     let footprint = footprint(&good).expect("footprint");
     assert!(
-        footprint.contains("writes: VaultOps.vault.deposits"),
+        footprint.contains("writes: VaultOps.storage.vault.deposits"),
         "{footprint}"
     );
     let runtime = deploy(&compile(&good).expect("compile")).expect("deploy");
@@ -1226,7 +1226,7 @@ fn duplicates_say_where_the_first_is() {
         ),
         (
             "storage a at \"x\" is record { n : uint; }\nstorage b at \"x\" is record { n : uint; }\n",
-            "2:1: storage domains `a` and `b` share the id \"x\"\n\n`a` is declared at 1:1\n\ngive each storage domain its own id",
+            "2:1: storage domains `storage.a` and `storage.b` share the id \"x\"\n\n`storage.a` is declared at 1:1\n\ngive each storage domain its own id",
         ),
         (
             "module M is {\n  pure function a(const x : uint) : uint is x\n  pure function a(const x : uint) : uint is x\n}\nuse M;\n",
@@ -1346,7 +1346,7 @@ interface Poke is { function poke(); }
 pure function double(const x : Amount) : Amount is Amount(uint(x) * 2)
 module Tally is {
   storage tally at \"t.tally\" is record { n : uint; }
-  function bump() is { tally.n := tally.n + 1; }
+  function bump() is { storage.tally.n := storage.tally.n + 1; }
 }
 ";
 
@@ -1412,7 +1412,7 @@ fn unknown_members_name_the_module_and_member() {
                \x20 storage counter at \"x.counter\" is record { total : uint; }\n\
                \x20 pure function double(const n : uint) : uint is n + n\n\
                \x20 pure function limit() : uint is 5\n\
-               \x20 function add(const n : uint) is { counter.total := counter.total + n; }\n\
+               \x20 function add(const n : uint) is { storage.counter.total := storage.counter.total + n; }\n\
                \x20 type Amount is uint;\n\
                \x20 error Bad;\n\
                \x20 event Bumped of record { n : uint; }\n\
@@ -1440,12 +1440,12 @@ fn unknown_members_name_the_module_and_member() {
             "`Counter.double` is a function; call it",
         ),
         (
-            "Counter.countr.total := n;",
-            "did you mean `Counter.counter`?",
+            "Counter.storage.countr.total := n;",
+            "did you mean `Counter.storage.counter`?",
         ),
         (
-            "Counter.counter(n);",
-            "`Counter.counter` is storage, not a function",
+            "Counter.storage.counter(n);",
+            "`Counter.storage.counter` is storage, not a function",
         ),
         (
             "fail Counter.Bda;",
@@ -1508,7 +1508,7 @@ fn a_file_sees_only_what_it_imports() {
             "unknown module `Tally`",
         ),
         (
-            "external function go() is { Tally.tally.n := 1; }",
+            "external function go() is { Tally.storage.tally.n := 1; }",
             "unknown name `Tally`",
         ),
     ] {
@@ -1584,7 +1584,7 @@ module Keeper is {
   storage keeper at \"t.keeper\" is record { n : uint; }
   function set(const v : uint) raises Denied is {
     assert(v > 0, Denied);
-    keeper.n := uint(Amount(v));
+    storage.keeper.n := uint(Amount(v));
   }
 }
 ";
@@ -1634,8 +1634,8 @@ pure function addOne(const x : uint) : uint is x + 1
 module Counter is {
   storage counter at \"d.counter\" is record { n : uint; }
   function bump() raises Stop is {
-    assert(counter.n < 10, Stop);
-    counter.n := counter.n + 1;
+    assert(storage.counter.n < 10, Stop);
+    storage.counter.n := storage.counter.n + 1;
   }
 }
 ";
@@ -1831,7 +1831,7 @@ fn modules_compose_without_inheritance() {
     let transfer_route = route_text(&tree, "transfer");
     assert!(transfer_route.contains("  - Ledger.send\n"), "{tree}");
     assert!(
-        transfer_route.contains("Ledger.ledger.balances"),
+        transfer_route.contains("Ledger.storage.ledger.balances"),
         "{transfer_route}"
     );
     assert!(transfer_route.contains("Transfer"), "{tree}");
@@ -1859,7 +1859,7 @@ module Ledger is {
   }
 
   function set(const n : uint) is {
-    ledger.n := n;
+    storage.ledger.n := n;
   }
 }
 
@@ -2097,11 +2097,11 @@ contract Token is {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/votes.lithe");
     let layout = crate::storage_layout(&Sources::disk(), &votes_path).expect("layout");
     assert!(
-        layout.contains("ERC20.erc20 \"lithe.std.erc20\""),
+        layout.contains("ERC20.storage.erc20 \"lithe.std.erc20\""),
         "{layout}"
     );
     assert!(
-        layout.contains("ERC20Votes.votes \"lithe.std.erc20.votes\""),
+        layout.contains("ERC20Votes.storage.votes \"lithe.std.erc20.votes\""),
         "{layout}"
     );
     let votes = deploy(&compile_file(&votes_path).expect("votes")).expect("deploy");
@@ -2123,8 +2123,11 @@ contract Token is {
     assert_eq!(load_bytes(&supply.returndata, 0), Word::from_u64(5));
     let tree =
         crate::abi_tree(&Sources::disk(), &votes_path, &Options::default()).expect("votes tree");
-    assert!(tree.contains("ERC20.erc20.balances"), "{tree}");
-    assert!(tree.contains("ERC20Votes.votes.delegates"), "{tree}");
+    assert!(tree.contains("ERC20.storage.erc20.balances"), "{tree}");
+    assert!(
+        tree.contains("ERC20Votes.storage.votes.delegates"),
+        "{tree}"
+    );
     let delegated = exec(
         &votes,
         &word_data("delegate(address,address)", &[caller, other]),
@@ -2483,18 +2486,18 @@ fn grouped_uses() {
     let modules = r#"import "std/evm";
 module Count is {
   storage count at "t.count" is record { n : uint; }
-  function bump() is { count.n += 1; }
+  function bump() is { storage.count.n += 1; }
 }
 module Mark is {
   storage mark at "t.mark" is record { who : address; }
   event Marked of record { who : address; }
-  function set() is { mark.who := Evm.sender(); emit Marked { who = Evm.sender(); }; }
+  function set() is { storage.mark.who := Evm.sender(); emit Marked { who = Evm.sender(); }; }
 }
 module Both is {
   requires Count, Mark;
   event Bothered of record { n : uint; }
   external function both() is { Count.bump(); Mark.set(); emit Bothered { n = 1; }; }
-  external view function count() : uint is Count.count.n
+  external view function count() : uint is Count.storage.count.n
 }
 "#;
     let contract = |uses: &str| {
@@ -2550,7 +2553,7 @@ module Both is {
   storage y at "t.y" is record { n : uint; }
   error Full;
   pure function double(const n : uint) : uint is n * 2
-  function bump() raises Full is { assert(y.n < 10, Full); y.n += 1; }
+  function bump() raises Full is { assert(storage.y.n < 10, Full); storage.y.n += 1; }
 }
 module Tools is {
   function triple(const n : uint) : uint is n * 3
@@ -2577,7 +2580,7 @@ contract A is {
             "16:44: module `Y` is not used\n\n`Y.bump` isn't pure and `Y` holds state: `use Y;`",
         ),
         (
-            "external view function f() : uint is Y.y.n",
+            "external view function f() : uint is Y.storage.y.n",
             "16:40: module `Y` is not used",
         ),
     ] {

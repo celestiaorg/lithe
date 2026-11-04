@@ -60,9 +60,9 @@ module ERC4626 is {
      simplify: `10 ** offset` is kept in 64 bits, so an offset past 19 panics here; widen
      `virtualShares` if a vault ever needs more. *)
   function init(const asset : address; const decimals : uint8; const offset : uint8) is {
-    erc4626.asset := IERC20(asset);
-    erc4626.decimals := decimals + offset;
-    erc4626.virtualShares := uint64(10 ** uint(offset));
+    immutable.erc4626.asset := IERC20(asset);
+    immutable.erc4626.decimals := decimals + offset;
+    immutable.erc4626.virtualShares := uint64(10 ** uint(offset));
   }
 
   (* The asset's `decimals`, or 18 when it has none that fits a `uint8`. *)
@@ -79,14 +79,14 @@ module ERC4626 is {
   } with decimals
 
   view function heldAssets() : uint is
-    query erc4626.asset.balanceOf(Evm.self())
+    query immutable.erc4626.asset.balanceOf(Evm.self())
 
   (* `assets` in shares, rounded up if `up`. *)
   view function sharesFor(const assets : uint; const up : bool) : uint is
-    mulDiv(assets, ERC20.erc20.totalSupply + uint(erc4626.virtualShares), heldAssets() + 1, up)
+    mulDiv(assets, ERC20.storage.erc20.totalSupply + uint(immutable.erc4626.virtualShares), heldAssets() + 1, up)
 
   view function assetsFor(const shares : uint; const up : bool) : uint is
-    mulDiv(shares, heldAssets() + 1, ERC20.erc20.totalSupply + uint(erc4626.virtualShares), up)
+    mulDiv(shares, heldAssets() + 1, ERC20.storage.erc20.totalSupply + uint(immutable.erc4626.virtualShares), up)
 
   pure function mulDiv(const a : uint; const b : uint; const d : uint; const up : bool) : uint is
     Uint.mulDiv(a, b, d) + uint(up) * uint(Uint.mulMod(a, b, d) > 0)
@@ -96,9 +96,9 @@ module ERC4626 is {
   function depositAs(const caller : address; const receiver : address; const assets : uint; const shares : uint)
     raises SafeERC20FailedOperation | ERC20InvalidReceiver | ERC20InsufficientBalance | forwarded
   is {
-    defer IERC20OptionalReturn(address(erc4626.asset)).transferFrom(caller, Evm.self(), assets) then {
+    defer IERC20OptionalReturn(address(immutable.erc4626.asset)).transferFrom(caller, Evm.self(), assets) then {
       | Ok(ok : option(bool)) -> {
-          assert(ok <> Some(false), SafeERC20FailedOperation(address(erc4626.asset)));
+          assert(ok <> Some(false), SafeERC20FailedOperation(address(immutable.erc4626.asset)));
           ERC20.mint(receiver, shares);
           emit Deposit {
             sender = caller;
@@ -136,14 +136,14 @@ module ERC4626 is {
       assets = assets;
       shares = shares;
     };
-    SafeERC20.safeTransfer(erc4626.asset, receiver, assets);
+    SafeERC20.safeTransfer(immutable.erc4626.asset, receiver, assets);
   }
 
   external view function asset() : address is
-    address(erc4626.asset)
+    address(immutable.erc4626.asset)
 
   external view function decimals() : uint8 is
-    erc4626.decimals
+    immutable.erc4626.decimals
 
   external view function totalAssets() : uint is
     heldAssets()
@@ -167,13 +167,13 @@ module ERC4626 is {
     assetsFor(shares, true)
 
   external view function maxWithdraw(const owner : address) : uint is
-    assetsFor(ERC20.erc20.balances[owner], false)
+    assetsFor(ERC20.storage.erc20.balances[owner], false)
 
   external view function previewWithdraw(const assets : uint) : uint is
     sharesFor(assets, true)
 
   external view function maxRedeem(const owner : address) : uint is
-    ERC20.erc20.balances[owner]
+    ERC20.storage.erc20.balances[owner]
 
   external view function previewRedeem(const shares : uint) : uint is
     assetsFor(shares, false)
@@ -200,7 +200,7 @@ module ERC4626 is {
     raises ERC4626ExceededMaxWithdraw | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
       | ERC20InvalidSender | ERC20InsufficientBalance | SafeERC20FailedOperation | forwarded
   is {
-    const most : uint := assetsFor(ERC20.erc20.balances[owner], false);
+    const most : uint := assetsFor(ERC20.storage.erc20.balances[owner], false);
     assert(
       assets <= most,
       ERC4626ExceededMaxWithdraw { owner = owner; assets = assets; max = most; }
@@ -213,7 +213,7 @@ module ERC4626 is {
     raises ERC4626ExceededMaxRedeem | ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
       | ERC20InvalidSender | ERC20InsufficientBalance | SafeERC20FailedOperation | forwarded
   is {
-    const most : uint := ERC20.erc20.balances[owner];
+    const most : uint := ERC20.storage.erc20.balances[owner];
     assert(
       shares <= most,
       ERC4626ExceededMaxRedeem { owner = owner; shares = shares; max = most; }

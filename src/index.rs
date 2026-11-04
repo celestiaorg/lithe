@@ -1035,25 +1035,17 @@ impl<'a> Builder<'a> {
                 None => decl.name.clone(),
             };
             let ty = c.domain_tys.get(&qualified).copied();
-            let space = if decl.transient {
-                "transient storage"
-            } else {
-                "storage"
+            let named = decl.name.contains('.').then_some(written);
+            let text = match (decl.transient, decl.immutable, named) {
+                (true, _, Some(name)) => format!("transient storage {name} is"),
+                (true, _, None) => "transient storage is".to_string(),
+                (_, true, None) if decl.id == "lithe.immutable" => "immutable is".to_string(),
+                (_, true, None) => format!("immutable at \"{}\" is", decl.id),
+                (_, true, Some(name)) => format!("immutable {name} at \"{}\" is", decl.id),
+                (_, false, None) => format!("storage at \"{}\" is", decl.id),
+                (_, false, Some(name)) => format!("storage {name} at \"{}\" is", decl.id),
             };
-            let text = if decl.transient {
-                format!(
-                    "transient storage {} is {}",
-                    decl.name,
-                    ty_ref_long(&decl.ty)
-                )
-            } else {
-                format!(
-                    "storage {} at \"{}\" is {}",
-                    decl.name,
-                    decl.id,
-                    ty_ref_long(&decl.ty)
-                )
-            };
+            let text = format!("{text} {}", ty_ref_long(&decl.ty));
             let mut hover = vec![code(&text), self.doc(file, decl.line)];
             let layouts = if decl.transient {
                 &c.transient_layout
@@ -1078,7 +1070,7 @@ impl<'a> Builder<'a> {
                     name: decl.name.clone(),
                     kind: Kind::Storage,
                     at: None,
-                    detail: format!("{space} {qualified}"),
+                    detail: qualified.clone(),
                     hover: join(hover),
                     parent,
                     ty: ty.map(|t| self.key(t)),
@@ -1087,12 +1079,7 @@ impl<'a> Builder<'a> {
             );
             self.names.insert(('d', qualified.clone()), d);
             if let Some(ty) = ty {
-                let path = if decl.transient {
-                    format!("transient {qualified}")
-                } else {
-                    qualified.clone()
-                };
-                self.shape(&decl.ty, ty, d, file, Some(&path));
+                self.shape(&decl.ty, ty, d, file, Some(&qualified));
             }
         }
         for decl in &prog.errors {
@@ -1546,13 +1533,10 @@ impl<'a> Builder<'a> {
     /// Where a top-level stored field sits.
     fn place(&self, domain: &str, field: &str) -> String {
         let c = self.c();
-        let (layouts, name) = match domain.strip_prefix("transient ") {
-            Some(name) => (&c.transient_layout, name),
-            None => (&c.layout, domain),
-        };
-        layouts
+        c.layout
             .iter()
-            .find(|l| l.name == name)
+            .chain(&c.transient_layout)
+            .find(|l| l.name == domain)
             .and_then(|l| {
                 let i = l.fields.iter().position(|(n, _)| n == field)?;
                 Some(format!(" · {}", l.places[i]))
@@ -1577,9 +1561,9 @@ impl<'a> Builder<'a> {
         let c = self.c();
         let hits = |labels: Vec<&String>| {
             labels.into_iter().any(|l| {
-                let l = l.strip_prefix("transient ").unwrap_or(l);
-                let p = path.strip_prefix("transient ").unwrap_or(path);
-                l == p || l.starts_with(&format!("{p}.")) || l.starts_with(&format!("{p}["))
+                l == path
+                    || l.starts_with(&format!("{path}."))
+                    || l.starts_with(&format!("{path}["))
             })
         };
         let mut writers = Vec::new();
@@ -2072,25 +2056,17 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// `storage` or a storage domain, as named inside the current function.
+    /// `storage`, or a domain by its full name: `storage.config`, `M.storage.config`.
     fn place_def(&self, name: &str) -> Option<usize> {
-        if name == "storage" {
-            return self.names.get(&('t', "storage".to_string())).copied();
-        }
-        if let Some(&d) = self.names.get(&('d', name.to_string())) {
-            return Some(d);
-        }
-        self.module
+        let own = self
+            .module
             .as_ref()
             .and_then(|m| self.names.get(&('d', format!("{m}.{name}"))))
-            .or_else(|| self.names.get(&('d', name.to_string())))
-            .copied()
-            .or_else(|| {
-                self.names
-                    .iter()
-                    .find(|((tag, q), _)| *tag == 'd' && q.rsplit('.').next() == Some(name))
-                    .map(|(_, d)| *d)
-            })
+            .copied();
+        if name == "storage" {
+            return own.or_else(|| self.names.get(&('t', "storage".to_string())).copied());
+        }
+        own.or_else(|| self.names.get(&('d', name.to_string())).copied())
     }
 
     /// A field, variant, or method of the type with this key.
@@ -2202,7 +2178,7 @@ impl<'a> Builder<'a> {
                     .or_else(|| self.place_def(head));
                 self.refer(pos, head, head_def);
                 let mut ty = head_def.and_then(|d| self.ix.defs[d].ty);
-                let stored = root.is_some_and(|s| self.c().syms[s].storage);
+                let stored = root.is_some_and(|s| self.c().state_sym(s));
                 let mut label = match &head_def {
                     Some(d) if self.ix.defs[*d].kind == Kind::Storage => {
                         let q = self.names.iter().find(|(k, v)| k.0 == 'd' && **v == *d);
@@ -2474,7 +2450,7 @@ impl<'a> Builder<'a> {
                 let d = sym
                     .and_then(|s| self.syms.get(&s).copied())
                     .or_else(|| {
-                        sym.filter(|&s| c.syms[s].storage)
+                        sym.filter(|&s| c.state_sym(s))
                             .and_then(|_| self.place_def(name))
                     })
                     .or_else(|| self.value_name(name, *ty))
@@ -2539,7 +2515,7 @@ impl<'a> Builder<'a> {
                     }
                 };
                 let hover = match (d, root) {
-                    (Some(d), Some(sym)) if c.syms[*sym].storage => {
+                    (Some(d), Some(sym)) if c.state_sym(*sym) => {
                         self.stored_hover(d, &stored_path(e))
                     }
                     _ => None,
@@ -2548,7 +2524,10 @@ impl<'a> Builder<'a> {
                     return;
                 }
                 if let Some(d) = d {
-                    let at = self.span(self.file, (*line, *col), name);
+                    // `M.storage.d` names its domain `storage.d`; the word to mark is `d`.
+                    let word = name.rsplit('.').next().unwrap_or(name);
+                    let at = self.locate(self.file, *line, *col, word);
+                    let at = self.span(self.file, at, word);
                     self.reference(at, d, hover);
                 }
             }
@@ -2562,6 +2541,11 @@ impl<'a> Builder<'a> {
                 args,
                 ..
             } if name.is_empty() => self.expr(&args[0]),
+            Expr::Call {
+                builtin: Some(Builtin::ImmutableRead),
+                args,
+                ..
+            } => self.expr(&args[0]),
             Expr::Call {
                 line,
                 col,
@@ -3218,10 +3202,49 @@ impl Index {
             .position(|d| d.name == name && kinds.contains(&d.kind))
     }
 
+    /// A domain as code at a line names it: `storage.d`, or `M.storage.d` outside `M`.
+    fn domain_path(&self, d: usize, line: u32) -> String {
+        let owner = self.enclosing(line).and_then(|f| self.defs[f].parent);
+        match self.defs[d].parent {
+            Some(m) if Some(m) != owner => format!("{}.{}", self.defs[m].name, self.defs[d].name),
+            _ => self.defs[d].name.clone(),
+        }
+    }
+
+    /// The domain a path starts with, `storage.d` or `M.storage.d`, and how many segments
+    /// name it.
+    fn domain_head(&self, segs: &[Seg], line: u32) -> Option<(usize, usize)> {
+        let names: Vec<&str> = segs
+            .iter()
+            .map_while(|seg| match seg {
+                Seg::Name(name, false) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let owner = self.enclosing(line).and_then(|f| self.defs[f].parent);
+        (1..=names.len().min(3)).rev().find_map(|n| {
+            let path = names[..n].join(".");
+            let found: Vec<usize> = (0..self.defs.len())
+                .filter(|&d| {
+                    self.defs[d].kind == Kind::Storage && self.domain_path(d, line) == path
+                })
+                .collect();
+            let d = found
+                .iter()
+                .copied()
+                .find(|&d| owner.is_some() && self.defs[d].parent == owner)
+                .or(found.first().copied())?;
+            Some((d, n))
+        })
+    }
+
     /// The type of the value a path names, from the scope around a line of `text`.
     fn resolve(&self, segs: &[Seg], text: &str, line: u32) -> Option<usize> {
+        if let Some((d, n)) = self.domain_head(segs, line) {
+            return self.walk_segs(self.defs[d].ty?, &segs[n..]);
+        }
         let (first, rest) = segs.split_first()?;
-        let mut ty = match first {
+        let ty = match first {
             Seg::Name(name, false) => {
                 let local = self
                     .locals(line)
@@ -3238,7 +3261,12 @@ impl Index {
                 .and_then(|d| self.defs[d].ty)?,
             Seg::Index => return None,
         };
-        for seg in rest {
+        self.walk_segs(ty, rest)
+    }
+
+    /// The type past the fields and indexes of a path from `ty`.
+    fn walk_segs(&self, mut ty: usize, segs: &[Seg]) -> Option<usize> {
+        for seg in segs {
             ty = match seg {
                 Seg::Index => self.tys.get(ty)?.item?,
                 Seg::Name(name, _) => {
@@ -3382,10 +3410,36 @@ impl Index {
                 return aliased;
             }
         }
-        let Some(ty) = self.resolve(&segs, text, line) else {
-            return Vec::new();
+        // After `storage.` or `M.storage.`, the named domains of that kind too.
+        let names: Vec<&str> = segs
+            .iter()
+            .filter_map(|seg| match seg {
+                Seg::Name(name, false) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let mut out: Vec<Completion> = match names.as_slice() {
+            [.., kind]
+                if names.len() == segs.len() && crate::resolve::STATE_KINDS.contains(kind) =>
+            {
+                let prefix = format!("{}.", names.join("."));
+                (0..self.defs.len())
+                    .filter(|&d| self.defs[d].kind == Kind::Storage)
+                    .filter_map(|d| {
+                        let path = self.domain_path(d, line);
+                        let label = path.strip_prefix(&prefix)?;
+                        let mut item = self.item(d);
+                        item.label = label.to_string();
+                        Some(item)
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
         };
-        self.members(ty).into_iter().map(|d| self.item(d)).collect()
+        if let Some(ty) = self.resolve(&segs, text, line) {
+            out.extend(self.members(ty).into_iter().map(|d| self.item(d)));
+        }
+        out
     }
 
     fn by_kind(&self, kinds: &[Kind]) -> Vec<Completion> {

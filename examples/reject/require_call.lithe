@@ -6,7 +6,7 @@ module Pausable is {
   error Paused;
 
   view function requireUnpaused() raises Paused is {
-    assert(not pausable.paused, Paused);
+    assert(not storage.pausable.paused, Paused);
   }
 }
 

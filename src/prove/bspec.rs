@@ -153,7 +153,7 @@ impl<'a> Reader<'a> {
                     if let Some(v) = self.locals.get(sym) {
                         return Ok(v.clone());
                     }
-                    if self.checked.syms[*sym].storage {
+                    if self.checked.state_sym(*sym) {
                         return Err("a whole storage record".to_string());
                     }
                     return Err(format!("`{name}`, which the spec does not bind"));
@@ -657,15 +657,13 @@ impl<'a> Reader<'a> {
         let Some(root) = root else {
             return Ok(None);
         };
-        let Some(sym) = self.checked.syms.get(root) else {
-            return Ok(None);
-        };
-        if !sym.storage {
+        if root >= self.checked.syms.len() || !self.checked.state_sym(root) {
             return Ok(None);
         }
         if self.checked.slot_syms.contains_key(&root) {
             return Err("a map given to a function by its slot".to_string());
         }
+        let sym = &self.checked.syms[root];
         let (base, domain_ty) = (sym.slot, sym.ty);
         let mut chain = Vec::new();
         let mut cur = e;

@@ -10,11 +10,11 @@ Lithe has three kinds of state, and each has a different lifetime:
 | Kind | Declared as | Accessed as | Lasts |
 | --- | --- | --- | --- |
 | Locals | `const` / `var` | `name` | the current call |
-| Transient storage | `transient storage [name] is record { ... }` | `transient.x` / `name.x` | the current transaction |
-| Storage | `storage [[name] at "id"] is record { ... }` | `storage.x` / `name.x` | forever |
-| Immutables | `immutable [name at "id"] is record { ... }` | `immutable.x` / `name.x` | forever, set only while the contract is set up |
+| Transient storage | `transient storage [name] is record { ... }` | `transient.x` / `transient.name.x` | the current transaction |
+| Storage | `storage [[name] at "id"] is record { ... }` | `storage.x` / `storage.name.x` | forever |
+| Immutables | `immutable [name at "id"] is record { ... }` | `immutable.x` / `immutable.name.x` | forever, set only while the contract is set up |
 
-State is always accessed through a qualified path. A reviewer can always tell a storage read from a local.
+Every state path starts with its kind: `storage`, `transient`, or `immutable`, then the domain's name if it has one. A reviewer can always tell a storage read from a local, and which kind of state it reads. A module's state is reached from outside it through the module: `Fees.immutable.fees.bps`.
 
 ## Default storage
 
@@ -71,16 +71,16 @@ storage is record {
 }
 
 external function configure(const feeBps : uint; const treasury : address) is {
-  settings.feeBps := feeBps;
-  settings.treasury := treasury;
+  storage.settings.feeBps := feeBps;
+  storage.settings.treasury := treasury;
 }
 
 external function trade(const amount : uint) is {
-  stats.volume += amount;
+  storage.stats.volume += amount;
 }
 ```
 
-A named domain is accessed by its name: `settings.feeBps`. Its root is `keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~0xff`, the ERC-7201 formula, so it matches Solidity's `@custom:storage-location erc7201:vault.settings`. Within a domain, fields are laid out like the default record, starting at the root.
+A named domain is accessed after `storage`: `storage.settings.feeBps`. Its name is no name in scope, so a parameter or a local can be called `settings` too. A domain can't take the name of a field of the default record, as `storage.settings` would name both. Its root is `keccak256(abi.encode(uint256(keccak256(id)) - 1)) & ~0xff`, the ERC-7201 formula, so it matches Solidity's `@custom:storage-location erc7201:vault.settings`. Within a domain, fields are laid out like the default record, starting at the root.
 
 Named domains are how modules own state, and how storage stays stable across upgrades. Adding a domain or reordering domains never moves anything else. Two domains with the same id in one contract are a compile error.
 
@@ -98,6 +98,41 @@ external function deposit(const amount : uint) is {
 ```
 
 It starts at the root of `vault.main` instead of slot 0, so a contract whose state is one record can still keep it away from every other domain's slots. Giving the default record an id, or changing it, moves every field: `lithe upgrade-check` reports it as incompatible.
+
+A [module](/language/modules) declares its state the same way, and its default record must name its id, since slot 0 belongs to the contract:
+
+```lithe
+module Counter is {
+  storage at "example.counter" is record {
+    count : uint;
+  }
+
+  storage limits at "example.counter.limits" is record {
+    max : uint;
+  }
+
+  function bump() is {
+    storage.count += 1;
+    storage.limits.max := storage.count;
+  }
+}
+
+use Counter;
+
+storage is record {
+  calls : uint;
+}
+
+external function bump() is {
+  storage.calls += 1;
+  Counter.bump();
+}
+
+external view function count() : uint is
+  Counter.storage.count
+```
+
+Inside the module, its records are `storage.count` and `storage.limits.max`. Everywhere else they are `Counter.storage.count` and `Counter.storage.limits.max`. A domain can't take the name of a field of its module's default record, as it can't in a contract.
 
 ## Transient storage
 
@@ -125,20 +160,20 @@ external function run(const amount : uint)
 is {
   assert(not transient.entered, Busy);
   transient.entered := true;
-  scratch.touched[Evm.sender()] += amount;
+  transient.scratch.touched[Evm.sender()] += amount;
   storage.total += amount;
 }
 ```
 
-The default transient record is accessed as `transient.x`, and a named one as `name.x`. A transient field holds a fixed-size value (a word, or a record, tuple, fixed list, option, or variant of fixed-size values) or a map of them. Transient storage is never part of the persistent layout or the upgrade layout, and it has no ERC-7201 id. Use it for flags and bookkeeping that only need to live for one transaction. For reentrancy locks, use [`nonreentrant`](/language/reentrancy), which is built on transient storage already.
+The default transient record is accessed as `transient.x`, and a named one as `transient.name.x`. A transient field holds a fixed-size value (a word, or a record, tuple, fixed list, option, or variant of fixed-size values) or a map of them. Transient storage is never part of the persistent layout or the upgrade layout, and it has no ERC-7201 id. Use it for flags and bookkeeping that only need to live for one transaction. For reentrancy locks, use [`nonreentrant`](/language/reentrancy), which is built on transient storage already.
 
 Transient storage doesn't pack. Every word of a transient value takes a slot of its own: a `bool` or a `uint8` field, each element of a fixed list, and each word of a map's value. `TLOAD` and `TSTORE` cost 100 gas whatever the slot holds, so a shared slot saves nothing by itself. Writing one field of a packed slot takes a `TLOAD`, a mask, and a `TSTORE` instead of one `TSTORE`, and reading one takes a shift and a mask. A slot per word gives the smallest code for every access and the cheapest reads and writes of single fields. Packing would only save gas when a whole record of narrow fields is read or written at once.
 
-Transient slots 0 and 1 hold the reentrancy lock and the upgrade gate. The contract's own transient records follow from slot 2, in order. A module's record starts at a slot derived from its name, so it is the same in every contract that uses the module. `lithe storage` prints each field's transient slots.
+Transient slots 0 and 1 hold the reentrancy lock and the upgrade gate. The contract's own transient records follow from slot 2, in order. A module's records start at a slot derived from its name, and a named record's from its name too, so they are the same in every contract that uses the module. A module's default transient record, `transient storage is record`, is `transient.x` inside the module and `M.transient.x` everywhere else. `lithe storage` prints each field's transient slots.
 
 ## Immutables
 
-An immutable is a value fixed while the contract is set up, such as a factory address, a fee, or a hash, and never written again. Reading one costs about 3 gas, where a first storage read costs 2,100:
+An immutable is a value fixed while the contract is set up, such as a factory address, a fee, a hash, or a name, and never written again. Reading a word costs about 3 gas, where a first storage read costs 2,100:
 
 ```lithe
 import "std/evm";
@@ -170,7 +205,7 @@ external view function factory() : address is
   immutable.factory
 ```
 
-The contract's own block is read as `immutable.x`. A named block has an id, as named storage does, and a module declares its immutables that way:
+The contract's own block is read as `immutable.x`, and a named block as `immutable.name.x`. A named block has an id, as named storage does. The contract's own block has the id `lithe.immutable` unless it names one: `immutable at "vault.config" is record`. A module's blocks always have one, and its own block is read as `immutable.x` inside the module and `M.immutable.x` everywhere else:
 
 ```lithe
 use Fees;
@@ -182,12 +217,12 @@ module Fees is {
   }
 
   function init(const bps : uint16; const treasury : address) is {
-    fees.bps := bps;
-    fees.treasury := treasury;
+    immutable.fees.bps := bps;
+    immutable.fees.treasury := treasury;
   }
 
   view function cut(const amount : uint) : uint is
-    amount * uint(fees.bps) / 10_000
+    amount * uint(immutable.fees.bps) / 10_000
 }
 
 storage is record {
@@ -237,17 +272,67 @@ external function reclaim() is {
 external function `reclaim` calls `claim`, which writes immutable `immutable.owner`; call it only from `deploy` or the functions it calls
 ```
 
-Within `deploy` or a migration, an immutable can be written more than once, and a read sees the value written last. A field never written reads as zero.
+Within `deploy` or a migration, an immutable can be written more than once, and a read sees the value written last. While `deploy` runs, each immutable is an ordinary value in memory: a list can be indexed, a record's field written, an option matched. A field never written reads as zero: `0`, `false`, an empty string or list, `None`, or a variant's first case. `delete immutable.x;` writes that zero value back.
 
 ### What immutables can hold
 
-A field holds a word: an integer of any width, `bool`, `address`, an interface, `bytesN`, `wei`, `timestamp`, or an enum. It can also hold a record or tuple of these. Maps and lists are collections, and belong in storage. `string` and `bytes` values can't be immutables yet.
+An immutable holds any value. Its value only has to be known when `deploy` ends, not when the contract compiles: it can come from `deploy`'s arguments, from `Evm.sender()` or `Evm.chainId()`, or be computed.
+
+| Type | As an immutable | Kept as |
+| --- | --- | --- |
+| integers, `bool`, `address`, `bytesN`, `wei`, `timestamp`, interfaces, enums | yes | a push of a constant, only as wide as its type |
+| records, tuples | yes | each field as its type keeps it |
+| `option(T)` | yes | one push when `T` is narrower than 32 bytes; otherwise a one-byte tag, then `T` |
+| variants | yes | a one-byte tag, then the payload words its cases share, as in memory |
+| `list(T, n)` | yes | `n` elements, each as `T` keeps it |
+| `string`, `bytes` | yes | its bytes, after the runtime code |
+| `list(T)` | yes, for any value `T` | its elements, after the runtime code |
+| `map(K, V)` | no: a map is a keyed lookup, not a value fixed at deploy. It belongs in storage | |
+
+A string, `bytes`, or dynamic list lives after the runtime code. Each read copies it into memory with `CODECOPY`, a few gas a word, where a stored string costs 2,100 gas a slot:
+
+```lithe
+import "std/evm";
+
+type Payout is
+  | Hold
+  | Send of address
+  | Split of (address, uint16)
+
+immutable is record {
+  name : string;
+  admins : list(address);
+  cap : option(uint);
+  payout : Payout;
+}
+
+deploy(const name : string; const admins : list(address)) is {
+  immutable.name := name;
+  immutable.admins := admins;
+  immutable.cap := if Evm.chainId() = 1 then None else Some(1_000);
+  immutable.payout := Split((Evm.sender(), uint16(250)));
+}
+
+external view function name() : string is
+  immutable.name
+
+external view function admin(const i : uint) : address is
+  immutable.admins[i]
+
+external view function payee() : address is
+  case immutable.payout of {
+    Hold -> Evm.sender()
+    | Send(to) -> to
+    | Split((to, _)) -> to
+  }
+```
 
 ### Where immutables live
 
-- **A plain contract** builds them into its code, as Solidity does. Each read is a push of a constant that the creation code writes in after `deploy` returns, only as wide as its type: 20 bytes for an address, 2 for a `uint16`. Nothing is stored.
-- **An [upgradeable](/language/upgrades) contract** can't: its code is the implementation's, shared by every proxy. Its immutables are kept in the proxy's storage instead, laid out as named storage at the ERC-7201 root of their id. The contract's own block has the id `lithe.immutable`. `deploy` writes them there as it runs in the proxy, and a migration can set a field that a later version adds. They show in `lithe storage` and `lithe upgrade-check` with the rest of the layout.
-- **A [facet](/tooling/size-limit#immutables)** reads its module's immutables from its router, after the calldata.
+- **A plain contract** builds them into its code, as Solidity does. A word is a push of a constant that the creation code writes in after `deploy` returns, only as wide as its type: 20 bytes for an address, 2 for a `uint16`. An option, a variant, a record, and a fixed list are their words, each pushed the same way. A string, `bytes`, or dynamic list is appended after the runtime code: a string or `bytes` value, or a list of static values, as memory holds it, from its length word; any other list as its ABI encoding. Each is found by a hidden four-byte push the creation code writes in too: where its bytes start, and how many there are. Nothing is stored.
+- **The size limit.** What `deploy` appends is part of the runtime code, which [EIP-170](https://eips.ethereum.org/EIPS/eip-170) limits to 24,576 bytes. The compiler can't know its size, so the creation code checks it when `deploy` ends: runtime code over the limit, or over the one `--size-limit` sets, or over 65,535 bytes whatever the limit, reverts the deployment with `RuntimeTooLarge(uint256 size)`, selector `0x95b3e025`, and the size it would have had. The size reports of the compiler, `lithe facets`, and `--size-limit` count the code alone, not what `deploy` appends.
+- **An [upgradeable](/language/upgrades) contract** can't: its code is the implementation's, shared by every proxy. Its immutables are kept in the proxy's storage instead, laid out as named storage of the same types at the ERC-7201 root of their id: a string, `bytes`, or list as Solidity lays it out, an option or variant as [storage](#what-storage-can-hold) does. The contract's own block has the id `lithe.immutable`, or the one it names. `deploy` writes them there as it runs in the proxy, and a migration can set a field that a later version adds. They show in `lithe storage` and `lithe upgrade-check` with the rest of the layout.
+- **A [facet](/tooling/size-limit#immutables)** reads its module's immutables from its router, after the calldata, and a string, `bytes`, or list from where its router keeps it.
 
 ## What storage can hold
 

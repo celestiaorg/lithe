@@ -178,7 +178,7 @@ contract UniswapV2Pair is {
         const rootK : uint := Math.sqrt(uint(reserve0) * uint(reserve1));
         const rootKLast : uint := Math.sqrt(kLast);
         if rootK > rootKLast then {
-          const liquidity : uint := ERC20.erc20.totalSupply * (rootK - rootKLast)
+          const liquidity : uint := ERC20.storage.erc20.totalSupply * (rootK - rootKLast)
             / (rootK * 5 + rootKLast);
           if liquidity > 0 then {
             ERC20.mint(feeTo, liquidity);
@@ -201,7 +201,7 @@ contract UniswapV2Pair is {
     const amount0 : uint := balance0 - uint(reserve0);
     const amount1 : uint := balance1 - uint(reserve1);
     const feeOn : bool := mintFee(query storage.factory.feeTo(), reserve0, reserve1);
-    const totalSupply : uint := ERC20.erc20.totalSupply;
+    const totalSupply : uint := ERC20.storage.erc20.totalSupply;
     var liquidity : uint := 0;
     if totalSupply = 0 then {
       liquidity := Math.sqrt(amount0 * amount1) - minimumLiquidity();
@@ -229,9 +229,9 @@ contract UniswapV2Pair is {
     const token1 : Token := storage.token1;
     const balance0 : uint := query token0.balanceOf(Evm.self());
     const balance1 : uint := query token1.balanceOf(Evm.self());
-    const liquidity : uint := ERC20.erc20.balances[Evm.self()];
+    const liquidity : uint := ERC20.storage.erc20.balances[Evm.self()];
     const feeOn : bool := mintFee(query storage.factory.feeTo(), reserve0, reserve1);
-    const totalSupply : uint := ERC20.erc20.totalSupply;
+    const totalSupply : uint := ERC20.storage.erc20.totalSupply;
     const amount0 : uint := liquidity * balance0 / totalSupply;
     const amount1 : uint := liquidity * balance1 / totalSupply;
     assert(amount0 > 0 and amount1 > 0, InsufficientLiquidityBurned);

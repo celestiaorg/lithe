@@ -63,14 +63,14 @@ module OwnableRoles is {
   view function checkRoles(const r : Roles)
     raises Unauthorized
   is {
-    assert(ownableRoles.ofAccount[Evm.sender()] & r <> 0, Unauthorized);
+    assert(storage.ownableRoles.ofAccount[Evm.sender()] & r <> 0, Unauthorized);
   }
 
   view function checkOwnerOrRoles(const r : Roles)
     raises Unauthorized
   is {
     assert(
-      Ownable.ownable.owner = Evm.sender() or ownableRoles.ofAccount[Evm.sender()] & r <> 0,
+      Ownable.storage.ownable.owner = Evm.sender() or storage.ownableRoles.ofAccount[Evm.sender()] & r <> 0,
       Unauthorized
     );
   }
@@ -79,14 +79,14 @@ module OwnableRoles is {
     raises Unauthorized
   is {
     assert(
-      ownableRoles.ofAccount[Evm.sender()] & r <> 0 or Ownable.ownable.owner = Evm.sender(),
+      storage.ownableRoles.ofAccount[Evm.sender()] & r <> 0 or Ownable.storage.ownable.owner = Evm.sender(),
       Unauthorized
     );
   }
 
   (* Replaces `user`'s roles without checking the caller. *)
   function setRoles(const user : address; const r : Roles) is {
-    ownableRoles.ofAccount[user] := r;
+    storage.ownableRoles.ofAccount[user] := r;
     emit RolesUpdated { user = user; roles = r; };
   }
 
@@ -103,8 +103,8 @@ module OwnableRoles is {
   (* Adds `r` to `user`'s roles, or with `add` false removes them: `(current | r) ^ r`
      clears them. *)
   function update(const user : address; const r : Roles; const add : bool) is {
-    const next : Roles := (ownableRoles.ofAccount[user] | r) ^ (r & Roles(Uint.wrappingSub(0, uint(not add))));
-    ownableRoles.ofAccount[user] := next;
+    const next : Roles := (storage.ownableRoles.ofAccount[user] | r) ^ (r & Roles(Uint.wrappingSub(0, uint(not add))));
+    storage.ownableRoles.ofAccount[user] := next;
     emit RolesUpdated { user = user; roles = next; };
   }
 
@@ -127,13 +127,13 @@ module OwnableRoles is {
   }
 
   external view function rolesOf(const user : address) : Roles is
-    ownableRoles.ofAccount[user]
+    storage.ownableRoles.ofAccount[user]
 
   external view function hasAnyRole(const user : address; const roles : Roles) : bool is
-    ownableRoles.ofAccount[user] & roles <> 0
+    storage.ownableRoles.ofAccount[user] & roles <> 0
 
   external view function hasAllRoles(const user : address; const roles : Roles) : bool is
-    ownableRoles.ofAccount[user] & roles = roles
+    storage.ownableRoles.ofAccount[user] & roles = roles
 }
 
 (* Solady's `OwnableRoles` role functions. A `Roles` mask is a `uint256` in the ABI. *)

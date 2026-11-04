@@ -752,6 +752,7 @@ impl Checker {
             | Builtin::None
             | Builtin::Ctor(_)
             | Builtin::Braced
+            | Builtin::ImmutableRead
             | Builtin::BytesAt
             | Builtin::BytesSlice
             | Builtin::SpecState(_)
@@ -1102,7 +1103,8 @@ impl Checker {
             | Builtin::Some
             | Builtin::None
             | Builtin::Ctor(_)
-            | Builtin::Braced => TY_UNIT,
+            | Builtin::Braced
+            | Builtin::ImmutableRead => TY_UNIT,
             Builtin::SpecCount => TY_UINT,
             Builtin::SpecState(_) | Builtin::SpecSum => TY_UNIT,
             Builtin::SpecForall => TY_BOOL,

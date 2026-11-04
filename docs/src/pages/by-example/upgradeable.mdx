@@ -33,8 +33,8 @@ upgrade guard is {
 }
 
 migrate initSettings(const fee : uint; const treasury : address) is {
-  settings.fee := fee;
-  settings.treasury := treasury;
+  storage.settings.fee := fee;
+  storage.settings.treasury := treasury;
 }
 
 deploy(const owner : address) is {
@@ -42,7 +42,7 @@ deploy(const owner : address) is {
 }
 
 external view function fee() : uint is
-  settings.fee
+  storage.settings.fee
 ```
 
 Deploy the implementation, then a proxy whose constructor calls `deploy`:

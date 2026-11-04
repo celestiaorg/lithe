@@ -18,15 +18,15 @@ module Initializable is {
     raises InvalidInitialization
   is {
     assert(
-      initializable.initialized = uint64(0) and not initializable.initializing,
+      storage.initializable.initialized = uint64(0) and not storage.initializable.initializing,
       InvalidInitialization
     );
-    initializable.initialized := 1;
-    initializable.initializing := true;
+    storage.initializable.initialized := 1;
+    storage.initializable.initializing := true;
   }
 
   function finish() is {
-    initializable.initializing := false;
+    storage.initializable.initializing := false;
     emit Initialized {
       version = 1;
     };

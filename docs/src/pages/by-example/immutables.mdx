@@ -1,0 +1,213 @@
+---
+title: "Immutables"
+description: "Values fixed in `deploy`, from words to strings and lists, built into the code."
+---
+
+# Immutables
+
+An immutable is set while the contract deploys and never written again. Here a vault fixes its owner, its fees, its name, and its admins in `deploy`, from its arguments and the environment.
+
+```lithe [immutables.lithe]
+(* Immutables are fixed while `deploy` runs, then built into the code. A word
+   is a push in the code; a string, bytes, or list follows the code. *)
+
+import "std/abi";
+import "std/address";
+import "std/evm";
+import "std/uint";
+
+interface Oracle is {
+  view function price() : uint;
+}
+
+type Tier is Basic | Pro | Enterprise
+
+type Limits is record {
+  daily : wei;
+  perTx : wei;
+}
+
+type Payout is
+  | Hold
+  | Send of address
+  | Split of (address, uint16)
+
+immutable is record {
+  feeBps : uint16;
+  skew : int8;
+  live : bool;
+  owner : address;
+  oracle : Oracle;
+  tag : bytes4;
+  minimum : wei;
+  opened : timestamp;
+  tier : Tier;
+  limits : Limits;
+  pair : (uint8, address);
+  cap : option(uint);
+  payout : Payout;
+  weights : list(uint8, 3);
+  name : string;
+  salt : bytes;
+  admins : list(address);
+}
+
+storage is record {
+  nameLength : uint;
+}
+
+deploy(const name : string; const admins : list(address); const oracle : Oracle) is {
+  immutable.feeBps := 30;
+  immutable.skew := -2;
+  immutable.live := true;
+  immutable.owner := Evm.sender();
+  immutable.oracle := oracle;
+  immutable.tag := 0xdeadbeef;
+  immutable.minimum := 1gwei;
+  immutable.opened := Evm.blockTimestamp();
+  immutable.tier := Pro;
+  immutable.limits := { daily = 10eth; perTx = 1eth; };
+  immutable.pair := (uint8(7), Evm.sender());
+  immutable.cap := if Evm.chainId() = 1 then None else Some(1_000);
+  immutable.payout := Split((Evm.sender(), uint16(250)));
+  immutable.weights := [uint8(50), 30, 20];
+  immutable.name := name;
+  immutable.salt := Abi.encodePacked(Evm.chainId(), Evm.sender());
+  immutable.admins := admins;
+  (* A read in `deploy` sees the value written last. *)
+  storage.nameLength := immutable.name.length;
+}
+
+external view function name() : string is
+  immutable.name
+
+external view function isAdmin(const who : address) : bool is {
+  var found : bool := false;
+  for admin : address in immutable.admins do {
+    if admin = who then {
+      found := true;
+    }
+  }
+} with found
+
+external view function payee() : address is
+  case immutable.payout of {
+    Hold -> Address.zero
+    | Send(to) -> to
+    | Split((to, _)) -> to
+  }
+
+external view function cap() : uint is
+  case immutable.cap of {
+    Some(n) -> n
+    | None -> Uint.max
+  }
+
+external view function weight(const i : uint) : uint8 is
+  immutable.weights[i]
+
+external view function owner() : address is
+  immutable.owner
+
+external view function oracle() : Oracle is
+  immutable.oracle
+
+external view function tier() : Tier is
+  immutable.tier
+
+external view function pair() : (uint8, address) is
+  immutable.pair
+
+external view function stamp() : (int8, bytes4, timestamp) is
+  (immutable.skew, immutable.tag, immutable.opened)
+
+external view function allows(const amount : wei) : bool is
+  immutable.live and amount >= immutable.minimum and amount <= immutable.limits.perTx
+
+external view function fee(const amount : uint) : uint is
+  amount * uint(immutable.feeBps) / 10_000
+
+external view function salt() : bytes is
+  immutable.salt
+
+external view function nameLength() : uint is
+  storage.nameLength
+```
+
+- Every type but a map can be an immutable. A word is a push in the code, only as wide as its type. An option, a variant, a record, a tuple, and a fixed list are their words, pushed the same way.
+- A `string`, `bytes`, or dynamic list follows the runtime code. A read copies it into memory with `CODECOPY`: a few gas a word.
+- While `deploy` runs, an immutable is an ordinary value in memory. A field never written reads as zero: `0`, an empty string or list, `None`.
+- What `deploy` appends counts against the 24,576-byte limit on runtime code. Past it, the deployment reverts with `RuntimeTooLarge(uint256 size)`.
+
+A module keeps its own immutables, with an id, and the contract reads them through it:
+
+```lithe
+import "std/string";
+
+module Brand is {
+  immutable at "example.brand" is record {
+    label : string;
+  }
+
+  function init(const label : string) is {
+    immutable.label := label;
+  }
+
+  view function shout() : string is
+    String.concat(immutable.label, "!")
+}
+
+use Brand;
+
+storage is record {
+  n : uint;
+}
+
+deploy(const label : string) is {
+  Brand.init(label);
+}
+
+external view function label() : string is
+  Brand.immutable.label
+
+external view function shout() : string is
+  Brand.shout()
+```
+
+An upgradeable contract keeps its immutables in the proxy's storage, as storage of the same types. A later version's migration can set one it adds:
+
+```lithe
+import "std/evm";
+
+upgradeable
+
+error NotOwner;
+
+immutable is record {
+  owner : address;
+  name : string;
+  motto : string;
+}
+
+storage is record {
+  n : uint;
+}
+
+upgrade guard is {
+  assert(Evm.sender() = immutable.owner, NotOwner);
+}
+
+deploy(const name : string) is {
+  immutable.owner := Evm.sender();
+  immutable.name := name;
+}
+
+migrate setMotto(const motto : string) is {
+  immutable.motto := motto;
+}
+
+external view function motto() : string is
+  immutable.motto
+```
+
+See [Immutables](/language/storage#immutables) for what each type costs and where it lives.

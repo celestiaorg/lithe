@@ -866,6 +866,9 @@ pub(crate) enum UnOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Builtin {
+    /// A read of an immutable that is a value in memory while `deploy` runs, and after it is
+    /// built from the code.
+    ImmutableRead,
     Sender,
     Value,
     Calldata,

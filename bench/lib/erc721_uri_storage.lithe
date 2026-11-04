@@ -18,7 +18,7 @@ module ERC721URIStorage is {
   }
 
   function setTokenURI(const tokenId : uint; const uri : string) is {
-    erc721URIStorage.tokenURIs[tokenId] := uri;
+    storage.erc721URIStorage.tokenURIs[tokenId] := uri;
     emit MetadataUpdate {
       tokenId = tokenId;
     };
@@ -28,7 +28,7 @@ module ERC721URIStorage is {
     raises ERC721NonexistentToken
   is {
     const owner : address := ERC721.requireOwned(tokenId);
-    const suffix : string := erc721URIStorage.tokenURIs[tokenId];
+    const suffix : string := storage.erc721URIStorage.tokenURIs[tokenId];
     var uri : string := suffix;
     if base.length > 0 then {
       if suffix.length > 0 then {

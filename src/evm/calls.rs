@@ -591,11 +591,11 @@ module M is {
     xs : map(uint, uint);
   }
   external function f(const ex : Ex; const k : uint) is {
-    const seen : uint := m.n;
-    defer ex.swap(k) then (r : uint) { m.n := r + seen; };
+    const seen : uint := storage.m.n;
+    defer ex.swap(k) then (r : uint) { storage.m.n := r + seen; };
   }
   external function g() is {
-    for i : uint in 0 .. m.n do { m.xs[i] := i; }
+    for i : uint in 0 .. storage.m.n do { storage.m.xs[i] := i; }
   }
 }
 ";
@@ -603,7 +603,7 @@ module M is {
     let sources = Sources::memory([("contract.lithe", main), ("lib.lithe", lib)]);
     let notes = crate::warnings(&sources, Path::new(ENTRY)).expect("warnings");
     for (want, at) in [
-        ("captured value `seen`", "lib.lithe:11:51:"),
+        ("captured value `seen`", "lib.lithe:11:59:"),
         ("the number of iterations", "lib.lithe:14:5:"),
     ] {
         let found: Vec<&String> = notes.iter().filter(|n| n.contains(want)).collect();
@@ -832,13 +832,14 @@ fn transient_storage_lasts_for_the_transaction() {
     let src = "\
 interface Me is { view function pending() : uint; }
 transient storage scratch is record { pending : uint; }
-storage is record { first : uint; seen : uint; }
-external view function pending() : uint is scratch.pending
+storage is record { first : uint; seen : uint; transient : uint; }
+external view function pending() : uint is transient.scratch.pending
 external function probe(const me : Me) is {
   storage.first := 1;
-  scratch.pending := 9;
+  transient.scratch.pending := 9;
   const seen : uint := query me.pending();
   storage.seen := seen;
+  storage.transient := seen;
 }
 ";
     let runtime = deploy(&compile(src).expect("probe")).expect("deploy");
@@ -851,7 +852,7 @@ external function probe(const me : Me) is {
     let layout = crate::storage_layout(&Sources::disk(), &file).expect("layout");
     std::fs::remove_file(&file).ok();
     assert!(
-        layout.contains("transient scratch\n  pending: uint256  transient slot 2"),
+        layout.contains("transient.scratch\n  pending: uint256  transient slot 2"),
         "{layout}"
     );
     let analysis = analysis(src).expect("analysis");
@@ -863,6 +864,10 @@ external function probe(const me : Me) is {
         analysis.contains("{ \"space\": \"storage\", \"path\": \"seen\" }"),
         "{analysis}"
     );
+    assert!(
+        analysis.contains("{ \"space\": \"storage\", \"path\": \"transient\" }"),
+        "{analysis}"
+    );
     assert!(!abi(src).expect("abi").contains("scratch"));
 
     for (body, want) in [
@@ -871,21 +876,22 @@ external function probe(const me : Me) is {
             "transient storage field `s` must hold a fixed-size value, or a map of them",
         ),
         (
-            "transient storage t is record { n : uint; }\nexternal view function f() : uint is { t.n := 1; } with 1\n",
+            "transient storage t is record { n : uint; }\nexternal view function f() : uint is { transient.t.n := 1; } with 1\n",
             "declared effect is weaker than the body's: external view function `f` writes storage",
         ),
         (
-            "transient storage t is record { n : uint; }\npure function f() : uint is t.n\nexternal function g() is { skip }\n",
+            "transient storage t is record { n : uint; }\npure function f() : uint is transient.t.n\nexternal function g() is { skip }\n",
             "declared effect is weaker than the body's: pure function `f` reads contract storage",
-        ),
-        (
-            "transient storage t is record { n : uint; }\nstorage t at \"x\" is record { n : uint; }\nexternal function f() is { skip }\n",
-            "duplicate storage domain `t`",
         ),
     ] {
         let err = compile(body).expect_err(want);
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
+    compile(
+        "transient storage t is record { n : uint; }\nstorage t at \"x\" is record { n : uint; }\n\
+         external function f() is { transient.t.n := 1; storage.t.n := transient.t.n; }\n",
+    )
+    .expect("domains of two kinds");
 }
 
 /// `Ok` and `Error` recover from a failed external call: a deferred call's arm runs as

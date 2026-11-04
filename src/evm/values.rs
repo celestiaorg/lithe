@@ -304,8 +304,8 @@ external function later(const e : Echo; const n : uint) is {
 }
 
 external function flash(const n : uint) : int16 is {
-  t.r := mk(n, int16(-7));
-} with t.r.d + t.r.i.b
+  transient.t.r := mk(n, int16(-7));
+} with transient.t.r.d + transient.t.r.i.b
 
 external view function chain(const n : uint) : uint is
   wrap(n).i.a + total(mk(n, int16(0))) + total({ ok = false; d = int16(0); i = { a = 5; b = int16(0); }; })
@@ -2420,7 +2420,7 @@ module Bag is {
   }
 
   function drop() is {
-    List.pop(bag.items);
+    List.pop(storage.bag.items);
   }
 }
 
@@ -2437,7 +2437,7 @@ contract T is {
     List.push(storage.ids, n);
     List.push(storage.names, String.concat("a string that is well past", " thirty one bytes long"));
     List.push(storage.limits, Some(n));
-    List.push(Bag.bag.items, n);
+    List.push(Bag.storage.bag.items, n);
   }
 
   external function pop() is {
@@ -2458,7 +2458,7 @@ contract T is {
     storage.ids
 
   external view function counts() : (uint, uint, uint, uint) is
-    (storage.ids.length, storage.names.length, storage.limits.length, Bag.bag.items.length)
+    (storage.ids.length, storage.names.length, storage.limits.length, Bag.storage.bag.items.length)
 
   external pure function trim(const xs : list(uint)) : list(uint) is {
     var ys : list(uint) := xs;
@@ -2890,9 +2890,9 @@ pure function bump(const s : Status) : Status is
 external function step(const id : uint) is {
   const s : Status := bump(storage.byId[id]);
   storage.byId[id] := s;
-  scratch.s := s;
+  transient.scratch.s := s;
   storage.maybe := Some(s);
-  storage.n := weight(scratch.s);
+  storage.n := weight(transient.scratch.s);
 }
 
 external function finish(const id : uint; const ok : bool) is {
@@ -2901,8 +2901,8 @@ external function finish(const id : uint; const ok : bool) is {
 
 external function cycle(const i : uint) is {
   storage.lights[i] := next(storage.lights[i]);
-  scratch.l := storage.lights[i];
-  storage.n := uint(uint8(scratch.l));
+  transient.scratch.l := storage.lights[i];
+  storage.n := uint(uint8(transient.scratch.l));
 }
 
 external view function weightOf(const id : uint) : uint is weight(storage.byId[id])
@@ -4241,6 +4241,7 @@ fn module_member(kind: Builtin) -> bool {
         | Builtin::None
         | Builtin::Ctor(_)
         | Builtin::Braced
+        | Builtin::ImmutableRead
         | Builtin::SpecState(_)
         | Builtin::SpecSum
         | Builtin::SpecCount
@@ -4397,7 +4398,7 @@ fn builtins_are_imported_where_they_are_named() {
         "storage is record { a : address; }\nexternal function f() is { storage.a := Evm.sender(); }\n",
         "storage is record { a : address; }\nview function who() : address is Evm.sender()\nexternal function f() is { storage.a := who(); }\n",
         "storage is record { a : address; }\nexternal function f() is { const who : address := Evm.sender(); storage.a := who; }\n",
-        "module Own is {\n  storage own at \"t.own\" is record { a : address; }\n  function take() is { own.a := Evm.sender(); }\n}\ncontract C is {\n  use Own;\n  external function f() is { Own.take(); }\n}\n",
+        "module Own is {\n  storage own at \"t.own\" is record { a : address; }\n  function take() is { storage.own.a := Evm.sender(); }\n}\ncontract C is {\n  use Own;\n  external function f() is { Own.take(); }\n}\n",
         "upgradeable\nerror No;\nupgrade guard is { assert(Evm.sender() = address(0x0000000000000000000000000000000000000001), No); }\nstorage is record { n : uint; }\nexternal function f() is { storage.n := 1; }\n",
     ] {
         let err = compile(src).expect_err(src);
@@ -4445,6 +4446,30 @@ fn builtins_are_imported_where_they_are_named() {
     assert!(!out.reverted, "{}", pretty(&out.returndata));
     assert_eq!(slot(&out.storage, 0), Word::from_u64(7));
     assert_eq!(slot(&out.storage, 1), Word::from_u64(1));
+}
+
+#[test]
+fn imported_named_storage() {
+    // An imported file's named state joins the contract's, through files that import it.
+    let state = "storage shared at \"t.shared\" is record { n : uint; }\n";
+    let mid = "import \"./state\";\nview function seen() : uint is storage.shared.n\n";
+    let main = "import \"./mid\";\nstorage is record { a : uint; }\nexternal function f() is {\n  storage.shared.n := storage.shared.n + 7;\n  storage.a := seen();\n}\n";
+    let code = crate::compile(
+        &Sources::memory([
+            ("state.lithe", state),
+            ("mid.lithe", mid),
+            ("main.lithe", main),
+        ]),
+        Path::new("main.lithe"),
+        &Options::default(),
+    )
+    .and_then(crate::Output::single)
+    .map_err(first)
+    .expect("imported named storage");
+    let runtime = deploy(&code.bytecode).expect("deploy");
+    let out = call(&runtime, "f()", &[]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(slot(&out.storage, 0), Word::from_u64(7));
 }
 
 #[test]
@@ -4722,11 +4747,11 @@ external pure function board() : list(uint, Grid.cells) is Grid.empty()
         "declares `k` more than once",
     );
     let hidden = "names a constant; rename one of them";
-    rejects(
-        "const links : uint := 1;\nstorage links at \"t.links\" is record { total : uint; }",
-        go,
-        hidden,
-    );
+    compile(
+        "const links : uint := 1;\nstorage links at \"t.links\" is record { total : uint; }\n\
+         external function go() is { storage.links.total := links; }\n",
+    )
+    .expect("a domain is no name in scope");
     rejects(
         "const a : uint := 1;",
         "external function go(const a : uint) is { storage.n := a; }",

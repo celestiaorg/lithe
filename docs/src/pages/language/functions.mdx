@@ -355,10 +355,10 @@ storage proxy at "example.proxy" is record {
 }
 
 deploy(const implementation : address) is {
-  proxy.implementation := implementation;
+  storage.proxy.implementation := implementation;
 }
 
-payable fallback delegates to proxy.implementation;
+payable fallback delegates to storage.proxy.implementation;
 ```
 
 To refuse some calls, have a `view` function choose the target and raise, and list its errors on the `fallback`. A map from selectors to targets routes like a diamond:
@@ -393,7 +393,7 @@ is {
 - `payable` decides whether the contract takes ether with the call. `forwards to` sends it on with the `CALL`. With `delegates to`, the target's code sees it as `Evm.value()`.
 - Code run by `delegates to` can write any of this contract's storage, so what it may change is only as safe as what the target is. For a contract's own upgrades, prefer [`upgradeable`](/language/upgrades), whose layout `lithe upgrade-check` compares.
 - A `forwards to` call runs under the contract's reentrancy lock, as a deferred call does. A passing `fallback` cannot itself be `nonreentrant`.
-- `lithe footprint` lists what each passes its call to: `delegates to: proxy.implementation`.
+- `lithe footprint` lists what each passes its call to: `delegates to: storage.proxy.implementation`.
 
 ## `private`
 

@@ -1724,7 +1724,13 @@ impl<'a> Gen<'a> {
         if leaves.is_empty() {
         } else if self.checked.prog.upgradeable {
             for (j, &leaf) in leaves.iter().enumerate() {
-                self.sload_leaf(leaf);
+                // A dynamic value's word is its slot, an ERC-7201 hash far past any header,
+                // and the facet reads the value there itself.
+                if self.checked.dynamic_immutable(leaf).is_some() {
+                    self.push_tail_leaf(leaf);
+                } else {
+                    self.sload_leaf(leaf);
+                }
                 self.push_u64(32 * j as u64);
                 self.op(CALLDATASIZE);
                 self.op(ADD);
@@ -1739,8 +1745,14 @@ impl<'a> Gen<'a> {
             let marker = self.data_marker();
             self.data.push((marker, data, String::new()));
             let from = self.checked.immutable_from as u32;
-            self.tail_blobs
-                .push((marker, leaves.iter().map(|leaf| leaf - from).collect()));
+            let marks = leaves
+                .iter()
+                .map(|&leaf| match self.checked.dynamic_immutable(leaf) {
+                    Some(_) => (leaf - from) | immutable::TAIL_ADDRESS,
+                    None => leaf - from,
+                })
+                .collect();
+            self.tail_blobs.push((marker, marks));
             self.push_u64(bytes);
             self.push_word(marker);
             self.op(CALLDATASIZE);
@@ -1768,7 +1780,7 @@ impl<'a> Gen<'a> {
     /// runtime code with its immutables written in.
     pub(super) fn emit_init(
         &mut self,
-        func: usize,
+        func: Option<usize>,
         runtime: Vec<u8>,
         marks: &[Mark],
     ) -> Result<(), Error> {
@@ -1776,6 +1788,7 @@ impl<'a> Gen<'a> {
         let words = self.checked.transient_from - self.checked.immutable_from;
         if words > 0 {
             self.imm_mem = self.region(Region::Immutables, words as u32 * 32);
+            self.init_immutable_values()?;
         }
         for part in self.shape.prerequisites() {
             self.push_word(part);
@@ -1788,6 +1801,11 @@ impl<'a> Gen<'a> {
         self.data.push((code, runtime, String::new()));
         self.code_end = self.data_marker();
         self.data.push((self.code_end, Vec::new(), String::new()));
+        // Without a `deploy`, the creation code only writes what its immutables' zero values
+        // leave after the code.
+        let Some(func) = func else {
+            return self.return_init(code, len, marks);
+        };
         if !self.checked.prog.funcs[func].payable {
             self.op(CALLVALUE);
             self.revert_if_true()?;
@@ -1820,6 +1838,12 @@ impl<'a> Gen<'a> {
         }
         self.store_image();
         self.finish_body();
+        self.return_init(code, len, marks)
+    }
+
+    /// Returns the runtime, `len` bytes at `code`, with its immutables written in, then the
+    /// code the creation code's own calls and failures jump to.
+    fn return_init(&mut self, code: Word, len: u64, marks: &[Mark]) -> Result<(), Error> {
         if marks.is_empty() {
             self.push_u64(len);
             self.op(DUP1);
@@ -1829,7 +1853,7 @@ impl<'a> Gen<'a> {
             self.op(PUSH0);
             self.op(RETURN);
         } else {
-            self.return_patched(code, len, marks);
+            self.return_patched(code, len, marks)?;
         }
         self.emit_raises()?;
         self.emit_subs()?;

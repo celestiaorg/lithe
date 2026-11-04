@@ -564,7 +564,11 @@ fn one(setup: &Setup, phase: &Phase, p: usize, how: Calldata, subjects: &[Subjec
     let looped = loops::loop_claims(setup, &mut run, &phase.entry);
     let stores = stores(setup, &mut run, phase);
     let returned = if matches!(phase.entry, Entry::Deploy) {
-        deployed_code(&mut run, setup.built)
+        deployed_code(
+            &mut run,
+            setup.built,
+            !setup.checked.immutable_values.is_empty(),
+        )
     } else {
         None
     };
@@ -1552,8 +1556,9 @@ fn start(setup: &Setup, phase: &Phase, how: Calldata) -> Result<Run, String> {
 }
 
 /// Why the creation code's runs prove nothing about the runtime, if they do not: a path
-/// that returns code other than the runtime proved.
-fn deployed_code(run: &mut Run, built: &Built) -> Option<String> {
+/// that returns code other than the runtime proved. With dynamic immutables, what `deploy`
+/// appends follows the runtime, which reads it only as bytes it doesn't know.
+fn deployed_code(run: &mut Run, built: &Built, appends: bool) -> Option<String> {
     let m = &mut run.m;
     let holes: Vec<(usize, usize)> = built
         .immutables
@@ -1567,11 +1572,15 @@ fn deployed_code(run: &mut Run, built: &Built) -> Option<String> {
         let Some(bytes) = &data.bytes else {
             return Some("the creation code returns code of a length the prover cannot fix".into());
         };
-        let differs = bytes.len() != built.runtime.len()
-            || bytes.iter().enumerate().any(|(i, b)| {
-                !holes.iter().any(|(at, len)| (*at..at + len).contains(&i))
-                    && m.a.cval(*b) != Some(Word::from_u64(u64::from(built.runtime[i])))
-            });
+        let differs = bytes.len() < built.runtime.len()
+            || (bytes.len() > built.runtime.len() && !appends)
+            || bytes[..built.runtime.len()]
+                .iter()
+                .enumerate()
+                .any(|(i, b)| {
+                    !holes.iter().any(|(at, len)| (*at..at + len).contains(&i))
+                        && m.a.cval(*b) != Some(Word::from_u64(u64::from(built.runtime[i])))
+                });
         if differs {
             return Some(if built.given {
                 "the creation code this source builds returns other code than the code given".into()

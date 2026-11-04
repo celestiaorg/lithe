@@ -4,11 +4,11 @@ module Ledger is {
   }
 
   external view function balance() : uint is
-    ledger.n
+    storage.ledger.n
 }
 
 contract Token is {
   use Ledger exposing {
-    view function balance() : uint is Ledger.ledger.n
+    view function balance() : uint is Ledger.storage.ledger.n
   }
 }

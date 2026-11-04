@@ -30,7 +30,7 @@ contract CappedToken is {
     raises NotOwner | OverCap | ERC20InvalidReceiver | ERC20InsufficientBalance
   is {
     assert(Evm.sender() = storage.owner, NotOwner);
-    const supply : uint := ERC20.erc20.totalSupply;
+    const supply : uint := ERC20.storage.erc20.totalSupply;
     assert(value <= storage.cap - supply, OverCap(storage.cap - supply));
     ERC20.mint(to, value);
   }

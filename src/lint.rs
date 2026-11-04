@@ -556,7 +556,7 @@ fn unused_modules(src: &str, label: &str, unit: &Program) -> Result<Vec<Finding>
             }
         }
     }
-    // Each `M.x` outside those: a module's storage read, or a call.
+    // Each `M.x` outside those: a module's state read, such as `M.storage`, or a call.
     let words: Vec<&lex::Piece> = pieces
         .iter()
         .filter(|piece| {
@@ -581,12 +581,20 @@ fn unused_modules(src: &str, label: &str, unit: &Program) -> Result<Vec<Finding>
             return false;
         };
         let shown = modules::shown(&m.name);
-        let stateful = m.domains.iter().map(|d| d.name.as_str()).chain(
-            m.funcs
-                .iter()
-                .filter(|f| f.kind != ItemKind::Pure)
-                .map(|f| f.name.split(['@', '#']).next().unwrap_or(&f.name)),
-        );
+        let stateful = m
+            .domains
+            .iter()
+            .map(|d| match (d.transient, d.immutable) {
+                (true, _) => "transient",
+                (_, true) => "immutable",
+                _ => "storage",
+            })
+            .chain(
+                m.funcs
+                    .iter()
+                    .filter(|f| f.kind != ItemKind::Pure)
+                    .map(|f| f.name.split(['@', '#']).next().unwrap_or(&f.name)),
+            );
         m.domains.is_empty() || !stateful.into_iter().any(|x| reached.contains(&(shown, x)))
     };
     let mut out = Vec::new();
@@ -1394,7 +1402,7 @@ mod tests {
         assert!(!rules(&used).contains(&"unused-binding"));
         let entry = format!("{STORE}external function go(const k : uint) is {{ skip; }}\n");
         assert!(!rules(&entry).contains(&"unused-binding"));
-        let named = "import \"std/evm\";\nmodule M is {\n  storage m at \"lint.m\" is record { n : uint; }\n  guard g(const id : uint);\n  hook h(const id : uint);\n  external function set(const id : uint) guarded g(id) is {\n    m.n := id;\n    h(id);\n  }\n}\ncontract C is {\n  use M exposing {\n    function set(id : uint);\n  } with {\n    guard g is check;\n    hook h is skip;\n  }\n  view function check() is { skip; }\n}\n";
+        let named = "import \"std/evm\";\nmodule M is {\n  storage m at \"lint.m\" is record { n : uint; }\n  guard g(const id : uint);\n  hook h(const id : uint);\n  external function set(const id : uint) guarded g(id) is {\n    storage.m.n := id;\n    h(id);\n  }\n}\ncontract C is {\n  use M exposing {\n    function set(id : uint);\n  } with {\n    guard g is check;\n    hook h is skip;\n  }\n  view function check() is { skip; }\n}\n";
         assert!(!rules(named).contains(&"unused-binding"));
         let iterated = format!("{STORE}function sum(const xs : list(uint, 4)) is {{\n  for (i, x) : (uint, uint) in xs do {{\n    storage.n += i + x;\n  }}\n}}\nfunction each(const xs : list(uint, 4)) is {{\n  for x : uint in xs do {{\n    storage.n += x;\n  }}\n}}\nexternal function go(const xs : list(uint, 4)) is {{\n  sum(xs);\n  each(xs);\n}}\n");
         assert!(!rules(&iterated).contains(&"unused-binding"));
@@ -1472,7 +1480,7 @@ module A is {
 }
 module B is {
   storage b at \"t.b\" is record { n : uint; }
-  function bump() is { b.n += 1; }
+  function bump() is { storage.b.n += 1; }
 }
 module C is {
   function c() is { skip }
@@ -1486,7 +1494,7 @@ module E is {
 }
 ";
         let fixed = |uses: &str| {
-            let src = format!("{modules}contract K is {{\n{uses}\n  external function go() : uint is {{\n    B.bump();\n    C.c();\n  }} with D.d.n + E.one()\n}}\n");
+            let src = format!("{modules}contract K is {{\n{uses}\n  external function go() : uint is {{\n    B.bump();\n    C.c();\n  }} with D.storage.d.n + E.one()\n}}\n");
             let found = findings_in(&src).expect("lint");
             let unused: Vec<(u32, u32, String)> = found
                 .iter()
@@ -1603,7 +1611,7 @@ external function go() is {
 
     #[test]
     fn library_files_keep_ignores_of_rules_their_contracts_check() {
-        let module = "module M is {\n  storage m at \"t.m\" is record {\n    xs : list(uint);\n    n : uint;\n  }\n\n  function sum() is {\n    (* lithe-ignore unbounded-loop: short *)\n    for x : uint in m.xs do {\n      m.n += x;\n    }\n  }\n}\n";
+        let module = "module M is {\n  storage m at \"t.m\" is record {\n    xs : list(uint);\n    n : uint;\n  }\n\n  function sum() is {\n    (* lithe-ignore unbounded-loop: short *)\n    for x : uint in storage.m.xs do {\n      storage.m.n += x;\n    }\n  }\n}\n";
         let lint = |src: &str| {
             let path = Path::new("m.lithe");
             let units =

@@ -164,7 +164,7 @@ lithe analysis bank.lithe
 ]
 ```
 
-`space` is `storage` or `transient`. `path` names the domain for named storage (`config.fee`, `Ownable.ownable.owner`), and goes down through map entries to record fields (`orders.status`).
+`space` is `storage`, `transient`, or `immutable`. `path` is the state path past its space, so `storage.config.fee` is `config.fee`, while a module's state keeps its module and space (`Ownable.storage.ownable.owner`), and it goes down through map entries to record fields (`orders.status`).
 
 ## `errors`
 

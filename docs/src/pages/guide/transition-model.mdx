@@ -118,6 +118,6 @@ These are compile errors, not lint warnings:
 - read storage or the `Evm` context from a `pure` function
 - `defer` or `query` inside a migration
 - raise an error the signature does not declare
-- read a storage field without qualifying it (`storage.x`, `domain.x`, or `Module.domain.x`)
+- read a storage field without qualifying it (`storage.x`, `storage.domain.x`, or `Module.storage.domain.x`)
 - call an `external` function from inside the contract
 - revert with a string

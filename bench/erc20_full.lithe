@@ -28,7 +28,7 @@ contract BenchGovernanceToken is {
       raises ERC20ExceededCap | ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
     is {
       if from = Address.zero then {
-        ERC20Capped.checkCap(ERC20.erc20.totalSupply);
+        ERC20Capped.checkCap(ERC20.storage.erc20.totalSupply);
       }
       ERC20Votes.update(from, to, value);
     }

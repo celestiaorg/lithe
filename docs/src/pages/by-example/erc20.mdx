@@ -123,4 +123,4 @@ is {
 
 - `transferFrom` treats an allowance of `Uint.max` as infinite, like OpenZeppelin.
 - `move` is internal and shared by `transfer` and `transferFrom`, and its errors flow into both.
-- For a modular version, move the balances into a `module ERC20` with named storage. The [Modules](/by-example/modules) example shows the pattern.
+- For a modular version, move the balances into a `module ERC20` with storage of its own. The [Modules](/by-example/modules) example shows the pattern.

@@ -1,4 +1,5 @@
 use super::*;
+use crate::resolve::STATE_KINDS;
 
 impl Checker {
     pub(super) fn generic_call(&self, base: &Option<Box<Expr>>, name: &str) -> Option<GenericCall> {
@@ -320,7 +321,7 @@ impl Checker {
             }
             if param.storage {
                 let mut keys = Vec::new();
-                let Some(path) = storage_path(arg, &param.name, &mut keys) else {
+                let Some(mut path) = storage_path(arg, &param.name, &mut keys) else {
                     return Err(error(
                         arg.line(),
                         arg.col(),
@@ -341,6 +342,22 @@ impl Checker {
                     slots.push((param.name.clone(), transient));
                     keep.push(param.clone());
                     continue;
+                }
+                // A place of the caller's that the callee's module names too, as a contract's
+                // `storage` is when the module has a default record, is reached in the copy
+                // through a name only the caller's scope has.
+                if let (Some(Seg::Field(first)), Some(module), Some(sym)) =
+                    (path.first(), &template.module, root)
+                {
+                    if self
+                        .domain_binds
+                        .iter()
+                        .any(|d| d.owner.as_ref() == Some(module) && &d.short == first)
+                    {
+                        let alias = format!("{first}#{sym}");
+                        self.scopes[self.scope].vars.insert(alias.clone(), sym);
+                        path[0] = Seg::Field(alias);
+                    }
                 }
                 hidden.extend(keys);
                 // The same place, however its name was written, shares one copy.
@@ -1092,9 +1109,14 @@ fn rewrite_expr(expr: &mut Expr, name: &str, path: &[Seg]) {
 /// `keys` collects each key's hidden parameter and the caller's key, in order.
 fn storage_path(expr: &Expr, param: &str, keys: &mut Vec<(String, Expr)>) -> Option<Vec<Seg>> {
     match expr {
-        Expr::Ident { name, .. } => {
-            Some(name.split('.').map(|s| Seg::Field(s.to_string())).collect())
-        }
+        // `M.storage.d`: the module, then its domain, whose name holds a dot of its own.
+        Expr::Ident { name, .. } => Some(match name.split_once('.') {
+            Some((module, domain)) if !STATE_KINDS.contains(&module) => vec![
+                Seg::Field(module.to_string()),
+                Seg::Field(domain.to_string()),
+            ],
+            _ => vec![Seg::Field(name.clone())],
+        }),
         Expr::Field { base, name, .. } => {
             let mut path = storage_path(base, param, keys)?;
             path.push(Seg::Field(name.clone()));

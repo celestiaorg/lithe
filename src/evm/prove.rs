@@ -142,17 +142,17 @@ module Ledger is {
   }
 
   external function mint(const value : uint) is {
-    ledger.balances[Evm.sender()] := ledger.balances[Evm.sender()] + value;
-    ledger.supply := ledger.supply + value;
+    storage.ledger.balances[Evm.sender()] := storage.ledger.balances[Evm.sender()] + value;
+    storage.ledger.supply := storage.ledger.supply + value;
   }
 
   external function burn(const value : uint) is {
-    ledger.balances[Evm.sender()] := ledger.balances[Evm.sender()] - value;
-    ledger.supply := ledger.supply - value;
+    storage.ledger.balances[Evm.sender()] := storage.ledger.balances[Evm.sender()] - value;
+    storage.ledger.supply := storage.ledger.supply - value;
   }
 
   spec is {
-    invariant supply is ledger.supply = sum(ledger.balances);
+    invariant supply is storage.ledger.supply = sum(storage.ledger.balances);
   }
 }
 
@@ -274,7 +274,10 @@ spec is {
         proof.text
     );
     // A module external that mints without the supply.
-    let broken = src.replace("    ledger.supply := ledger.supply + value;\n", "");
+    let broken = src.replace(
+        "    storage.ledger.supply := storage.ledger.supply + value;\n",
+        "",
+    );
     let proof = prove(&broken, specs);
     assert!(
         outcome(&proof, "Ledger.supply", "mint").contains("FAILED"),
@@ -629,7 +632,7 @@ contract Nft is {
     // A contract that writes the module's storage answers for the module's invariants.
     let minter = token.replace(
         "  }\n}\n",
-        "  }\n\n  external function gift(const to : address) is {\n    ERC20.erc20.balances[to] := ERC20.erc20.balances[to] + 1;\n  }\n}\n",
+        "  }\n\n  external function gift(const to : address) is {\n    ERC20.storage.erc20.balances[to] := ERC20.storage.erc20.balances[to] + 1;\n  }\n}\n",
     );
     let proof = prove(&minter, "");
     assert!(
@@ -714,7 +717,7 @@ module Counter is {
   }
 
   function step() is {
-    counter.n := counter.n + 1;
+    storage.counter.n := storage.counter.n + 1;
   }
 
   external function bump() is {
@@ -725,7 +728,7 @@ module Counter is {
     let spec = r#"
 spec for module Counter is {
   spec for bump is partial {
-    ensures new.counter.n = old.counter.n + 1;
+    ensures new.storage.counter.n = old.storage.counter.n + 1;
   }
 }
 "#;
@@ -1105,7 +1108,10 @@ import "std/token/erc20";
 import "std/interfaces/erc20";
 
 contract Token is {
-  use ERC20 exposing IERC20 with { hook beforeTransfer is skip; hook afterTransfer is skip; }
+  use ERC20 exposing IERC20, IERC20Metadata with {
+    hook beforeTransfer is skip;
+    hook afterTransfer is skip;
+  }
 
   deploy() raises ERC20InvalidReceiver | ERC20InsufficientBalance is {
     ERC20.init("Token", "TKN");
@@ -1132,6 +1138,12 @@ contract Token is {
             "transfer"
         )
         .starts_with("proved"),
+        "{}",
+        proof.text
+    );
+    // `name` copies bytes `deploy` appended to the code, and proves all the same.
+    assert!(
+        outcome(&proof, "ERC20.supply", "name").starts_with("proved"),
         "{}",
         proof.text
     );
@@ -1549,7 +1561,7 @@ fn only_clearing_the_migration_flag_follows_an_upgrade() {
 #[test]
 fn a_changed_facet_or_router_does_not_prove() {
     let (src, specs) = example("split_counter");
-    let claim = "ensures new.counter.count = old.counter.count + by";
+    let claim = "ensures new.storage.counter.count = old.storage.counter.count + by";
     let proof = prove_changed(&src, &specs, |built| {
         let slots: Vec<Word> = built.layout.leaves.iter().map(|(slot, ..)| *slot).collect();
         let facet = &mut built.facets[0];
@@ -1927,6 +1939,44 @@ external function note(const k : uint; const xs : list(list(uint16))) raises Emp
     }
 }
 
+/// A module's default record proves as its named storage does, from the source and from
+/// the bytecode.
+#[test]
+fn module_default_records_prove() {
+    let src = r#"
+module Counter is {
+  storage at "t.counter.default" is record {
+    n : uint;
+  }
+
+  transient storage is record {
+    seen : uint;
+  }
+
+  external function bump() is {
+    transient.seen := storage.n;
+    storage.n := storage.n + 1;
+  }
+
+  spec for bump is partial {
+    ensures new.storage.n = old.storage.n + 1;
+  }
+}
+
+use Counter exposing { function bump(); }
+
+storage is record { calls : uint; }
+"#;
+    let spec =
+        "spec for bump is partial { ensures new.Counter.storage.n > old.Counter.storage.n; }";
+    let proof = prove(src, spec);
+    assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
+    let proof = prove_code(src, spec, None);
+    assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
+    let proof = prove(src, &spec.replace('>', "<"));
+    assert_eq!(proof.failed, 1, "{}", proof.text);
+}
+
 /// A stored list proves as it runs: an index past its end panics, read or written, and so
 /// does a pop of an empty one; a push lands at the length, which grows by one, and a pop
 /// shrinks it. A push the source does not follow, to a list past a key, leaves the list
@@ -1960,9 +2010,7 @@ spec for set is {
 spec for get is { panics when i >= old.storage.xs.length; }
 spec for bagAt is { panics when i >= old.storage.bags[k].xs.length; }
 spec for pushBag is partial { ensures new.storage.bags[k].xs.length = old.storage.bags[k].xs.length; }";
-    let Some(proof) = prove(src, spec) else {
-        return;
-    };
+    let proof = prove(src, spec);
     for f in ["push", "pop", "set", "get", "bagAt"] {
         let section = format!("spec for {f}");
         let report: Vec<&str> = proof

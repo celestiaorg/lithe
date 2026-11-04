@@ -249,7 +249,7 @@ pub struct Contract {
 /// A word of storage a field holds, or part of one when fields share a slot. A field
 /// held in several words has one of these for each, in order.
 pub struct StorageWord {
-    /// The field as code names it: `storage.count`, `ERC20.erc20.balances`.
+    /// The field as code names it: `storage.count`, `ERC20.storage.erc20.balances`.
     pub field: String,
     pub ty: String,
     pub slot: [u8; 32],
@@ -836,9 +836,17 @@ pub fn facets(sources: &Sources, entry: &Path, opts: &Options) -> Result<String,
         built.entries.clone()
     };
     let limit = split::thousands(opts.size_limit);
+    // What `deploy` appends after the code counts against EIP-170 only when it deploys.
+    let appended = (checked.immutable_from..checked.transient_from)
+        .any(|leaf| checked.dynamic_immutable(leaf as u32).is_some());
     let mut out = format!(
-        "router  {} / {limit}\n",
-        split::thousands(built.runtime.len())
+        "router  {} / {limit}{}\n",
+        split::thousands(built.runtime.len()),
+        if appended {
+            "  static; deploy appends its dynamic immutables"
+        } else {
+            ""
+        }
     );
     out.push_str(&group_lines(&router, &name));
     for facet in &built.facets {
@@ -1797,11 +1805,8 @@ pub(crate) fn format_layout(layout: &[check::DomainLayout]) -> String {
 pub(crate) fn format_transient(layout: &[check::DomainLayout]) -> String {
     let mut out = String::new();
     for domain in layout {
-        if domain.name == "transient" {
-            out.push_str("transient\n");
-        } else {
-            out.push_str(&format!("transient {}\n", domain.name));
-        }
+        out.push_str(&domain.name);
+        out.push('\n');
         let width = domain
             .fields
             .iter()

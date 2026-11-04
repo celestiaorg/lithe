@@ -18,16 +18,16 @@ module Ownable is {
   error NotOwner;
 
   external view function owner() : address is
-    ownable.owner
+    storage.ownable.owner
 
   view function onlyOwner()
     raises NotOwner
   is {
-    assert(Evm.sender() = ownable.owner, NotOwner);
+    assert(Evm.sender() = storage.ownable.owner, NotOwner);
   }
 
   external function claim() is {
-    ownable.owner := Evm.sender();
+    storage.ownable.owner := Evm.sender();
   }
 }
 ```
@@ -41,16 +41,16 @@ module Pausable is {
   error Paused;
 
   external view function paused() : bool is
-    pausable.paused
+    storage.pausable.paused
 
   view function whenNotPaused()
     raises Paused
   is {
-    assert(not pausable.paused, Paused);
+    assert(not storage.pausable.paused, Paused);
   }
 
   function setPaused(const paused : bool) is {
-    pausable.paused := paused;
+    storage.pausable.paused := paused;
   }
 }
 ```
@@ -103,7 +103,7 @@ contract Vault is {
   }
 
   (* Or wrap a module's functions. Outside its module, module storage is
-     `Module.domain.field`. *)
+     `Module.storage.domain.field`. *)
   external function deposit(const amount : uint)
     raises Paused
   is {
@@ -112,7 +112,7 @@ contract Vault is {
   }
 
   external view function isPaused() : bool is
-    Pausable.pausable.paused
+    Pausable.storage.pausable.paused
 }
 ```
 
@@ -120,4 +120,4 @@ contract Vault is {
 - A declaration in `use M exposing` must match the module's external exactly: its effect, parameters, result, and errors. It has no body.
 - A module's externals it doesn't declare are not part of the contract.
 - Each module's storage sits at its own ERC-7201 root, so modules never collide.
-- Outside its module, storage is written as `Pausable.pausable.paused`.
+- Outside its module, storage is written as `Pausable.storage.pausable.paused`.

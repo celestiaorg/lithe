@@ -60,7 +60,7 @@ module ERC1155 is {
 
   (* Logs nothing, as OpenZeppelin's `_setURI` does: the one URI stands for every id. *)
   function setURI(const uri : string) is {
-    erc1155.uri := uri;
+    storage.erc1155.uri := uri;
   }
 
   (* ERC-1155, its metadata URI extension, and ERC-165 itself. *)
@@ -74,7 +74,7 @@ module ERC1155 is {
     raises ERC1155MissingApprovalForAll
   is {
     assert(
-      owner = operator or erc1155.operatorApprovals[owner][operator],
+      owner = operator or storage.erc1155.operatorApprovals[owner][operator],
       ERC1155MissingApprovalForAll { operator = operator; owner = owner; }
     );
   }
@@ -92,15 +92,15 @@ module ERC1155 is {
     for (i, id) : (uint, uint) in ids do {
       const value : uint := values[i];
       if from <> Address.zero then {
-        const balance : uint := erc1155.balances[id][from];
+        const balance : uint := storage.erc1155.balances[id][from];
         assert(
           balance >= value,
           ERC1155InsufficientBalance { sender = from; balance = balance; needed = value; tokenId = id; }
         );
-        erc1155.balances[id][from] := balance - value;
+        storage.erc1155.balances[id][from] := balance - value;
       }
       if to <> Address.zero then {
-        erc1155.balances[id][to] += value;
+        storage.erc1155.balances[id][to] += value;
       }
     }
     if ids.length = 1 then {
@@ -182,7 +182,7 @@ module ERC1155 is {
   is {
     assert(owner <> Address.zero, ERC1155InvalidApprover(Address.zero));
     assert(operator <> Address.zero, ERC1155InvalidOperator(Address.zero));
-    erc1155.operatorApprovals[owner][operator] := approved;
+    storage.erc1155.operatorApprovals[owner][operator] := approved;
     emit ApprovalForAll {
       account = owner;
       operator = operator;
@@ -232,10 +232,10 @@ module ERC1155 is {
   }
 
   external view function uri(const id : uint) : string is
-    erc1155.uri
+    storage.erc1155.uri
 
   external view function balanceOf(const account : address; const id : uint) : uint is
-    erc1155.balances[id][account]
+    storage.erc1155.balances[id][account]
 
   external view function balanceOfBatch(const accounts : list(address); const ids : list(uint)) : list(uint)
     raises ERC1155InvalidArrayLength
@@ -246,12 +246,12 @@ module ERC1155 is {
     );
     var balances : list(uint) := [];
     for (i, account) : (uint, address) in accounts do {
-      List.push(balances, erc1155.balances[ids[i]][account]);
+      List.push(balances, storage.erc1155.balances[ids[i]][account]);
     }
   } with balances
 
   external view function isApprovedForAll(const account : address; const operator : address) : bool is
-    erc1155.operatorApprovals[account][operator]
+    storage.erc1155.operatorApprovals[account][operator]
 
   external function setApprovalForAll(const operator : address; const approved : bool)
     raises ERC1155InvalidApprover | ERC1155InvalidOperator

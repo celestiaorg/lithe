@@ -452,8 +452,8 @@ fn split_router_keeps_receive_and_fallback() {
     let src = "\
 import \"std/evm\"; module Counter is {
   storage counter at \"fallback.counter\" is record { count : uint; }
-  external function bump(const by : uint) is { counter.count := counter.count + by; }
-  external view function count() : uint is counter.count
+  external function bump(const by : uint) is { storage.counter.count := storage.counter.count + by; }
+  external view function count() : uint is storage.counter.count
 }
 use Counter exposing {
   function bump(by : uint);

@@ -31,25 +31,25 @@ module Ledger is {
     amount * 30 / 10_000
 
   view function balance(const who : address) : uint is
-    ledger.balances[who]
+    storage.ledger.balances[who]
 
   function mint(const to : address; const amount : uint) is {
-    ledger.balances[to] += amount;
-    ledger.total += amount;
+    storage.ledger.balances[to] += amount;
+    storage.ledger.total += amount;
     emit Minted { to = to; amount = amount; };
   }
 
   function burn(const from : address; const amount : uint)
     raises Short
   is {
-    const have : uint := ledger.balances[from];
+    const have : uint := storage.ledger.balances[from];
     assert(have >= amount, Short(have));
-    ledger.balances[from] := have - amount;
-    ledger.total -= amount;
+    storage.ledger.balances[from] := have - amount;
+    storage.ledger.total -= amount;
   }
 
   external view function total() : uint is
-    ledger.total
+    storage.ledger.total
 }
 ```
 
@@ -150,7 +150,7 @@ module Book is {
   }
 
   function note(const k : uint; const v : uint) is {
-    book.pages[k] := v;
+    storage.book.pages[k] := v;
   }
 }
 
@@ -210,11 +210,11 @@ module RoleStore is {
   error Unauthorized;
 
   view function onlyMinter() raises Unauthorized is {
-    assert(roles.minters[Evm.sender()], Unauthorized);
+    assert(storage.roles.minters[Evm.sender()], Unauthorized);
   }
 
   function grant(const account : address) is {
-    roles.minters[account] := true;
+    storage.roles.minters[account] := true;
   }
 }
 ```
@@ -234,8 +234,8 @@ module Drop is {
 
   external function mint(const to : address; const id : uint) raises Unauthorized | AlreadyMinted is {
     RoleStore.onlyMinter();
-    assert(drop.owners[id] = Address.zero, AlreadyMinted(id));
-    drop.owners[id] := to;
+    assert(storage.drop.owners[id] = Address.zero, AlreadyMinted(id));
+    storage.drop.owners[id] := to;
   }
 }
 ```
@@ -293,6 +293,10 @@ Before any of that, the compiler fits a contract by outlining: code the contract
 
 A facet's code is shared, so it can't have one contract's [immutables](/language/storage#immutables) built in. It reads them from its router instead. For each call it forwards, and each call across, the router appends the values of every immutable block the facet has, its module's and those of the modules it requires, after the calldata, blocks in order of their ids. A plain router keeps them in its own code, where its creation code writes them. An upgradeable router loads them from the proxy's storage. A forwarded call whose code reads no immutable gets words of the same length without the values, so it pays for neither. The facet reads each from the end of its calldata, and everything in it that reads the calldata or its size, such as the ABI decoder or `Evm.calldata()`, sees the calldata without them. What a facet reads is fixed by its module alone, so its address still depends only on its code.
 
+A string, `bytes`, or dynamic list is too long for a word, so the router passes a word that says where it is instead. A plain router's word locates its bytes after the router's own code, where its creation code appended them, and the facet copies them with `EXTCODECOPY` from its own `ADDRESS`, which in a `delegatecall` is the router's: one warm account access and three gas a word, paid only by a call that reads the value. An upgradeable router's word is the value's slot in the proxy's storage, and the facet reads it there, as storage holds it. A facet holds both ways, since the same facet serves either router; a call that skips the router and reaches the facet directly reads its own code at those places, which is harmless, as it runs on its own storage.
+
+The sizes the compiler and `lithe facets` report, and that `--size-limit` checks, are each code's static size. What `deploy` appends after a contract's code is checked when it deploys, as [Where immutables live](/language/storage#where-immutables-live) describes.
+
 ## Hooks
 
 A delegated module's [hooks](/language/modules#hooks) are the contract's code, and the facet is built from the module alone, so the facet calls each hook back into the contract:
@@ -321,8 +325,8 @@ module Tally is {
   hook counted(const count : uint);
 
   external function add() is {
-    tally.count += 1;
-    counted(tally.count);
+    storage.tally.count += 1;
+    counted(storage.tally.count);
   }
 }
 

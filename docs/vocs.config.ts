@@ -130,6 +130,7 @@ const byExample = [
       { text: "Generic modules", link: "/by-example/generics" },
       { text: "Named storage", link: "/by-example/named-storage" },
       { text: "Transient storage", link: "/by-example/transient-storage" },
+      { text: "Immutables", link: "/by-example/immutables" },
       { text: "Dispatch", link: "/by-example/dispatch" },
       { text: "Upgradeable contract", link: "/by-example/upgradeable" },
     ],

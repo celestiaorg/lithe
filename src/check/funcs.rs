@@ -881,7 +881,14 @@ impl Checker {
 
     fn bind_storage(&mut self, line: u32, col: u32) -> Result<(), Error> {
         self.domain_syms.clear();
-        if (self.module_name.is_none() || !self.spec_places.is_empty())
+        // A module with a default record of its own reaches the contract's only through the
+        // name a storage argument gives it.
+        let own_storage = self.module_name.as_ref().is_some_and(|module| {
+            self.domain_binds
+                .iter()
+                .any(|bind| bind.owner.as_ref() == Some(module) && bind.short == "storage")
+        });
+        if (self.module_name.is_none() || (!self.spec_places.is_empty() && !own_storage))
             && self.lookup("storage").is_none()
         {
             let sym = self.add_sym(Sym {
@@ -914,7 +921,9 @@ impl Checker {
                 short: bind.short.clone(),
                 sym,
             });
-            if visible {
+            if visible && bind.short == "storage" {
+                self.scopes[self.scope].vars.insert(bind.short.clone(), sym);
+            } else if visible {
                 self.define(line, col, &bind.short, sym)?;
             }
         }

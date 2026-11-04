@@ -12,15 +12,15 @@ storage proxy at "example.proxy" is record {
 }
 
 deploy(const implementation : address; const admin : address) is {
-  proxy.implementation := implementation;
-  proxy.admin := admin;
+  storage.proxy.implementation := implementation;
+  storage.proxy.admin := admin;
 }
 
 external function upgradeProxy(const implementation : address)
   raises NotAdmin
 is {
-  assert(Evm.sender() = proxy.admin, NotAdmin);
-  proxy.implementation := implementation;
+  assert(Evm.sender() = storage.proxy.admin, NotAdmin);
+  storage.proxy.implementation := implementation;
 }
 
-payable fallback delegates to proxy.implementation;
+payable fallback delegates to storage.proxy.implementation;

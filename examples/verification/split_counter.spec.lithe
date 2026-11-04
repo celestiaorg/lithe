@@ -5,8 +5,8 @@ spec is {
 
 spec for module Counter is {
   spec for bump is partial {
-    ensures new.counter.count = old.counter.count + by;
-    ensures new.counter.bumps = old.counter.bumps + 1;
+    ensures new.storage.counter.count = old.storage.counter.count + by;
+    ensures new.storage.counter.bumps = old.storage.counter.bumps + 1;
   }
 }
 

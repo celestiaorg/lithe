@@ -52,7 +52,7 @@ module ERC20Permit is {
   }
 
   external view function nonces(const owner : address) : uint is
-    Nonces.nonceState.counts[owner]
+    Nonces.storage.nonceState.counts[owner]
 
   external view function DOMAIN_SEPARATOR() : bytes32 is
     EIP712.domainSeparator()

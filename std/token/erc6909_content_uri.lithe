@@ -23,12 +23,12 @@ module ERC6909ContentURI is {
   }
 
   function setContractURI(const uri : string) is {
-    erc6909ContentURI.contractURI := uri;
+    storage.erc6909ContentURI.contractURI := uri;
     emit ContractURIUpdated {};
   }
 
   function setTokenURI(const id : uint; const uri : string) is {
-    erc6909ContentURI.tokenUris[id] := uri;
+    storage.erc6909ContentURI.tokenUris[id] := uri;
     emit URI {
       value = uri;
       id = id;
@@ -36,8 +36,8 @@ module ERC6909ContentURI is {
   }
 
   external view function contractURI() : string is
-    erc6909ContentURI.contractURI
+    storage.erc6909ContentURI.contractURI
 
   external view function tokenURI(const id : uint) : string is
-    erc6909ContentURI.tokenUris[id]
+    storage.erc6909ContentURI.tokenUris[id]
 }

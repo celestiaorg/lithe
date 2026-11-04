@@ -17,12 +17,12 @@ module Nonces is {
   }
 
   external view function nonces(const owner : address) : uint is
-    nonceState.counts[owner]
+    storage.nonceState.counts[owner]
 
   (* Returns the current nonce and moves the counter on. *)
   function useNonce(const owner : address) : uint is {
-    const current : uint := nonceState.counts[owner];
-    nonceState.counts[owner] := current + 1;
+    const current : uint := storage.nonceState.counts[owner];
+    storage.nonceState.counts[owner] := current + 1;
   } with current
 
   (* Like `useNonce`, when the caller names the nonce it expects. *)

@@ -134,6 +134,7 @@ impl<'a> Gen<'a> {
                 Sub::ListHead => self.sub_list_head()?,
                 Sub::RevertAbi => self.sub_revert_abi(),
                 Sub::ShortBlob => self.sub_short_blob()?,
+                Sub::ImmutableBytes(ext) => self.sub_immutable_bytes(ext)?,
                 Sub::BlobsAbi => self.sub_blobs_abi()?,
                 Sub::BlobsEq => self.sub_blobs_eq()?,
                 Sub::BytesEq => self.sub_bytes_eq(),

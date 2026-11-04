@@ -38,11 +38,11 @@ module ERC2981 is {
   }
 
   external view function royaltyInfo(const tokenId : uint; const salePrice : uint) : flat RoyaltyQuote is {
-    var receiver : address := erc2981.tokenRoyaltyInfo[tokenId].receiver;
-    var fraction : uint96 := erc2981.tokenRoyaltyInfo[tokenId].royaltyFraction;
+    var receiver : address := storage.erc2981.tokenRoyaltyInfo[tokenId].receiver;
+    var fraction : uint96 := storage.erc2981.tokenRoyaltyInfo[tokenId].royaltyFraction;
     if receiver = Address.zero then {
-      receiver := erc2981.defaultRoyaltyInfo.receiver;
-      fraction := erc2981.defaultRoyaltyInfo.royaltyFraction;
+      receiver := storage.erc2981.defaultRoyaltyInfo.receiver;
+      fraction := storage.erc2981.defaultRoyaltyInfo.royaltyFraction;
     }
   } with { receiver = receiver; royaltyAmount = salePrice * uint(fraction) / 10000; }
 
@@ -54,11 +54,11 @@ module ERC2981 is {
       ERC2981InvalidDefaultRoyalty { numerator = uint(feeNumerator); denominator = 10000; }
     );
     assert(receiver <> Address.zero, ERC2981InvalidDefaultRoyaltyReceiver(Address.zero));
-    erc2981.defaultRoyaltyInfo := { receiver = receiver; royaltyFraction = feeNumerator; };
+    storage.erc2981.defaultRoyaltyInfo := { receiver = receiver; royaltyFraction = feeNumerator; };
   }
 
   function deleteDefaultRoyalty() is {
-    erc2981.defaultRoyaltyInfo := { receiver = Address.zero; royaltyFraction = 0; };
+    storage.erc2981.defaultRoyaltyInfo := { receiver = Address.zero; royaltyFraction = 0; };
   }
 
   function setTokenRoyalty(const tokenId : uint; const receiver : address; const feeNumerator : uint96)
@@ -72,11 +72,11 @@ module ERC2981 is {
       receiver <> Address.zero,
       ERC2981InvalidTokenRoyaltyReceiver { tokenId = tokenId; receiver = Address.zero; }
     );
-    erc2981.tokenRoyaltyInfo[tokenId] := { receiver = receiver; royaltyFraction = feeNumerator; };
+    storage.erc2981.tokenRoyaltyInfo[tokenId] := { receiver = receiver; royaltyFraction = feeNumerator; };
   }
 
   function resetTokenRoyalty(const tokenId : uint) is {
-    erc2981.tokenRoyaltyInfo[tokenId] := { receiver = Address.zero; royaltyFraction = 0; };
+    storage.erc2981.tokenRoyaltyInfo[tokenId] := { receiver = Address.zero; royaltyFraction = 0; };
   }
 }
 

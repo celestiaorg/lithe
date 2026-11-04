@@ -153,12 +153,12 @@ upgrade guard is {
 }
 
 migrate initSettings(const feeBps : uint; const treasury : address) is {
-  settings.feeBps := feeBps;
-  settings.treasury := treasury;
+  storage.settings.feeBps := feeBps;
+  storage.settings.treasury := treasury;
 }
 
 external view function feeBps() : uint is
-  settings.feeBps
+  storage.settings.feeBps
 ```
 
 - A migration can be called only from `upgradeToAndCall`. Called directly, even later in the upgrade's own transaction, it reverts: the upgrade sets a transient flag that the migration checks, and clears it once the migration returns.

@@ -36,7 +36,7 @@ module ERC6909Metadata is {
   }
 
   function setName(const id : uint; const newName : string) is {
-    erc6909Metadata.tokens[id].name := newName;
+    storage.erc6909Metadata.tokens[id].name := newName;
     emit ERC6909NameUpdated {
       id = id;
       newName = newName;
@@ -44,7 +44,7 @@ module ERC6909Metadata is {
   }
 
   function setSymbol(const id : uint; const newSymbol : string) is {
-    erc6909Metadata.tokens[id].symbol := newSymbol;
+    storage.erc6909Metadata.tokens[id].symbol := newSymbol;
     emit ERC6909SymbolUpdated {
       id = id;
       newSymbol = newSymbol;
@@ -52,7 +52,7 @@ module ERC6909Metadata is {
   }
 
   function setDecimals(const id : uint; const newDecimals : uint8) is {
-    erc6909Metadata.tokens[id].decimals := newDecimals;
+    storage.erc6909Metadata.tokens[id].decimals := newDecimals;
     emit ERC6909DecimalsUpdated {
       id = id;
       newDecimals = newDecimals;
@@ -60,11 +60,11 @@ module ERC6909Metadata is {
   }
 
   external view function name(const id : uint) : string is
-    erc6909Metadata.tokens[id].name
+    storage.erc6909Metadata.tokens[id].name
 
   external view function symbol(const id : uint) : string is
-    erc6909Metadata.tokens[id].symbol
+    storage.erc6909Metadata.tokens[id].symbol
 
   external view function decimals(const id : uint) : uint8 is
-    erc6909Metadata.tokens[id].decimals
+    storage.erc6909Metadata.tokens[id].decimals
 }

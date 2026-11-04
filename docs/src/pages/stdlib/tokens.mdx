@@ -115,7 +115,7 @@ contract Token is {
 | Function | |
 | --- | --- |
 | `name`, `symbol`, `decimals`, `totalSupply`, `balanceOf`, `allowance`, `transfer`, `approve`, `transferFrom` | the standard's externals; `decimals` is 18 |
-| `init(name, symbol)` | |
+| `init(name, symbol)` | sets the name and symbol, [immutables](/language/storage#immutables), so it runs from `deploy` or a migration |
 | `move(from, to, value)` | a checked transfer between two accounts |
 | `mint(account, value)`, `burn(account, value)` | |
 | `update(from, to, value)` | every balance change, between the [hooks](#transfer-hooks); `from` zero mints, `to` zero burns |
@@ -127,14 +127,14 @@ A rule for every balance change, such as a pause, goes in a [hook](#transfer-hoo
 `ERC20` ships a [spec file](/language/verification#modules), `std/token/erc20.spec.lithe`: its balances add up to its supply, the zero address holds nothing, and it lists exactly when `transfer`, `approve`, and `transferFrom` revert. `lithe prove` proves them for your contract, whose own code can change the module's storage too:
 
 ```text
-invariant ERC20.supply: erc20.totalSupply = sum(erc20.balances)
+invariant ERC20.supply: storage.erc20.totalSupply = sum(storage.erc20.balances)
   proved      deploy
   proved      transfer
   proved      approve (unchanged)
   proved      transferFrom
 ...
 spec for ERC20.transferFrom
-  proved      ensures new.erc20.totalSupply = old.erc20.totalSupply
+  proved      ensures new.storage.erc20.totalSupply = old.storage.erc20.totalSupply
   ...
   proved      raises ERC20InsufficientAllowance when allowed < value
   ...
@@ -507,7 +507,7 @@ contract Collection is {
 }
 ```
 
-`IERC721` has both `safeTransferFrom` overloads, one for each ABI signature, and `supports` answers for it and `IERC721Metadata` with `0x80ac58cd` and `0x5b5e139f`. `tokenURI` checks that the token exists and answers the empty string, as OpenZeppelin's does without a base URI; a collection with URIs writes its own `tokenURI`. A collection whose [hooks](#transfer-hooks) raise, or that writes its own transfers or `tokenURI`, exposes the rest with the file's `IERC721Views`, `IERC721Name` (`name` and `symbol`), and `IERC721Approvals`, and still lists the standards in `supports`. `update(to, tokenId, auth)` makes every ownership change, between the hooks, and returns the previous owner; a nonzero `auth` must be allowed to move the token.
+`init(name, symbol)` sets the name and symbol as [immutables](/language/storage#immutables), so it runs from `deploy` or a migration. `IERC721` has both `safeTransferFrom` overloads, one for each ABI signature, and `supports` answers for it and `IERC721Metadata` with `0x80ac58cd` and `0x5b5e139f`. `tokenURI` checks that the token exists and answers the empty string, as OpenZeppelin's does without a base URI; a collection with URIs writes its own `tokenURI`. A collection whose [hooks](#transfer-hooks) raise, or that writes its own transfers or `tokenURI`, exposes the rest with the file's `IERC721Views`, `IERC721Name` (`name` and `symbol`), and `IERC721Approvals`, and still lists the standards in `supports`. `update(to, tokenId, auth)` makes every ownership change, between the hooks, and returns the previous owner; a nonzero `auth` must be allowed to move the token.
 
 
 `ERC721` ships a [spec file](/language/verification#modules) too, `std/token/erc721.spec.lithe`: each owned token counts once in its owner's balance, the zero address owns and approves nothing, only a token that exists has an approval, and `transferFrom` moves the token and clears its approval. `lithe prove` proves them for your collection.
@@ -711,7 +711,7 @@ To burn from another account as `transferFrom` spends, a contract checks the ope
 external function burn(const from : address; const id : uint; const amount : uint)
   raises ERC6909InsufficientAllowance | ERC6909InvalidSender | ERC6909InsufficientBalance
 is {
-  if from <> Evm.sender() and not ERC6909.erc6909.operatorApprovals[from][Evm.sender()] then {
+  if from <> Evm.sender() and not ERC6909.storage.erc6909.operatorApprovals[from][Evm.sender()] then {
     ERC6909.spendAllowance(from, Evm.sender(), id, amount);
   }
   ERC6909.burn(from, id, amount);

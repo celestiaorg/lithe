@@ -11,11 +11,11 @@ storage treasury at "example.treasury" is record {
 }
 
 external function configure(const fee : uint; const recipient : address) is {
-  settings.fee := fee;
-  settings.paused := true;
-  treasury.recipient := recipient;
-  treasury.saved := 2eth;
+  storage.settings.fee := fee;
+  storage.settings.paused := true;
+  storage.treasury.recipient := recipient;
+  storage.treasury.saved := 2eth;
 }
 
 external view function fee() : uint is
-  settings.fee
+  storage.settings.fee

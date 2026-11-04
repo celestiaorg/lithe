@@ -3,20 +3,20 @@
 
 spec for module Ownable2Step is {
   spec for transferOwnership is {
-    raises OwnableUnauthorizedAccount when Evm.sender() <> old.Ownable.ownable.owner;
-    ensures new.ownable2step.pending = newOwner;
-    ensures new.Ownable.ownable.owner = old.Ownable.ownable.owner;
+    raises OwnableUnauthorizedAccount when Evm.sender() <> old.Ownable.storage.ownable.owner;
+    ensures new.storage.ownable2step.pending = newOwner;
+    ensures new.Ownable.storage.ownable.owner = old.Ownable.storage.ownable.owner;
   }
 
   spec for acceptOwnership is {
-    raises OwnableUnauthorizedAccount when Evm.sender() <> old.ownable2step.pending;
-    ensures new.Ownable.ownable.owner = Evm.sender();
-    ensures new.ownable2step.pending = Address.zero;
+    raises OwnableUnauthorizedAccount when Evm.sender() <> old.storage.ownable2step.pending;
+    ensures new.Ownable.storage.ownable.owner = Evm.sender();
+    ensures new.storage.ownable2step.pending = Address.zero;
   }
 
   spec for renounceOwnership is {
-    raises OwnableUnauthorizedAccount when Evm.sender() <> old.Ownable.ownable.owner;
-    ensures new.Ownable.ownable.owner = Address.zero;
-    ensures new.ownable2step.pending = Address.zero;
+    raises OwnableUnauthorizedAccount when Evm.sender() <> old.Ownable.storage.ownable.owner;
+    ensures new.Ownable.storage.ownable.owner = Address.zero;
+    ensures new.storage.ownable2step.pending = Address.zero;
   }
 }

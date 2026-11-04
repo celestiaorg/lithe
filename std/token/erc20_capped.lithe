@@ -31,13 +31,13 @@ module ERC20Capped is {
     raises ERC20InvalidCap
   is {
     assert(cap > 0, ERC20InvalidCap(0));
-    erc20Capped.cap := cap;
+    immutable.erc20Capped.cap := cap;
   }
 
   view function check(const supply : uint)
     raises ERC20ExceededCap
   is {
-    const cap : uint := erc20Capped.cap;
+    const cap : uint := immutable.erc20Capped.cap;
     assert(supply <= cap, ERC20ExceededCap { increasedSupply = supply; cap = cap; });
   }
 
@@ -46,12 +46,12 @@ module ERC20Capped is {
     raises ERC20ExceededCap
   is {
     if from = Address.zero then {
-      check(ERC20.erc20.totalSupply);
+      check(ERC20.storage.erc20.totalSupply);
     }
   }
 
   external view function cap() : uint is
-    erc20Capped.cap
+    immutable.erc20Capped.cap
 }
 
 interface IERC20Capped is {

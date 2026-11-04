@@ -26,7 +26,7 @@ module ERC20FlashMint is {
   view function maxLoan(const token : address) : uint is {
     var most : uint := 0;
     if token = Evm.self() then {
-      most := Uint.max - ERC20.erc20.totalSupply;
+      most := Uint.max - ERC20.storage.erc20.totalSupply;
     }
   } with most
 

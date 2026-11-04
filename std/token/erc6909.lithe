@@ -88,15 +88,15 @@ module ERC6909 is {
   is {
     beforeTransfer(from, to, id, amount);
     if from <> Address.zero then {
-      const balance : uint := erc6909.balances[from][id];
+      const balance : uint := storage.erc6909.balances[from][id];
       assert(
         balance >= amount,
         ERC6909InsufficientBalance { sender = from; balance = balance; needed = amount; id = id; }
       );
-      erc6909.balances[from][id] := balance - amount;
+      storage.erc6909.balances[from][id] := balance - amount;
     }
     if to <> Address.zero then {
-      erc6909.balances[to][id] += amount;
+      storage.erc6909.balances[to][id] += amount;
     }
     emit Transfer {
       caller = Evm.sender();
@@ -113,7 +113,7 @@ module ERC6909 is {
   is {
     assert(owner <> Address.zero, ERC6909InvalidApprover(Address.zero));
     assert(spender <> Address.zero, ERC6909InvalidSpender(Address.zero));
-    erc6909.allowances[owner][spender][id] := amount;
+    storage.erc6909.allowances[owner][spender][id] := amount;
     emit Approval {
       owner = owner;
       spender = spender;
@@ -127,7 +127,7 @@ module ERC6909 is {
   is {
     assert(owner <> Address.zero, ERC6909InvalidApprover(Address.zero));
     assert(spender <> Address.zero, ERC6909InvalidSpender(Address.zero));
-    erc6909.operatorApprovals[owner][spender] := approved;
+    storage.erc6909.operatorApprovals[owner][spender] := approved;
     emit OperatorSet {
       owner = owner;
       spender = spender;
@@ -139,24 +139,24 @@ module ERC6909 is {
   function spendAllowance(const owner : address; const spender : address; const id : uint; const amount : uint)
     raises ERC6909InsufficientAllowance
   is {
-    const current : uint := erc6909.allowances[owner][spender][id];
+    const current : uint := storage.erc6909.allowances[owner][spender][id];
     if current < Uint.max then {
       assert(
         current >= amount,
         ERC6909InsufficientAllowance { spender = spender; allowance = current; needed = amount; id = id; }
       );
-      erc6909.allowances[owner][spender][id] := current - amount;
+      storage.erc6909.allowances[owner][spender][id] := current - amount;
     }
   }
 
   external view function balanceOf(const owner : address; const id : uint) : uint is
-    erc6909.balances[owner][id]
+    storage.erc6909.balances[owner][id]
 
   external view function allowance(const owner : address; const spender : address; const id : uint) : uint is
-    erc6909.allowances[owner][spender][id]
+    storage.erc6909.allowances[owner][spender][id]
 
   external view function isOperator(const owner : address; const spender : address) : bool is
-    erc6909.operatorApprovals[owner][spender]
+    storage.erc6909.operatorApprovals[owner][spender]
 
   external function approve(const spender : address; const id : uint; const amount : uint) : bool
     raises ERC6909InvalidApprover | ERC6909InvalidSpender
@@ -185,7 +185,7 @@ module ERC6909 is {
   ) : bool
     raises ERC6909InsufficientAllowance | ERC6909InvalidSender | ERC6909InvalidReceiver | ERC6909InsufficientBalance
   is {
-    if sender <> Evm.sender() and not erc6909.operatorApprovals[sender][Evm.sender()] then {
+    if sender <> Evm.sender() and not storage.erc6909.operatorApprovals[sender][Evm.sender()] then {
       spendAllowance(sender, Evm.sender(), id, amount);
     }
     move(sender, receiver, id, amount);

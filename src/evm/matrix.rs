@@ -9,7 +9,8 @@ use super::*;
 /// `abi` (an ABI value), `key` (a map key), `eq` (`=` compares it), `nest` (a tuple
 /// element, record field, variant payload, or map value), `elem` (a list element),
 /// `opt` (an option's payload), `fixed` (transient storage), `decode` (`Abi.decode` names it),
-/// `flat` (a record a `flat` parameter or result spreads), `const` (a declared constant).
+/// `flat` (a record a `flat` parameter or result spreads), `const` (a declared constant),
+/// `imm` (an immutable field).
 struct Ty {
     name: &'static str,
     decl: &'static str,
@@ -21,13 +22,13 @@ struct Ty {
     out: Option<(&'static str, &'static str)>,
 }
 
-const SCALAR: &str = "abi decode key eq nest elem opt fixed const";
-const DYN: &str = "abi decode key eq nest elem opt const";
-const STATIC: &str = "abi decode eq nest elem opt fixed";
-const DYNAMIC: &str = "abi decode eq nest elem opt";
-const FLAT_STATIC: &str = "abi decode eq nest elem opt fixed flat";
-const FLAT_DYNAMIC: &str = "abi decode eq nest elem opt flat";
-const OPTION: &str = "eq nest elem opt fixed";
+const SCALAR: &str = "abi decode key eq nest elem opt fixed const imm";
+const DYN: &str = "abi decode key eq nest elem opt const imm";
+const STATIC: &str = "abi decode eq nest elem opt fixed imm";
+const DYNAMIC: &str = "abi decode eq nest elem opt imm";
+const FLAT_STATIC: &str = "abi decode eq nest elem opt fixed flat imm";
+const FLAT_DYNAMIC: &str = "abi decode eq nest elem opt flat imm";
+const OPTION: &str = "eq nest elem opt fixed imm";
 
 const TYPES: &[Ty] = &[
     Ty { name: "bool", decl: "", samples: &["false", "true"], tags: SCALAR, sig: "bool", out: None },
@@ -169,7 +170,7 @@ const TYPES: &[Ty] = &[
         name: "(uint16, address)",
         decl: "",
         samples: &["(uint16(1), 0x00000000000000000000000000000000000000ab)", "(uint16(65535), 0xffffffffffffffffffffffffffffffffffffffff)"],
-        tags: "abi eq nest elem opt fixed",
+        tags: "abi eq nest elem opt fixed imm",
         sig: "(uint16,address)",
         out: None,
     },
@@ -177,7 +178,7 @@ const TYPES: &[Ty] = &[
         name: "(string, uint)",
         decl: "",
         samples: &["(\"a string that is longer than thirty-two bytes, to spill\", 1)", "(\"\", 0)"],
-        tags: "abi eq nest elem opt",
+        tags: "abi eq nest elem opt imm",
         sig: "(string,uint256)",
         out: None,
     },
@@ -317,7 +318,7 @@ const TYPES: &[Ty] = &[
         name: "option(string)",
         decl: "",
         samples: &["Some(\"a string that is longer than thirty-two bytes, to spill\")", "None", "Some(\"\")"],
-        tags: "eq nest elem opt",
+        tags: "eq nest elem opt imm",
         sig: "",
         out: Some(("(bool, string)", "case v of { Some(x) -> (true, x) | None -> (false, \"none\") }")),
     },
@@ -325,7 +326,7 @@ const TYPES: &[Ty] = &[
         name: "option(bytes)",
         decl: "",
         samples: &["Some(0x01)", "None", "Some(bytes(\"\"))"],
-        tags: "eq nest elem opt",
+        tags: "eq nest elem opt imm",
         sig: "",
         out: Some(("(bool, bytes)", "case v of { Some(x) -> (true, x) | None -> (false, 0x07) }")),
     },
@@ -333,7 +334,7 @@ const TYPES: &[Ty] = &[
         name: "option(list(uint))",
         decl: "",
         samples: &["Some([1, 2])", "None", "Some([])", "Some([Uint.max])"],
-        tags: "eq nest elem opt",
+        tags: "eq nest elem opt imm",
         sig: "",
         out: Some(("(bool, list(uint))", "case v of { Some(x) -> (true, x) | None -> (false, [7]) }")),
     },
@@ -345,7 +346,7 @@ const TYPES: &[Ty] = &[
             "None",
             "Some { n = 0; s = \"\"; xs = []; }",
         ],
-        tags: "eq nest elem opt",
+        tags: "eq nest elem opt imm",
         sig: "",
         out: Some((
             "(bool, uint8, string, list(uint))",
@@ -356,7 +357,7 @@ const TYPES: &[Ty] = &[
         name: "option(Dyn)",
         decl: "type Dyn is | Name of string | Nums of list(uint) | Blank",
         samples: &["Some(Name(\"a string that is longer than thirty-two bytes, to spill\"))", "None", "Some(Blank)", "Some(Nums([1]))"],
-        tags: "eq nest elem opt",
+        tags: "eq nest elem opt imm",
         sig: "",
         out: Some((
             "(uint8, string, list(uint))",
@@ -367,7 +368,7 @@ const TYPES: &[Ty] = &[
         name: "Stamp",
         decl: "type Stamp is | Nil | Stamp of uint64 | Who of address",
         samples: &["Stamp(18446744073709551615)", "Nil", "Who(0x00000000000000000000000000000000000000ab)", "Stamp(0)"],
-        tags: "abi decode eq nest elem opt fixed",
+        tags: "abi decode eq nest elem opt fixed imm",
         sig: "(uint8,bytes)",
         out: None,
     },
@@ -375,7 +376,7 @@ const TYPES: &[Ty] = &[
         name: "Big",
         decl: "type Big is | A of uint | B of (uint8, int) | C",
         samples: &["A(Uint.max)", "C", "B((uint8(255), Int.min))", "A(0)"],
-        tags: "abi decode eq nest elem opt fixed",
+        tags: "abi decode eq nest elem opt fixed imm",
         sig: "(uint8,bytes)",
         out: None,
     },
@@ -383,7 +384,7 @@ const TYPES: &[Ty] = &[
         name: "Dyn",
         decl: "type Dyn is | Name of string | Nums of list(uint) | Blank",
         samples: &["Name(\"a string that is longer than thirty-two bytes, to spill\")", "Blank", "Nums([1, 2])", "Name(\"\")"],
-        tags: "abi decode eq nest elem opt",
+        tags: "abi decode eq nest elem opt imm",
         sig: "(uint8,bytes)",
         out: None,
     },
@@ -397,7 +398,7 @@ const TYPES: &[Ty] = &[
             "Plain { n = 0; s = \"\"; }",
             "Pair((0, []))",
         ],
-        tags: "abi decode eq nest elem opt",
+        tags: "abi decode eq nest elem opt imm",
         sig: "(uint8,bytes)",
         out: None,
     },
@@ -410,7 +411,7 @@ const TYPES: &[Ty] = &[
             "{ o = Some(Uint.max); s = \"x\"; b = Some(bytes(\"\")); }",
             "{ o = None; s = \"\"; b = None; }",
         ],
-        tags: "eq nest elem opt",
+        tags: "eq nest elem opt imm",
         sig: "",
         out: Some((
             "(bool, uint, string, bool, bytes)",
@@ -449,6 +450,12 @@ enum Kind {
     /// implementation hands it back, or fails with it as an error's payload for caller 2:
     /// whole, and with the module in its facet, which calls the hook back.
     Hook,
+    /// `deploy` runs each sample's `write`, and `get{k}` reads sample `k` back. In `decl`,
+    /// `$F` is each sample's `storage` in turn and `$G` each one's `load`, with `$K` its
+    /// index. A cell whose module has functions, in `load`, also runs with every module in
+    /// its facet, and an `upgradeable` one runs behind a proxy, which keeps its immutables
+    /// in storage.
+    Immutable,
 }
 
 /// A place a value can live. In its text, `$T` is the type, `$V` the sample written, and
@@ -523,6 +530,25 @@ const fn deleted(
         storage,
         write,
         load: delete,
+        read,
+    }
+}
+
+const fn immutable(
+    name: &'static str,
+    decl: &'static str,
+    field: &'static str,
+    write: &'static str,
+    read: &'static str,
+) -> Place {
+    Place {
+        name,
+        kind: Kind::Immutable,
+        needs: "imm",
+        decl,
+        storage: field,
+        write,
+        load: "",
         read,
     }
 }
@@ -602,6 +628,26 @@ const PLACES: &[Place] = &[
         read: "transient.x",
     },
     Place {
+        name: "named transient",
+        kind: Kind::Local,
+        needs: "fixed",
+        decl: "transient storage t is record { x : $T; }",
+        storage: "",
+        write: "transient.t.x := $W; transient.t.x := $V;",
+        load: "",
+        read: "transient.t.x",
+    },
+    Place {
+        name: "module transient",
+        kind: Kind::Local,
+        needs: "fixed",
+        decl: "module Scratch is { transient storage is record { x : $T; } }\nuse Scratch;",
+        storage: "",
+        write: "Scratch.transient.x := $W; Scratch.transient.x := $V;",
+        load: "",
+        read: "Scratch.transient.x",
+    },
+    Place {
         name: "transient map",
         kind: Kind::Local,
         needs: "fixed nest",
@@ -667,6 +713,16 @@ const PLACES: &[Place] = &[
         read: "transient.m[2].x",
     },
     stored("storage", "", "", "x : $T;", "storage.x := $V;", "storage.x"),
+    stored("named storage", "", "storage d at \"matrix.d\" is record { x : $T; }", "", "storage.d.x := $V;", "storage.d.x"),
+    stored("module storage", "", "module Kept is { storage at \"matrix.kept\" is record { x : $T; } }\nuse Kept;", "", "Kept.storage.x := $V;", "Kept.storage.x"),
+    stored(
+        "module storage inside",
+        "",
+        "module Held is { storage at \"matrix.held\" is record { x : $T; }\nfunction set(const v : $T) is { storage.x := v; }\nview function get() : $T is storage.x }\nuse Held;",
+        "",
+        "Held.set($V);",
+        "Held.get()",
+    ),
     stored("map value", "nest", "", "m : map(uint, $T);", "storage.m[3] := $V;", "storage.m[3]"),
     stored("nested map", "nest", "", "m : map(address, map(uint, $T));", "storage.m[Evm.sender()][3] := $V;", "storage.m[0x0000000000000000000000000000000000000001][3]"),
     stored(
@@ -916,6 +972,110 @@ const PLACES: &[Place] = &[
         load: "",
         read: "Consts$K.c",
     },
+    immutable("immutable", "immutable is record { $F }", "x$K : $T;", "immutable.x$K := $W; immutable.x$K := $V;", "immutable.x$K"),
+    immutable(
+        "immutable with an id",
+        "immutable at \"matrix.own\" is record { $F }",
+        "x$K : $T;",
+        "immutable.x$K := $V;",
+        "immutable.x$K",
+    ),
+    immutable(
+        "named immutable",
+        "immutable d at \"matrix.d\" is record { $F }",
+        "x$K : $T;",
+        "immutable.d.x$K := $W; immutable.d.x$K := $V;",
+        "immutable.d.x$K",
+    ),
+    immutable(
+        "immutable read in deploy",
+        "immutable is record { $F }",
+        "x$K : $T; y$K : $T;",
+        "immutable.y$K := $W; immutable.x$K := $V; immutable.y$K := immutable.x$K;",
+        "immutable.y$K",
+    ),
+    immutable(
+        "immutable record field",
+        "type Holder is record { pre : uint8; x : $T; post : bool; } immutable is record { $F }",
+        "h$K : Holder;",
+        "immutable.h$K := { pre = 9; x = $W; post = true; }; immutable.h$K.x := $V;",
+        "immutable.h$K.x",
+    ),
+    immutable(
+        "immutable tuple",
+        "pure function second(const t : (uint8, $T)) : $T is { const (p, x) : (uint8, $T) := t; } with x immutable is record { $F }",
+        "t$K : (uint8, $T);",
+        "immutable.t$K := (uint8(7), $W); immutable.t$K := (uint8(9), $V);",
+        "second(immutable.t$K)",
+    ),
+    immutable(
+        "module immutable",
+        "module Fixed is { $D immutable at \"matrix.fixed\" is record { $F } }\nuse Fixed;",
+        "x$K : $T;",
+        "Fixed.immutable.x$K := $W; Fixed.immutable.x$K := $V;",
+        "Fixed.immutable.x$K",
+    ),
+    Place {
+        name: "module immutable inside",
+        kind: Kind::Immutable,
+        needs: "imm",
+        decl: "module Held is { $D immutable held at \"matrix.held\" is record { $F } $G }\nuse Held;",
+        storage: "x$K : $T;",
+        write: "Held.set$K($W); Held.set$K($V);",
+        load: "function set$K(const v : $T) is { immutable.held.x$K := v; }\nview function get$K() : $T is immutable.held.x$K\n",
+        read: "Held.get$K()",
+    },
+    immutable(
+        "immutable from the environment",
+        "pure function pick(const c : bool; const a : $T; const b : $T) : $T is if c then a else b immutable is record { $F }",
+        "x$K : $T;",
+        "immutable.x$K := pick(Evm.chainId() = 424242, $W, $V);",
+        "immutable.x$K",
+    ),
+    Place {
+        name: "immutable list element",
+        kind: Kind::Immutable,
+        needs: "imm elem",
+        decl: "immutable is record { $F }",
+        storage: "xs$K : list($T);",
+        write: "immutable.xs$K := [$W]; immutable.xs$K := [$W, $V];",
+        load: "",
+        read: "immutable.xs$K[immutable.xs$K.length - 1]",
+    },
+    Place {
+        name: "immutable fixed list",
+        kind: Kind::Immutable,
+        needs: "imm elem",
+        decl: "immutable is record { $F }",
+        storage: "f$K : list($T, 3);",
+        write: "immutable.f$K := [$W, $W, $W]; immutable.f$K[1] := $V;",
+        load: "",
+        read: "immutable.f$K[uint(Evm.chainId() <> 0)]",
+    },
+    Place {
+        name: "immutable option",
+        kind: Kind::Immutable,
+        needs: "imm opt",
+        decl: "immutable is record { $F }",
+        storage: "o$K : option($T);",
+        write: "immutable.o$K := Some($W); immutable.o$K := Some($V);",
+        load: "",
+        read: "case immutable.o$K of { Some(x) -> x | None -> $W }",
+    },
+    immutable(
+        "upgradeable immutable",
+        "upgradeable\nimmutable is record { $F }\nupgrade guard is { skip; }",
+        "x$K : $T;",
+        "immutable.x$K := $W; immutable.x$K := $V;",
+        "immutable.x$K",
+    ),
+    immutable(
+        "upgradeable immutable record",
+        "upgradeable\ntype Holder is record { pre : uint8; x : $T; post : bool; } immutable d at \"matrix.d\" is record { $F }\nupgrade guard is { skip; }",
+        "h$K : Holder;",
+        "immutable.d.h$K := { pre = 9; x = $W; post = true; }; immutable.d.h$K.x := $V;",
+        "immutable.d.h$K.x",
+    ),
 ];
 
 /// A facet is built from its module alone, so a guard cell declares its type in the module.
@@ -976,14 +1136,21 @@ fn program(ty: &Ty, place: &Place) -> String {
     let (shown, out) = ty.out.unwrap_or((ty.name, "v"));
     let guarded = place.kind == Kind::Guard;
     let hooked = place.kind == Kind::Hook;
-    let (top, inner) = if (guarded || hooked) && in_module(ty) {
+    let (top, inner) = if (guarded || hooked || place.decl.contains("$D")) && in_module(ty) {
         ("", ty.decl)
     } else {
         (ty.decl, "")
     };
+    let each =
+        |text: &str| -> String { (0..n).map(|k| text.replace("$K", &k.to_string())).collect() };
+    let decl = place
+        .decl
+        .replace("$F", &each(place.storage))
+        .replace("$G", &each(place.load))
+        .replace("$D", inner);
     let mut src = format!(
         "import \"std/abi\";\nimport \"std/evm\";\nimport \"std/int\";\nimport \"std/list\";\nimport \"std/uint\";\n{top}\n{}\n",
-        fill(place.decl, ty, "", "")
+        fill(&decl, ty, "", "")
     );
     if guarded {
         src += &fill(
@@ -1021,11 +1188,17 @@ fn program(ty: &Ty, place: &Place) -> String {
     } else {
         ""
     };
+    let stored = if place.kind == Kind::Immutable {
+        ""
+    } else {
+        place.storage
+    };
     src += &format!(
         "storage is record {{ pre : uint8; {} {} post : uint8; }}\n",
         fill(zero, ty, "", ""),
-        fill(place.storage, ty, "", "")
+        fill(stored, ty, "", "")
     );
+    let mut setup = String::new();
     src += &format!(
         "pure function out(const v : {}) : {shown} is {out}\n",
         ty.name
@@ -1042,9 +1215,8 @@ fn program(ty: &Ty, place: &Place) -> String {
                 ty.name
             );
         }
-        let write = fill(place.write, ty, v, w);
-        let load = fill(place.load, ty, v, w);
-        let read = fill(place.read, ty, v, w);
+        let at = |text: &str| fill(&text.replace("$K", &k.to_string()), ty, v, w);
+        let (write, load, read) = (at(place.write), at(place.load), at(place.read));
         match place.kind {
             Kind::Local => {
                 src += &format!("external function get{k}() : {shown} is {{ {write} {load} }} with out({read})\n");
@@ -1070,10 +1242,6 @@ fn program(ty: &Ty, place: &Place) -> String {
                 }
             }
             Kind::Constant => {
-                let (write, read) = (
-                    write.replace("$K", &k.to_string()),
-                    read.replace("$K", &k.to_string()),
-                );
                 src +=
                     &format!("{write}\nexternal pure function get{k}() : {shown} is out({read})\n");
                 if eq {
@@ -1082,8 +1250,20 @@ fn program(ty: &Ty, place: &Place) -> String {
                     );
                 }
             }
+            Kind::Immutable => {
+                setup += &write;
+                src += &format!("external view function get{k}() : {shown} is out({read})\n");
+                if eq {
+                    src += &format!(
+                        "external view function eq{k}() : (bool, bool) is ({read} = {v}, {read} = {w})\n"
+                    );
+                }
+            }
             Kind::Calldata | Kind::Flat | Kind::Guard | Kind::Hook => {}
         }
+    }
+    if place.kind == Kind::Immutable {
+        src += &format!("deploy() is {{ {setup} }}\n");
     }
     if place.kind == Kind::Deleted {
         src += &format!("external view function zero() : {shown} is out(storage.z)\n");
@@ -1164,8 +1344,12 @@ fn ok(
 }
 
 /// Runs one cell, returning what went wrong.
-fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
-    let storage = &mut HashMap::new();
+fn run_cell(
+    ty: &Ty,
+    place: &Place,
+    (runtime, storage): (Vec<u8>, HashMap<Word, Word>),
+) -> Result<(), String> {
+    let (runtime, storage) = (&runtime[..], &mut storage.clone());
     let n = ty.samples.len();
     let eq = ty.tags.contains("eq");
     let yes_no = [
@@ -1206,7 +1390,7 @@ fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
             Ok(payload == enc || payload == want || fields && payload == &enc[32..])
         };
         match place.kind {
-            Kind::Local | Kind::Constant => {
+            Kind::Local | Kind::Constant | Kind::Immutable => {
                 let got = ok(runtime, storage, &format!("get{k}()"), false)?;
                 if got != want {
                     return Err(format!("{v}: want {}, got {}", hex(&want), hex(&got)));
@@ -1376,13 +1560,56 @@ fn run_cell(ty: &Ty, place: &Place, runtime: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Runs a cell with every module in its facet.
+/// Runs a cell with every module it exposes in its facet, or every module it uses for an
+/// immutable cell.
 fn run_split(ty: &Ty, place: &Place, src: &str) -> Result<(), String> {
-    let checked =
-        crate::check::check(loaded(src), Default::default()).map_err(|err| err.to_string())?;
-    let split = super::split::build_facets(&checked, "Cell").map_err(|err| err.to_string())?;
+    let every = place.kind == Kind::Immutable;
+    let checked = crate::check::check(
+        super::split::mark_facets(loaded(src), every),
+        Default::default(),
+    )
+    .map_err(|err| err.to_string())?;
+    let split = crate::split::build(&checked, "Cell", &Default::default())
+        .map_err(|err| err.to_string())?;
     let runtime = super::split::deploy_split(&split);
-    run_cell(ty, place, &runtime)
+    run_cell(ty, place, (runtime, HashMap::new()))
+}
+
+fn upgradeable(place: &Place) -> bool {
+    place.decl.starts_with("upgradeable")
+}
+
+/// Deploys a cell: an upgradeable one as the implementation behind a proxy, which runs its
+/// `deploy`. Returns the runtime to call and the storage it starts with.
+fn set_up(place: &Place, init: &[u8]) -> Result<(Vec<u8>, HashMap<Word, Word>), String> {
+    if !upgradeable(place) {
+        return deploy_state(init);
+    }
+    let at = Word::from_u64(0xa11);
+    let was = SELF.replace(at);
+    let runtime = deploy(init);
+    SELF.set(was);
+    let runtime = runtime?;
+    DEPLOYED.with(|d| d.borrow_mut().insert(at, (runtime, HashMap::new())));
+    let proxy = super::split::proxy_runtime();
+    let storage = [(crate::keccak::erc1967_implementation(), at)]
+        .into_iter()
+        .collect();
+    let was = CONSTRUCTING.replace(true);
+    let made = exec(
+        &proxy,
+        &word_data("deploy()", &[]),
+        storage,
+        Word::from_u64(1),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    );
+    CONSTRUCTING.set(was);
+    let made = made?;
+    if made.reverted {
+        return Err(format!("deploy reverted: {}", pretty(&made.returndata)));
+    }
+    Ok((proxy, made.storage))
 }
 
 fn allowed(ty: &Ty, place: &Place) -> bool {
@@ -1408,16 +1635,23 @@ fn check_type(ty: &Ty) -> Vec<String> {
             (Ok(Err(err)), true) => Some(format!("rejected: {err}")),
             (Ok(Err(_)), false) => None,
             (Ok(Ok(init)), false) => Some(
-                match deploy(&init).and_then(|runtime| run_cell(ty, place, &runtime)) {
+                match set_up(place, &init).and_then(|cell| run_cell(ty, place, cell)) {
                     Ok(()) => "accepted and works, but its tags rule it out".to_string(),
                     Err(err) => format!("accepted, though its tags rule it out, and broken: {err}"),
                 },
             ),
-            (Ok(Ok(init)), true) => deploy(&init)
-                .and_then(|runtime| run_cell(ty, place, &runtime))
+            (Ok(Ok(init)), true) => set_up(place, &init)
+                .and_then(|cell| run_cell(ty, place, cell))
                 .err()
                 .or_else(|| {
-                    (matches!(place.kind, Kind::Guard | Kind::Hook) && in_module(ty))
+                    // Contract code calls a facet's functions across with the ABI, so a
+                    // type it can't carry stays whole.
+                    let modules = match place.kind {
+                        Kind::Guard | Kind::Hook => true,
+                        Kind::Immutable => !place.load.is_empty() && ty.tags.contains("abi"),
+                        _ => false,
+                    };
+                    (modules && in_module(ty))
                         .then(|| run_split(ty, place, &src).err())
                         .flatten()
                         .map(|err| format!("split: {err}"))

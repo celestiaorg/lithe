@@ -1,8 +1,9 @@
 (* The ERC-721 non-fungible token standard, with the metadata extension. Errors and
    events match OpenZeppelin's `ERC721`, and so does the order of its checks. Set the
-   name and symbol with `init`, usually from `deploy`. A token has no URI of its own:
-   `tokenURI` checks the token exists and answers the empty string, as OpenZeppelin's
-   does without a base URI, so a contract with URIs writes its own `tokenURI`.
+   name and symbol with `init`, from `deploy` or a migration: they are immutables. A
+   token has no URI of its own: `tokenURI` checks the token exists and answers the empty
+   string, as OpenZeppelin's does without a base URI, so a contract with URIs writes its
+   own `tokenURI`.
 
      use ERC721 exposing IERC721, IERC721Metadata with {
        hook beforeTransfer is skip;
@@ -30,9 +31,12 @@ import "std/interfaces/erc165";
 import "std/interfaces/erc721";
 
 module ERC721 is {
-  storage erc721 at "lithe.std.erc721" is record {
+  immutable erc721Metadata at "lithe.std.erc721.metadata" is record {
     name : string;
     symbol : string;
+  }
+
+  storage erc721 at "lithe.std.erc721" is record {
     owners : map(uint, address);
     balances : map(address, uint);
     tokenApprovals : map(uint, address);
@@ -61,8 +65,8 @@ module ERC721 is {
   hook afterTransfer(const from : address; const to : address; const tokenId : uint);
 
   function init(const name : string; const symbol : string) is {
-    erc721.name := name;
-    erc721.symbol := symbol;
+    immutable.erc721Metadata.name := name;
+    immutable.erc721Metadata.symbol := symbol;
   }
 
   (* ERC-721, its metadata extension, and ERC-165 itself. *)
@@ -75,12 +79,12 @@ module ERC721 is {
     raises ERC721InvalidOwner
   is {
     assert(owner <> Address.zero, ERC721InvalidOwner(Address.zero));
-  } with erc721.balances[owner]
+  } with storage.erc721.balances[owner]
 
   view function requireOwned(const tokenId : uint) : address
     raises ERC721NonexistentToken
   is {
-    const owner : address := erc721.owners[tokenId];
+    const owner : address := storage.erc721.owners[tokenId];
     assert(owner <> Address.zero, ERC721NonexistentToken(tokenId));
   } with owner
 
@@ -89,8 +93,8 @@ module ERC721 is {
   is {
     const authorized : bool := spender <> Address.zero
       and (owner = spender
-        or erc721.operatorApprovals[owner][spender]
-        or erc721.tokenApprovals[tokenId] = spender);
+        or storage.erc721.operatorApprovals[owner][spender]
+        or storage.erc721.tokenApprovals[tokenId] = spender);
     if not authorized then {
       assert(owner <> Address.zero, ERC721NonexistentToken(tokenId));
       fail ERC721InsufficientApproval { operator = spender; tokenId = tokenId; };
@@ -103,18 +107,18 @@ module ERC721 is {
     raises ERC721NonexistentToken | ERC721InsufficientApproval
   is {
     beforeTransfer(to, tokenId, auth);
-    const from : address := erc721.owners[tokenId];
+    const from : address := storage.erc721.owners[tokenId];
     if auth <> Address.zero then {
       checkAuthorized(from, auth, tokenId);
     }
     if from <> Address.zero then {
-      erc721.tokenApprovals[tokenId] := Address.zero;
-      erc721.balances[from] -= 1;
+      storage.erc721.tokenApprovals[tokenId] := Address.zero;
+      storage.erc721.balances[from] -= 1;
     }
     if to <> Address.zero then {
-      erc721.balances[to] += 1;
+      storage.erc721.balances[to] += 1;
     }
-    erc721.owners[tokenId] := to;
+    storage.erc721.owners[tokenId] := to;
     emit Transfer {
       from = from;
       to = to;
@@ -128,7 +132,7 @@ module ERC721 is {
   is {
     const owner : address := requireOwned(tokenId);
     assert(
-      auth = Address.zero or owner = auth or erc721.operatorApprovals[owner][auth],
+      auth = Address.zero or owner = auth or storage.erc721.operatorApprovals[owner][auth],
       ERC721InvalidApprover(auth)
     );
     emit Approval {
@@ -136,7 +140,7 @@ module ERC721 is {
       approved = to;
       tokenId = tokenId;
     };
-    erc721.tokenApprovals[tokenId] := to;
+    storage.erc721.tokenApprovals[tokenId] := to;
   }
 
   function approveAllAs(const owner : address; const operator : address; const approved : bool)
@@ -144,7 +148,7 @@ module ERC721 is {
   is {
     assert(owner <> Address.zero, ERC721InvalidApprover(Address.zero));
     assert(operator <> Address.zero, ERC721InvalidOperator(operator));
-    erc721.operatorApprovals[owner][operator] := approved;
+    storage.erc721.operatorApprovals[owner][operator] := approved;
     emit ApprovalForAll {
       owner = owner;
       operator = operator;
@@ -229,10 +233,10 @@ module ERC721 is {
   }
 
   external view function name() : string is
-    erc721.name
+    immutable.erc721Metadata.name
 
   external view function symbol() : string is
-    erc721.symbol
+    immutable.erc721Metadata.symbol
 
   (* Without a base URI, an existing token's URI is empty. *)
   external view function tokenURI(const tokenId : uint) : string
@@ -255,10 +259,10 @@ module ERC721 is {
     raises ERC721NonexistentToken
   is {
     const owner : address := requireOwned(tokenId);
-  } with erc721.tokenApprovals[tokenId]
+  } with storage.erc721.tokenApprovals[tokenId]
 
   external view function isApprovedForAll(const owner : address; const operator : address) : bool is
-    erc721.operatorApprovals[owner][operator]
+    storage.erc721.operatorApprovals[owner][operator]
 
   external function approve(const to : address; const tokenId : uint)
     raises ERC721NonexistentToken | ERC721InvalidApprover

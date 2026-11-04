@@ -2941,7 +2941,11 @@ impl<'a> Gen<'a> {
     pub(super) fn nested_mem(&self, e: &Expr) -> bool {
         fn indexed(e: &Expr) -> bool {
             match e {
-                Expr::Index { .. } => true,
+                Expr::Index { .. }
+                | Expr::Call {
+                    builtin: Some(Builtin::ImmutableRead),
+                    ..
+                } => true,
                 Expr::Field { base, .. } => indexed(base),
                 _ => false,
             }
@@ -2969,6 +2973,11 @@ impl<'a> Gen<'a> {
                 let t = &self.checked.types[self.peel_nominal(base.ty())];
                 t.kind == TyKind::List && self.mem_path(base)
             }
+            // An immutable read is staged in memory of its own.
+            Expr::Call {
+                builtin: Some(Builtin::ImmutableRead),
+                ..
+            } => true,
             Expr::Field { base, name, .. } => {
                 let t = &self.checked.types[self.peel_nominal(base.ty())];
                 t.kind == TyKind::Record
@@ -3039,6 +3048,14 @@ impl<'a> Gen<'a> {
                     self.push_u64(u64::from(slot) * 32);
                     self.op(ADD);
                 }
+                Ok(())
+            }
+            Expr::Call {
+                builtin: Some(Builtin::ImmutableRead),
+                ..
+            } => {
+                let at = self.stage(e)?;
+                self.push_mem(at);
                 Ok(())
             }
             other => Err(error(
@@ -3120,7 +3137,11 @@ impl<'a> Gen<'a> {
     }
 
     /// A tuple of values decoded from the start of the data, each into its words.
-    fn tree_tuple(&mut self, kind: SrcKind, fields: &[(usize, Addr)]) -> Result<(), Error> {
+    pub(super) fn tree_tuple(
+        &mut self,
+        kind: SrcKind,
+        fields: &[(usize, Addr)],
+    ) -> Result<(), Error> {
         let head: u32 = fields.iter().map(|&(ty, _)| self.abi_head(ty)).sum();
         self.tree_head(kind, head)?;
         let mut off = 0;

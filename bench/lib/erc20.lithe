@@ -46,26 +46,26 @@ module ERC20 is {
   }
 
   external view function name() : string is
-    erc20.name
+    storage.erc20.name
 
   external view function symbol() : string is
-    erc20.symbol
+    storage.erc20.symbol
 
   external view function decimals() : uint8 is
     18
 
   external view function totalSupply() : uint is
-    erc20.totalSupply
+    storage.erc20.totalSupply
 
   external view function balanceOf(const account : address) : uint is
-    erc20.balances[account]
+    storage.erc20.balances[account]
 
   external view function allowance(const owner : address; const spender : address) : uint is
-    erc20.allowances[owner][spender]
+    storage.erc20.allowances[owner][spender]
 
   function init(const n : string; const s : string) is {
-    erc20.name := n;
-    erc20.symbol := s;
+    storage.erc20.name := n;
+    storage.erc20.symbol := s;
   }
 
   hook beforeTransfer(const from : address; const to : address; const value : uint);
@@ -77,9 +77,9 @@ module ERC20 is {
   is {
     beforeTransfer(from, to, value);
     if from = Address.zero then {
-      erc20.totalSupply += value;
+      storage.erc20.totalSupply += value;
     } else {
-      const fromBalance : uint := erc20.balances[from];
+      const fromBalance : uint := storage.erc20.balances[from];
       assert(
         fromBalance >= value,
         ERC20InsufficientBalance {
@@ -88,12 +88,12 @@ module ERC20 is {
           needed = value;
         }
       );
-      erc20.balances[from] := fromBalance - value;
+      storage.erc20.balances[from] := fromBalance - value;
     }
     if to = Address.zero then {
-      erc20.totalSupply -= value;
+      storage.erc20.totalSupply -= value;
     } else {
-      erc20.balances[to] += value;
+      storage.erc20.balances[to] += value;
     }
     emit Transfer {
       from = from;
@@ -132,7 +132,7 @@ module ERC20 is {
       spender <> Address.zero,
       ERC20InvalidSpender(Address.zero)
     );
-    erc20.allowances[owner][spender] := value;
+    storage.erc20.allowances[owner][spender] := value;
     if announce then {
       emit Approval {
         owner = owner;
@@ -146,7 +146,7 @@ module ERC20 is {
   function spendAllowance(const owner : address; const spender : address; const value : uint)
     raises ERC20InsufficientAllowance | ERC20InvalidApprover | ERC20InvalidSpender
   is {
-    const current : uint := erc20.allowances[owner][spender];
+    const current : uint := storage.erc20.allowances[owner][spender];
     if current < Uint.max then {
       assert(
         current >= value,

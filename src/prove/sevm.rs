@@ -2780,7 +2780,14 @@ impl Machine {
                         let shifted = self.a.sub(from, base);
                         return self.copy_array(p, dst, z, shifted, len);
                     }
-                    _ => return Err("a copy of code of unknown length".into()),
+                    // Bytes `deploy` appended past the runtime, at a place only it fixes:
+                    // any bytes, as `EXTCODECOPY`'s are.
+                    _ => {
+                        note(p, "the bytes `deploy` appends to the code");
+                        let fresh = self.a.var("code", Sort::Bytes);
+                        let zero = self.a.num(256, 0);
+                        return self.copy_array(p, dst, fresh, zero, len);
+                    }
                 }
             }
             _ => self.array_of(p),

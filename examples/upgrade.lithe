@@ -20,11 +20,11 @@ storage settings at "vault.settings" is record {
 }
 
 migrate init(const fee : uint) is {
-  settings.fee := fee;
+  storage.settings.fee := fee;
 }
 
 migrate setPaused(const paused : bool) is {
-  settings.paused := paused;
+  storage.settings.paused := paused;
 }
 
 external function claim() is {

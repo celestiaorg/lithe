@@ -28,11 +28,11 @@ module ERC2981 is {
       ERC2981InvalidDefaultRoyalty { numerator = uint(fee); denominator = uint(feeDenominator); }
     );
     assert(receiver <> Address.zero, ERC2981InvalidDefaultRoyaltyReceiver(Address.zero));
-    erc2981.defaultRoyalty := { receiver = receiver; fraction = fee; };
+    storage.erc2981.defaultRoyalty := { receiver = receiver; fraction = fee; };
   }
 
   function deleteDefaultRoyalty() is {
-    delete erc2981.defaultRoyalty;
+    delete storage.erc2981.defaultRoyalty;
   }
 
   function setTokenRoyalty(const tokenId : uint; const receiver : address; const fee : uint96)
@@ -46,20 +46,20 @@ module ERC2981 is {
       receiver <> Address.zero,
       ERC2981InvalidTokenRoyaltyReceiver { tokenId = tokenId; receiver = Address.zero; }
     );
-    erc2981.tokenRoyalties[tokenId] := { receiver = receiver; fraction = fee; };
+    storage.erc2981.tokenRoyalties[tokenId] := { receiver = receiver; fraction = fee; };
   }
 
   (* The token falls back to the default royalty. *)
   function resetTokenRoyalty(const tokenId : uint) is {
-    delete erc2981.tokenRoyalties[tokenId];
+    delete storage.erc2981.tokenRoyalties[tokenId];
   }
 
   external view function royaltyInfo(const tokenId : uint; const salePrice : uint) : flat RoyaltyInfo is {
-    var receiver : address := erc2981.tokenRoyalties[tokenId].receiver;
-    var fraction : uint96 := erc2981.tokenRoyalties[tokenId].fraction;
+    var receiver : address := storage.erc2981.tokenRoyalties[tokenId].receiver;
+    var fraction : uint96 := storage.erc2981.tokenRoyalties[tokenId].fraction;
     if receiver = Address.zero then {
-      receiver := erc2981.defaultRoyalty.receiver;
-      fraction := erc2981.defaultRoyalty.fraction;
+      receiver := storage.erc2981.defaultRoyalty.receiver;
+      fraction := storage.erc2981.defaultRoyalty.fraction;
     }
   } with {
     receiver = receiver;

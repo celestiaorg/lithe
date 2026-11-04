@@ -1,4 +1,5 @@
 use super::*;
+use crate::resolve::STATE_KINDS;
 
 impl Checker {
     pub(super) fn place(&mut self, e: &mut Expr) -> Result<Place, Error> {
@@ -54,23 +55,34 @@ impl Checker {
                 line,
                 col,
             } => {
-                let module_domain = if let Expr::Ident {
-                    name: module,
-                    line: mline,
-                    col: mcol,
-                    ..
-                } = base.as_ref()
-                {
-                    if self.lookup(module).is_none() && self.known_modules.contains(module) {
-                        Some((module.clone(), *mline, *mcol))
-                    } else {
-                        None
+                let module_domain = match base.as_ref() {
+                    Expr::Ident {
+                        name: module,
+                        line: mline,
+                        col: mcol,
+                        ..
+                    } if self.is_module(module) => {
+                        Some((module.clone(), *mline, *mcol, name.clone()))
                     }
-                } else {
-                    None
+                    Expr::Field {
+                        base: inner,
+                        name: kind,
+                        ..
+                    } => match inner.as_ref() {
+                        Expr::Ident {
+                            name: module,
+                            line: mline,
+                            col: mcol,
+                            ..
+                        } if self.is_module(module) => self
+                            .kind_domain(module, kind, name)
+                            .map(|domain| (module.clone(), *mline, *mcol, domain)),
+                        _ => None,
+                    },
+                    _ => None,
                 };
-                if let Some((module, mline, mcol)) = module_domain {
-                    let sym = self.open_module_domain(mline, mcol, &module, name)?;
+                if let Some((module, mline, mcol, domain)) = module_domain {
+                    let sym = self.open_module_domain(mline, mcol, &module, &domain)?;
                     let sty = self.syms[sym].ty;
                     *root = Some(sym);
                     *leaf = 0;
@@ -101,7 +113,7 @@ impl Checker {
                     return Err(error(*line, *col, "field access on a non-record"));
                 }
                 let Some(f) = rec.fields.iter().find(|f| f.name == *name) else {
-                    return Err(error(*line, *col, format!("no field `{name}`")));
+                    return Err(self.no_field(*line, *col, self.peel(p.ty), name));
                 };
                 // A field of a map's value is found from the value's slot, not a leaf.
                 let abs = if p.in_map { p.leaf } else { p.leaf + f.slot };
@@ -166,9 +178,16 @@ impl Checker {
         let Some(name) = path.first() else {
             return Err(error(line, col, "empty assignment"));
         };
-        if self.lookup(name).is_none() && path.len() >= 2 && self.known_modules.contains(name) {
-            let sym = self.open_module_domain(line, col, name, &path[1])?;
-            let (ty, leaf) = self.walk_fields(line, col, self.syms[sym].ty, 0, &path[2..])?;
+        if path.len() >= 2 && self.is_module(name) {
+            let (domain, fields) = match path
+                .get(2)
+                .and_then(|d| self.kind_domain(name, &path[1], d))
+            {
+                Some(domain) => (domain, &path[3..]),
+                None => (path[1].clone(), &path[2..]),
+            };
+            let sym = self.open_module_domain(line, col, name, &domain)?;
+            let (ty, leaf) = self.walk_fields(line, col, self.syms[sym].ty, 0, fields)?;
             return Ok(Place {
                 sym,
                 leaf,
@@ -254,7 +273,7 @@ impl Checker {
                 line,
                 col,
                 format!(
-                    "storage `{name}` belongs to `{}`; write `{}.{name}`",
+                    "`{name}` belongs to `{}`; write `{}.{name}`",
                     owners[0], owners[0]
                 ),
             );
@@ -264,7 +283,7 @@ impl Checker {
                 line,
                 col,
                 format!(
-                    "storage `{name}` belongs to {}; qualify it as `Module.{name}`",
+                    "`{name}` belongs to {}; qualify it as `Module.{name}`",
                     owners.join(", ")
                 ),
             );
@@ -277,6 +296,45 @@ impl Checker {
             );
         }
         error(line, col, format!("unknown name `{name}`"))
+    }
+
+    /// `no field `name`` in `record`, or when `record` is a default record and a module owns the
+    /// domain `storage.name`, which module to reach it through.
+    pub(super) fn no_field(&self, line: u32, col: u32, record: usize, name: &str) -> Error {
+        let kind = if record == self.storage {
+            Some("storage")
+        } else {
+            self.domain_binds
+                .iter()
+                .find(|d| d.ty == record && d.owner.is_none() && !d.short.contains('.'))
+                .map(|d| d.short.as_str())
+        };
+        if let Some(kind) = kind {
+            let domain = format!("{kind}.{name}");
+            if self
+                .domain_binds
+                .iter()
+                .any(|d| d.short == domain && d.owner.is_some())
+            {
+                return self.unbound(line, col, &domain);
+            }
+            let owners: Vec<&str> = self
+                .domain_binds
+                .iter()
+                .filter(|d| {
+                    d.short == kind && self.types[d.ty].fields.iter().any(|f| f.name == name)
+                })
+                .filter_map(|d| d.owner.as_deref())
+                .collect();
+            if let [owner] = owners[..] {
+                return error(
+                    line,
+                    col,
+                    format!("`{domain}` belongs to `{owner}`; write `{owner}.{domain}`"),
+                );
+            }
+        }
+        error(line, col, format!("no field `{name}`"))
     }
 
     /// For `module.name` where `module` is a module: that it has no member `name`, with the
@@ -378,6 +436,23 @@ impl Checker {
         name.split_once('.')
             .and_then(|(module, member)| self.no_member(line, col, module, member, &want))
             .unwrap_or_else(|| error(line, col, format!("unknown {what} `{name}`")))
+    }
+
+    /// A module, not a value that shadows its name.
+    pub(super) fn is_module(&self, name: &str) -> bool {
+        self.lookup(name).is_none() && self.known_modules.contains(name)
+    }
+
+    /// `M.storage.d`, as written past `M`: the domain `storage.d`, unless `M` has no such
+    /// domain and a default `storage` record, whose field `d` it is.
+    pub(super) fn kind_domain(&self, module: &str, kind: &str, name: &str) -> Option<String> {
+        let domain = format!("{kind}.{name}");
+        let has = |short: &str| {
+            self.domain_syms
+                .iter()
+                .any(|d| d.owner.as_deref() == Some(module) && d.short == short)
+        };
+        (STATE_KINDS.contains(&kind) && (has(&domain) || !has(kind))).then_some(domain)
     }
 
     /// Whether calling the function at `idx` of `module` takes `use` of it, or `requires` in

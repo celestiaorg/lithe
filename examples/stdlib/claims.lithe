@@ -42,7 +42,7 @@ contract Claims is {
   external function burn(const from : address; const id : uint; const amount : uint)
     raises ERC6909InsufficientAllowance | ERC6909InvalidSender | ERC6909InsufficientBalance
   is {
-    if from <> Evm.sender() and not ERC6909.erc6909.operatorApprovals[from][Evm.sender()] then {
+    if from <> Evm.sender() and not ERC6909.storage.erc6909.operatorApprovals[from][Evm.sender()] then {
       ERC6909.spendAllowance(from, Evm.sender(), id, amount);
     }
     ERC6909.burn(from, id, amount);

@@ -43,8 +43,8 @@ pub(crate) use abi::{
 pub(crate) use builtins::intrinsic_tag;
 pub(crate) use compose::{module_transient_slot, several_contracts, Header};
 pub(crate) use layout::{
-    narrow_width, option_flip, pack_leaves, spec_layout, value_words, verify_value_words, Flip,
-    Space, SpecLayout,
+    narrow_width, option_flip, pack_leaves, pointer_word, spec_layout, value_words,
+    verify_value_words, word_leaves, word_shape, Flip, Space, SpecLayout,
 };
 pub(crate) use types::shape_ty;
 
@@ -214,6 +214,7 @@ pub(crate) struct ImmutableBlock {
     pub id: String,
     pub start: u32,
     pub words: u32,
+    pub ty: usize,
 }
 
 pub(crate) struct Checked {
@@ -235,6 +236,9 @@ pub(crate) struct Checked {
     /// Every block of immutables, in storage or in the code, and the symbols naming them.
     pub immutables: Vec<ImmutableBlock>,
     pub immutable_syms: HashSet<usize>,
+    /// Blocks of a plain contract that hold more than words: locals in memory while `deploy`
+    /// runs, each read marked `ImmutableRead`.
+    pub immutable_values: HashSet<usize>,
     pub ifaces: HashMap<usize, Vec<IfaceMethod>>,
     pub events: Vec<EventInfo>,
     pub errors: Vec<ErrInfo>,
@@ -297,6 +301,26 @@ impl Checked {
 
     pub(crate) fn transient_leaf(&self, leaf: u32) -> bool {
         leaf as usize >= self.transient_from
+    }
+
+    /// Whether a symbol names state: storage, or an immutable block that is a value in
+    /// memory while `deploy` runs.
+    pub(crate) fn state_sym(&self, sym: usize) -> bool {
+        self.syms[sym].storage || self.immutable_values.contains(&sym)
+    }
+
+    /// The type of an immutable's leaf, when it is a string, `bytes`, or dynamic list.
+    pub(crate) fn dynamic_immutable(&self, leaf: u32) -> Option<usize> {
+        let block = self
+            .immutables
+            .iter()
+            .find(|b| (b.start..b.start + b.words).contains(&leaf))?;
+        let mut words = Vec::new();
+        word_leaves(&self.types, block.ty, &mut words);
+        words
+            .get((leaf - block.start) as usize)
+            .copied()
+            .filter(|&ty| pointer_word(&self.types, ty))
     }
 
     /// Whether a leaf is an immutable built into the code.
@@ -837,6 +861,8 @@ fn check_program(
                 code_immutables.push((decl, ty));
                 continue;
             }
+            check_storage_shape(&c.types, ty, &decl.name)
+                .map_err(|err| err.in_file(&decl.origin))?;
         } else {
             check_storage_shape(&c.types, ty, &decl.name)
                 .map_err(|err| err.in_file(&decl.origin))?;
@@ -856,6 +882,7 @@ fn check_program(
                 id: decl.id.clone(),
                 start,
                 words: leaf_keys.len() as u32 - start,
+                ty,
             });
         }
         let start = start as usize;
@@ -886,6 +913,12 @@ fn check_program(
                     width,
                     signed: false,
                 },
+                // A dynamic value's word is where its bytes sit after the runtime code.
+                _ if pointer_word(&c.types, word) => Pack {
+                    offset: 0,
+                    width: IMM_HEADER_BYTES,
+                    signed: false,
+                },
                 _ => Pack::FULL,
             });
         }
@@ -900,6 +933,7 @@ fn check_program(
             id: decl.id.clone(),
             start,
             words: leaf_keys.len() as u32 - start,
+            ty,
         });
     }
     // Transient storage comes after every persistent leaf, one transient slot per word.
@@ -937,8 +971,13 @@ fn check_program(
         let start = leaf_keys.len();
         let words = c.types[ty].words as u64;
         let base = match &decl.owner {
-            Some(_) => {
-                let base = module_transient_slot(&qualified);
+            Some(module) => {
+                // `transient storage scratch` in `M` starts at the slot of `M.scratch`, and
+                // `M`'s default record at the slot of `M`, which no domain's name can spell.
+                let base = module_transient_slot(&match decl.name.strip_prefix("transient.") {
+                    Some(short) => format!("{module}.{short}"),
+                    None => module.clone(),
+                });
                 if let Some((_, _, other)) = module_slots
                     .iter()
                     .find(|(at, len, _)| base < at + len && *at < base + words.max(1))
@@ -980,6 +1019,32 @@ fn check_program(
             )
             .map_err(|err| err.in_file(&decl.origin))?,
         );
+    }
+    for decl in &domains {
+        let Some((kind, short)) = decl.name.split_once('.') else {
+            continue;
+        };
+        let qualify = |name: &str| match &decl.owner {
+            Some(module) => format!("{module}.{name}"),
+            None => name.to_string(),
+        };
+        let record = match (&decl.owner, kind) {
+            (None, "storage") => Some(c.storage),
+            _ => c.domain_tys.get(&qualify(kind)).copied(),
+        };
+        if record.is_some_and(|ty| c.types[ty].fields.iter().any(|f| f.name == short)) {
+            return Err(error(
+                decl.line,
+                decl.col,
+                format!(
+                    "`{}` and field `{short}` of `{}` are both `{}`; rename one of them",
+                    qualify(&decl.name),
+                    qualify(kind),
+                    qualify(&decl.name),
+                ),
+            )
+            .in_file(&decl.origin));
+        }
     }
     let leaves = leaf_keys.len();
     c.register_events(&prog)?;
@@ -1108,6 +1173,16 @@ fn check_program(
         known.push((named.clone(), sigs));
     }
     strip_list_casts(&mut prog, &c.types);
+    let imm_mem: HashSet<usize> = c
+        .imm_syms
+        .iter()
+        .copied()
+        .filter(|&s| !prog.upgradeable && !word_shape(&c.types, c.syms[s].ty))
+        .collect();
+    for &s in &imm_mem {
+        c.syms[s].storage = false;
+    }
+    mark_immutable_reads(&mut prog, &imm_mem, &mut c.syms, &c.types);
     let checked = Checked {
         prog,
         types: c.types,
@@ -1122,6 +1197,7 @@ fn check_program(
         immutable_from,
         immutables,
         immutable_syms: std::mem::take(&mut c.imm_syms),
+        immutable_values: imm_mem,
         ifaces: c.ifaces,
         events: c.events,
         errors: c.errors,
@@ -1243,6 +1319,10 @@ fn is_word(k: TyKind) -> bool {
 
 /// The field of a variant with payloads that holds its case's index.
 pub(crate) const TAG_FIELD: &str = "#tag";
+
+/// Bytes of the word that says where a dynamic immutable's bytes sit after the runtime code:
+/// their offset, then their length, two bytes each.
+pub(crate) const IMM_HEADER_BYTES: u8 = 4;
 
 /// A variant with no payloads, held as its case's index.
 pub(crate) fn is_enum(types: &[RType], ty: usize) -> bool {
@@ -1447,6 +1527,287 @@ fn strip_list_casts(prog: &mut Program, types: &[RType]) {
     }
     if let Some(guard) = &mut prog.guard {
         stmts(&mut guard.stmts, types);
+    }
+}
+
+/// A plain contract's immutable block that holds more than words is a value in memory while
+/// `deploy` runs, and read from the code after it. Each read of one is marked, so code
+/// generation builds the value from wherever it lies; only an assignment's place stays as
+/// it is. A loop over one reads it once, into a hidden local.
+fn mark_immutable_reads(
+    prog: &mut Program,
+    imm: &HashSet<usize>,
+    syms: &mut Vec<Sym>,
+    types: &[RType],
+) {
+    struct Pass<'a> {
+        imm: &'a HashSet<usize>,
+        syms: &'a mut Vec<Sym>,
+        types: &'a [RType],
+    }
+    impl Pass<'_> {
+        /// Whether a place is in one of the blocks.
+        fn rooted(&self, e: &Expr) -> bool {
+            match e {
+                Expr::Ident { sym: Some(s), .. } => self.imm.contains(s),
+                Expr::Field { root, .. } | Expr::Index { root, .. } => {
+                    root.is_some_and(|s| self.imm.contains(&s))
+                }
+                _ => false,
+            }
+        }
+
+        /// A whole value at its leaves: the block, named alone or through its module, or
+        /// fields of fields of it.
+        fn leaves(&self, e: &Expr) -> bool {
+            match e {
+                Expr::Ident { sym: Some(s), .. } => self.imm.contains(s),
+                Expr::Field {
+                    root: Some(s),
+                    base,
+                    ..
+                } => {
+                    self.imm.contains(s)
+                        && (!self.rooted(base)
+                            || matches!(
+                                self.types[peel_id(self.types, base.ty())].kind,
+                                TyKind::Record | TyKind::Tuple
+                            ) && self.leaves(base))
+                }
+                _ => false,
+            }
+        }
+
+        fn read(e: Expr) -> Expr {
+            Expr::Call {
+                line: e.line(),
+                col: e.col(),
+                name: "#immutable".to_string(),
+                ty: e.ty(),
+                args: vec![e],
+                base: None,
+                callee: None,
+                builtin: Some(Builtin::ImmutableRead),
+                iface: None,
+                method: None,
+            }
+        }
+
+        fn expr(&mut self, e: &mut Expr) {
+            if matches!(
+                e,
+                Expr::Call {
+                    builtin: Some(Builtin::ImmutableRead),
+                    ..
+                }
+            ) {
+                return;
+            }
+            if self.leaves(e) {
+                let unit = Expr::Lit {
+                    line: 0,
+                    col: 0,
+                    lit: Lit::Unit,
+                    ty: TY_UNIT,
+                };
+                *e = Self::read(std::mem::replace(e, unit));
+                return;
+            }
+            match e {
+                Expr::Field {
+                    base, root, leaf, ..
+                } if root.is_some_and(|s| self.imm.contains(&s)) => {
+                    self.expr(base);
+                    (*root, *leaf) = (None, 0);
+                }
+                Expr::Index {
+                    base,
+                    index,
+                    root,
+                    leaf,
+                    ..
+                } if root.is_some_and(|s| self.imm.contains(&s)) => {
+                    self.expr(base);
+                    self.expr(index);
+                    (*root, *leaf) = (None, 0);
+                }
+                Expr::Case { scrut, arms, .. } => {
+                    self.expr(scrut);
+                    for arm in arms {
+                        self.stmts(&mut arm.stmts);
+                        self.expr(&mut arm.expr);
+                    }
+                }
+                _ => each_child(e, &mut |c| self.expr(c)),
+            }
+        }
+
+        /// An assignment's place: only the keys and indices in it are read.
+        fn place(&mut self, e: &mut Expr) {
+            match e {
+                Expr::Field { base, .. } => self.place(base),
+                Expr::Index { base, index, .. } => {
+                    self.place(base);
+                    self.expr(index);
+                }
+                _ => {}
+            }
+        }
+
+        fn raised(&mut self, r: &mut Raised) {
+            match &mut r.form {
+                RaisedForm::Unit => {}
+                RaisedForm::Positional(e) => self.expr(e),
+                RaisedForm::Fields(fields) => fields.iter_mut().for_each(|(_, e)| self.expr(e)),
+            }
+        }
+
+        fn stmts(&mut self, list: &mut [Stmt]) {
+            for s in list {
+                self.stmt(s);
+            }
+        }
+
+        fn stmt(&mut self, s: &mut Stmt) {
+            match s {
+                Stmt::Const { expr: e, .. }
+                | Stmt::Var { expr: e, .. }
+                | Stmt::Call { expr: e, .. }
+                | Stmt::AssignTuple { expr: e, .. } => self.expr(e),
+                Stmt::Assign {
+                    expr: e,
+                    index,
+                    keys,
+                    target,
+                    ..
+                } => {
+                    self.expr(e);
+                    index
+                        .iter_mut()
+                        .chain(keys.iter_mut())
+                        .for_each(|k| self.expr(k));
+                    if let Some(t) = target {
+                        self.place(t);
+                    }
+                }
+                Stmt::If {
+                    cond,
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    self.expr(cond);
+                    self.stmts(then_body);
+                    self.stmts(else_body);
+                }
+                Stmt::Assert { cond, reason, .. } => {
+                    self.expr(cond);
+                    self.raised(reason);
+                }
+                Stmt::Fail { reason } => self.raised(reason),
+                Stmt::Emit { fields, .. } => fields.iter_mut().for_each(|(_, e)| self.expr(e)),
+                Stmt::Defer {
+                    expr: e,
+                    value,
+                    gas,
+                    then,
+                    ..
+                } => {
+                    self.expr(e);
+                    value
+                        .iter_mut()
+                        .chain(gas.iter_mut())
+                        .for_each(|e| self.expr(e));
+                    let mut then = then.as_deref_mut();
+                    while let Some(t) = then {
+                        self.stmts(&mut t.stmts);
+                        then = t.error.as_deref_mut();
+                    }
+                }
+                Stmt::For {
+                    iter,
+                    until,
+                    bound,
+                    body,
+                    elem_init,
+                    length,
+                    list,
+                    declared,
+                    ..
+                } => {
+                    if let (ForIter::List(xs), None, Some(Expr::Index { base, .. })) =
+                        (&mut *iter, *list, &mut *elem_init)
+                    {
+                        if self.leaves(base) {
+                            let ty = base.ty();
+                            let sid = self.syms.len();
+                            self.syms.push(Sym {
+                                ty,
+                                mutable: false,
+                                storage: false,
+                                slot: 0,
+                                span: 0,
+                            });
+                            let local = Expr::Ident {
+                                line: base.line(),
+                                col: base.col(),
+                                name: "$list".to_string(),
+                                sym: Some(sid),
+                                builtin: None,
+                                ty,
+                            };
+                            *xs = Self::read(std::mem::replace(&mut **base, local.clone()));
+                            if let Some(Expr::Field { base, .. }) = length {
+                                **base = local;
+                            }
+                            for e in elem_init.iter_mut().chain(length.iter_mut()) {
+                                if let Expr::Field { root, leaf, .. }
+                                | Expr::Index { root, leaf, .. } = e
+                                {
+                                    (*root, *leaf) = (Some(sid), 0);
+                                }
+                            }
+                            *list = Some(sid);
+                            declared.push(sid);
+                        }
+                    }
+                    match iter {
+                        ForIter::Range { lo, hi } => {
+                            self.expr(lo);
+                            self.expr(hi);
+                        }
+                        ForIter::List(e) => self.expr(e),
+                    }
+                    until
+                        .iter_mut()
+                        .chain(bound.iter_mut())
+                        .chain(elem_init.iter_mut())
+                        .chain(length.iter_mut())
+                        .for_each(|e| self.expr(e));
+                    self.stmts(body);
+                }
+                Stmt::Skip => {}
+            }
+        }
+    }
+    if imm.is_empty() {
+        return;
+    }
+    let mut pass = Pass { imm, syms, types };
+    let modules = prog.modules.iter_mut().flat_map(|m| m.funcs.iter_mut());
+    for f in prog
+        .funcs
+        .iter_mut()
+        .chain(prog.guards.iter_mut())
+        .chain(modules)
+    {
+        pass.stmts(&mut f.stmts);
+        if let Some(tail) = &mut f.tail {
+            pass.expr(tail);
+        }
+    }
+    if let Some(guard) = &mut prog.guard {
+        pass.stmts(&mut guard.stmts);
     }
 }
 

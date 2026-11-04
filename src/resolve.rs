@@ -11,6 +11,9 @@ use crate::ast::*;
 use crate::modules::{clash, file_label, kind_name, Site, STD_ROOT};
 use crate::{error, Error};
 
+/// The words a state path starts with: `storage.x`, `transient.x`, `immutable.x`.
+pub(crate) const STATE_KINDS: [&str; 3] = ["storage", "transient", "immutable"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Cat {
     Type,
@@ -81,6 +84,8 @@ pub(crate) struct Scope {
     pub contracts: BTreeSet<String>,
     /// The imports its references use.
     pub used: BTreeSet<usize>,
+    /// The named state its contract declares, `storage.d`.
+    pub domains: BTreeSet<String>,
 }
 
 /// A scope's key: a file, and the contract when the file declares several.
@@ -101,6 +106,8 @@ pub(crate) struct Scopes {
     pub intrinsics: BTreeMap<String, BTreeMap<String, Tag>>,
     /// Each module's constants, `M.n` by the module's canonical name.
     consts: BTreeSet<String>,
+    /// Each module's named state, `M.storage.d` by the module's canonical name.
+    domains: BTreeSet<String>,
 }
 
 /// One file, or one contract of a file of contracts, with its imports.
@@ -229,10 +236,13 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
 
     // Each unit's scope: its imports' public names, then its own. Functions one scope sees
     // under one name are overloads, which share their canonical name.
+    // A file's named state joins its importers' through unaliased imports, as the files merge.
     let mut groups: Vec<usize> = (0..scopes.decls.len()).collect();
+    let mut file_domains: HashMap<String, BTreeSet<String>> = HashMap::new();
     for unit in units.iter() {
         let mut scope = Scope {
             imports: unit.imports.clone(),
+            domains: unit.prog.domains.iter().map(|d| d.name.clone()).collect(),
             ..Scope::default()
         };
         scope.contracts.extend(unit.contracts.iter().cloned());
@@ -245,6 +255,11 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
             let Some(target) = &import.target else {
                 continue;
             };
+            if import.decl.alias.is_none() {
+                scope
+                    .domains
+                    .extend(file_domains.get(target).into_iter().flatten().cloned());
+            }
             let public: Vec<usize> = own
                 .get(&(target.clone(), None))
                 .into_iter()
@@ -284,6 +299,9 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
             let name = scopes.decls[id].name.clone();
             insert_module(&scopes.decls, &mut scope, name, id, None, None)
                 .map_err(|err| err.in_file(&unit.key.0))?;
+        }
+        if unit.key.1.is_none() {
+            file_domains.insert(unit.key.0.clone(), scope.domains.clone());
         }
         scopes.scopes.insert(unit.key.clone(), scope);
     }
@@ -414,6 +432,9 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
             for f in module.funcs.iter().filter(|f| f.constant) {
                 scopes.consts.insert(format!("{canonical}.{}", f.name));
             }
+            for d in &module.domains {
+                scopes.domains.insert(format!("{canonical}.{}", d.name));
+            }
             if module.intrinsics.is_empty() {
                 continue;
             }
@@ -430,6 +451,7 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
     let ctors = scopes.ctors.clone();
     let intrinsics = scopes.intrinsics.clone();
     let consts = scopes.consts.clone();
+    let domains = scopes.domains.clone();
     for unit in units.iter_mut() {
         let mut scope = scopes.scopes.remove(&unit.key).expect("a scope");
         let module_names: HashMap<String, String> = file_modules[&unit.key.0]
@@ -448,6 +470,8 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
             ctors: &ctors,
             intrinsics: &intrinsics,
             consts: &consts,
+            domains: &domains,
+            spec_owner: None,
             origin: &unit.key.0,
             module: None,
             type_params: HashSet::new(),
@@ -501,6 +525,8 @@ fn resolve_spec_blocks(
         ctors: &scopes.ctors,
         intrinsics: &scopes.intrinsics,
         consts: &scopes.consts,
+        domains: &scopes.domains,
+        spec_owner: None,
         origin: &key.0,
         module: None,
         type_params: HashSet::new(),
@@ -798,6 +824,9 @@ struct Resolver<'a> {
     ctors: &'a BTreeSet<String>,
     intrinsics: &'a BTreeMap<String, BTreeMap<String, Tag>>,
     consts: &'a BTreeSet<String>,
+    domains: &'a BTreeSet<String>,
+    /// The module a spec block describes, whose state its paths name.
+    spec_owner: Option<String>,
     origin: &'a str,
     module: Option<InModule>,
     type_params: HashSet<String>,
@@ -840,7 +869,6 @@ impl Resolver<'_> {
             }
         }
         for d in &mut prog.domains {
-            self.unshadowed([&d.name], d.line, d.col)?;
             self.ty(&mut d.ty)?;
         }
         for func in &mut prog.funcs {
@@ -971,7 +999,6 @@ impl Resolver<'_> {
                 }
             }
             for d in &mut module.domains {
-                self.unshadowed([&d.name], d.line, d.col)?;
                 self.ty(&mut d.ty)?;
                 d.owner = Some(module.name.clone());
             }
@@ -1057,8 +1084,10 @@ impl Resolver<'_> {
                 }
                 bind_expr(&clause.expr, &mut self.locals);
             }
+            self.spec_owner = None;
             if let Some(module) = &mut block.module {
                 self.module_ref(module, block.line, block.col)?;
+                self.spec_owner = Some(module.clone());
             } else if let Some(target) = &mut block.target {
                 if let Some(name) = self.lookup(&target.name, &[Cat::Func]) {
                     target.name = name;
@@ -1526,15 +1555,22 @@ impl Resolver<'_> {
         if self.locals.contains(first) {
             return Ok(());
         }
+        if path.len() >= 2 && self.owns(&path[0], &path[1]) {
+            let domain = format!("{}.{}", path[0], path[1]);
+            path.splice(0..2, [domain]);
+            return Ok(());
+        }
         if path.len() >= 2 && self.scope.aliases.contains_key(first) {
             let spelled = format!("{}.{}", path[0], path[1]);
             if let Some(canonical) = self.lookup_module(&spelled) {
                 path.splice(0..2, [canonical]);
+                self.module_domain_path(path);
                 return Ok(());
             }
         }
         if let Some(canonical) = self.lookup_module(&path[0].clone()) {
             path[0] = canonical;
+            self.module_domain_path(path);
             return Ok(());
         }
         if path.len() >= 2 {
@@ -1549,6 +1585,86 @@ impl Resolver<'_> {
             self.hidden_namespace(&first)?;
         }
         Ok(())
+    }
+
+    /// `M.storage.d.x := v`, after its module: the domain as one name, `M`, `storage.d`, `x`.
+    fn module_domain_path(&self, path: &mut Vec<String>) {
+        if path.len() >= 3
+            && STATE_KINDS.contains(&path[1].as_str())
+            && self
+                .domains
+                .contains(&format!("{}.{}.{}", path[0], path[1], path[2]))
+        {
+            let domain = format!("{}.{}", path[1], path[2]);
+            path.splice(1..3, [domain]);
+        }
+    }
+
+    /// Whether `kind.name`, as `storage.d`, names a domain the code being resolved owns: its
+    /// module's, the module its spec block describes, or the contract's.
+    fn owns(&self, kind: &str, name: &str) -> bool {
+        if !STATE_KINDS.contains(&kind) || self.locals.contains(kind) {
+            return false;
+        }
+        let domain = format!("{kind}.{name}");
+        match self
+            .spec_owner
+            .as_ref()
+            .or(self.module.as_ref().map(|m| &m.name))
+        {
+            Some(module) => self.domains.contains(&format!("{module}.{domain}")),
+            None => self.scope.domains.contains(&domain),
+        }
+    }
+
+    /// `storage.d` and `M.storage.d`, written as fields: the domain as one name.
+    fn domain_expr(&mut self, expr: &mut Expr) -> bool {
+        let (at_line, at_col) = (expr.line(), expr.col());
+        let Expr::Field { base, name, .. } = expr else {
+            return false;
+        };
+        let (line, col) = (base.line(), base.col());
+        let rewritten = match base.as_mut() {
+            Expr::Ident { name: kind, .. } if self.owns(kind, name) => Expr::Ident {
+                line,
+                col,
+                name: format!("{kind}.{name}"),
+                sym: None,
+                builtin: None,
+                ty: 0,
+            },
+            Expr::Field {
+                base: module,
+                name: kind,
+                ..
+            } if STATE_KINDS.contains(&kind.as_str()) => {
+                let Some(canonical) = self.module_expr(module) else {
+                    return false;
+                };
+                if !self.domains.contains(&format!("{canonical}.{kind}.{name}")) {
+                    return false;
+                }
+                Expr::Field {
+                    line: at_line,
+                    col: at_col,
+                    base: Box::new(Expr::Ident {
+                        line: module.line(),
+                        col: module.col(),
+                        name: canonical,
+                        sym: None,
+                        builtin: None,
+                        ty: 0,
+                    }),
+                    name: format!("{kind}.{name}"),
+                    root: None,
+                    leaf: 0,
+                    ty: 0,
+                }
+            }
+            _ => return false,
+        };
+        *expr = rewritten;
+        true
     }
 
     fn raised(&mut self, reason: &mut Raised) -> Result<(), Error> {
@@ -1808,6 +1924,9 @@ impl Resolver<'_> {
                 Ok(())
             }
             Expr::Field { .. } => {
+                if self.domain_expr(expr) {
+                    return Ok(());
+                }
                 if let Some(canonical) = self.module_expr(expr) {
                     let (line, col) = (expr.line(), expr.col());
                     *expr = Expr::Ident {

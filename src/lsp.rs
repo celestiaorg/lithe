@@ -1350,7 +1350,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("main.lithe");
         let uri = format!("file://{}", path.display()).replace(' ', "%20");
-        let text = "import \"std/security/pausable\";\n\ncontract C is {\n  external view function f() : bool is Pausable.pausable.paused\n}\n";
+        let text = "import \"std/security/pausable\";\n\ncontract C is {\n  external view function f() : bool is Pausable.storage.pausable.paused\n}\n";
         std::fs::write(&path, text).unwrap();
         let action = frame(&format!(
             r#"{{"jsonrpc":"2.0","id":1,"method":"textDocument/codeAction","params":{{"textDocument":{{"uri":{}}},"range":{{"start":{{"line":3,"character":0}},"end":{{"line":3,"character":0}}}},"context":{{"diagnostics":[]}}}}}}"#,
@@ -1418,11 +1418,11 @@ mod tests {
     }
 
     #[test]
-    fn answers_for_hooks() {
-        let dir = std::env::temp_dir().join(format!("lithe-lsp-hooks-{}", std::process::id()));
+    fn answers_along_kind_prefixed_paths() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-paths-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("hooks.lithe");
-        let text = "module Tally is {\n  storage tally at \"lsp.tally\" is record { n : uint; }\n  (* Tells the contract. *)\n  view hook limit() : uint;\n  external function add() is {\n    if tally.n < limit() then {\n      tally.n := tally.n + 1;\n    }\n  }\n}\ncontract C is {\n  use Tally exposing { function add(); } with {\n    hook limit : uint is { skip } with 3\n  }\n}\n";
+        let path = dir.join("paths.lithe");
+        let text = "module Tally is {\n  storage tally at \"lsp.paths.tally\" is record { n : uint; }\n  function add() is { storage.tally.n := storage.tally.n + 1; }\n}\nuse Tally;\nstorage config at \"lsp.paths.config\" is record { fee : uint; }\nexternal function go(const config : uint) is {\n  Tally.add();\n  storage.config.fee := config + Tally.storage.tally.n;\n}\n";
         std::fs::write(&path, text).unwrap();
         let analysis = lithe::analyze(&path, text);
         assert!(
@@ -1431,7 +1431,127 @@ mod tests {
             analysis.error.map(|e| e.to_string())
         );
         let index = analysis.index.expect("index");
-        let call = index.at(0, text, 6, 18).expect("the call to `limit`");
+        let hover = |col: u32| {
+            let at = index
+                .at(0, text, 9, col)
+                .unwrap_or_else(|| panic!("a use at 9:{col}"));
+            index.hover(at).to_string()
+        };
+        assert!(
+            hover(11).contains("storage config at \"lsp.paths.config\""),
+            "{}",
+            hover(11)
+        );
+        assert!(
+            hover(18).contains("stored at `storage.config.fee`"),
+            "{}",
+            hover(18)
+        );
+        assert!(hover(25).contains("config : uint"), "{}", hover(25));
+        assert!(
+            hover(48).contains("storage tally at \"lsp.paths.tally\""),
+            "{}",
+            hover(48)
+        );
+        assert!(
+            hover(54).contains("stored at `Tally.storage.tally.n`"),
+            "{}",
+            hover(54)
+        );
+        let labels = |line: &str| -> Vec<String> {
+            let edited = text.replace("  Tally.add();\n", &format!("  Tally.add();\n  {line}\n"));
+            let col = line.len() as u32 + 3;
+            index
+                .completions(&edited, 9, col)
+                .into_iter()
+                .map(|c| c.label)
+                .collect()
+        };
+        assert_eq!(labels("storage."), ["config"]);
+        assert_eq!(labels("storage.config."), ["fee"]);
+        assert_eq!(labels("Tally.storage."), ["tally"]);
+        assert_eq!(labels("Tally.storage.tally."), ["n"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn answers_along_module_default_records() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-defaults-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("defaults.lithe");
+        let text = "module Tally is {\n  storage at \"lsp.tally\" is record { n : uint; }\n  storage named at \"lsp.named\" is record { m : uint; }\n  function add() is {\n    storage.n := storage.n + 1;\n  }\n}\nuse Tally;\nstorage is record { fee : uint; }\nexternal function go() is {\n  Tally.add();\n  storage.fee := Tally.storage.n;\n}\n";
+        std::fs::write(&path, text).unwrap();
+        let analysis = lithe::analyze(&path, text);
+        assert!(
+            analysis.error.is_none(),
+            "{:?}",
+            analysis.error.map(|e| e.to_string())
+        );
+        let index = analysis.index.expect("index");
+        let hover = |line: u32, col: u32| {
+            let at = index
+                .at(0, text, line, col)
+                .unwrap_or_else(|| panic!("a use at {line}:{col}"));
+            index.hover(at).to_string()
+        };
+        assert!(
+            hover(12, 24).contains("storage at \"lsp.tally\" is"),
+            "{}",
+            hover(12, 24)
+        );
+        assert!(
+            hover(12, 32).contains("stored at `Tally.storage.n`"),
+            "{}",
+            hover(12, 32)
+        );
+        assert!(
+            hover(5, 5).contains("storage at \"lsp.tally\" is"),
+            "{}",
+            hover(5, 5)
+        );
+        assert!(
+            hover(5, 13).contains("stored at `Tally.storage.n`"),
+            "{}",
+            hover(5, 13)
+        );
+        let at = index.at(0, text, 12, 32).expect("n");
+        assert_eq!(index.references(at.def).count(), 4);
+        let labels = |line: u32, after: &str, written: &str| -> Vec<String> {
+            let edited = text.replace(after, &format!("{after}\n  {written}"));
+            let col = written.len() as u32 + 3;
+            index
+                .completions(&edited, line, col)
+                .into_iter()
+                .map(|c| c.label)
+                .collect()
+        };
+        assert_eq!(
+            labels(12, "  Tally.add();", "Tally.storage."),
+            ["named", "n"]
+        );
+        assert_eq!(labels(12, "  Tally.add();", "storage."), ["fee"]);
+        assert_eq!(
+            labels(6, "    storage.n := storage.n + 1;", "storage."),
+            ["named", "n"]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn answers_for_hooks() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-hooks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hooks.lithe");
+        let text = "module Tally is {\n  storage tally at \"lsp.tally\" is record { n : uint; }\n  (* Tells the contract. *)\n  view hook limit() : uint;\n  external function add() is {\n    if storage.tally.n < limit() then {\n      storage.tally.n := storage.tally.n + 1;\n    }\n  }\n}\ncontract C is {\n  use Tally exposing { function add(); } with {\n    hook limit : uint is { skip } with 3\n  }\n}\n";
+        std::fs::write(&path, text).unwrap();
+        let analysis = lithe::analyze(&path, text);
+        assert!(
+            analysis.error.is_none(),
+            "{:?}",
+            analysis.error.map(|e| e.to_string())
+        );
+        let index = analysis.index.expect("index");
+        let call = index.at(0, text, 6, 26).expect("the call to `limit`");
         let hover = index.hover(call);
         assert!(
             hover.contains("view hook limit() : uint")

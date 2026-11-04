@@ -22,19 +22,19 @@ module Ownable2Step is {
   }
 
   external view function owner() : address is
-    Ownable.ownable.owner
+    Ownable.storage.ownable.owner
 
   external view function pendingOwner() : address is
-    ownable2step.pending
+    storage.ownable2step.pending
 
   (* Proposes `newOwner`. Proposing the zero address cancels a pending transfer. *)
   external function transferOwnership(const newOwner : address)
     raises OwnableUnauthorizedAccount
   is {
     Ownable.checkOwner();
-    ownable2step.pending := newOwner;
+    storage.ownable2step.pending := newOwner;
     emit OwnershipTransferStarted {
-      previousOwner = Ownable.ownable.owner;
+      previousOwner = Ownable.storage.ownable.owner;
       newOwner = newOwner;
     };
   }
@@ -42,8 +42,8 @@ module Ownable2Step is {
   external function acceptOwnership()
     raises OwnableUnauthorizedAccount
   is {
-    assert(ownable2step.pending = Evm.sender(), OwnableUnauthorizedAccount(Evm.sender()));
-    ownable2step.pending := Address.zero;
+    assert(storage.ownable2step.pending = Evm.sender(), OwnableUnauthorizedAccount(Evm.sender()));
+    storage.ownable2step.pending := Address.zero;
     Ownable.setOwner(Evm.sender());
   }
 
@@ -51,7 +51,7 @@ module Ownable2Step is {
     raises OwnableUnauthorizedAccount
   is {
     Ownable.checkOwner();
-    ownable2step.pending := Address.zero;
+    storage.ownable2step.pending := Address.zero;
     Ownable.setOwner(Address.zero);
   }
 }

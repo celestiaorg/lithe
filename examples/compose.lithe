@@ -20,10 +20,10 @@ module Ledger is {
   }
 
   external view function balanceOf(const account : address) : uint is
-    ledger.balances[account]
+    storage.ledger.balances[account]
 
   external function mint(const account : address; const amount : uint) is {
-    ledger.balances[account] += amount;
+    storage.ledger.balances[account] += amount;
   }
 
   (* Moves the caller's tokens, for the contract's own entrypoints. *)
@@ -31,7 +31,7 @@ module Ledger is {
     raises InsufficientBalance
   is {
     const sender : address := Evm.sender();
-    const balance : uint := ledger.balances[sender];
+    const balance : uint := storage.ledger.balances[sender];
     assert(
       balance >= amount,
       InsufficientBalance {
@@ -39,8 +39,8 @@ module Ledger is {
         required = amount;
       }
     );
-    ledger.balances[sender] := balance - amount;
-    ledger.balances[to] += amount;
+    storage.ledger.balances[sender] := balance - amount;
+    storage.ledger.balances[to] += amount;
     emit Transfer {
       from = sender;
       to = to;
@@ -62,16 +62,16 @@ module Pausable is {
   error Paused;
 
   external view function isPaused() : bool is
-    settings.paused
+    storage.settings.paused
 
   external function pause() is {
-    settings.paused := true;
+    storage.settings.paused := true;
   }
 
   function requireUnpaused()
     raises Paused
   is {
-    assert(not settings.paused, Paused);
+    assert(not storage.settings.paused, Paused);
   }
 }
 
@@ -100,7 +100,7 @@ contract Token is {
   }
 
   external view function flag() : bool is
-    Pausable.settings.paused
+    Pausable.storage.settings.paused
 
   external function guardedTransfer(const to : address; const amount : uint)
     raises Paused | InsufficientBalance

@@ -125,7 +125,7 @@ contract Registry is {
 
 `std/crypto/eip712.lithe`. Hashes typed structured data under a domain of name, version, chain id, and contract address. `init` records the hashes of the name and version as [immutables](/language/storage#immutables), so it runs only from `deploy` or a migration. The chain id and address are read when a hash is made, so the domain stays right after a fork.
 
-Its externals are `DOMAIN_SEPARATOR` and ERC-5267's `eip712Domain`, which `IERC5267` in `std/interfaces/erc5267.lithe` declares. `eip712Domain` answers OpenZeppelin's tuple: fields `0x0f`, the name, the version, the chain id, this contract, a zero salt, and no extensions. For it, `init` also keeps the name and version as OpenZeppelin's `ShortStrings` does: each is an immutable word when both are under 32 bytes, and otherwise both are stored. A contract that doesn't expose `eip712Domain` still pays for this in its creation code, never in its runtime code.
+Its externals are `DOMAIN_SEPARATOR` and ERC-5267's `eip712Domain`, which `IERC5267` in `std/interfaces/erc5267.lithe` declares. `eip712Domain` answers OpenZeppelin's tuple: fields `0x0f`, the name, the version, the chain id, this contract, a zero salt, and no extensions. For it, `init` also keeps the name and version as OpenZeppelin's `ShortStrings` does: each is an immutable word when both are under 32 bytes, and otherwise both are immutable strings, kept after the code. A contract that doesn't expose `eip712Domain` still pays for this in its creation code, never in its runtime code.
 
 ```lithe
 import "std/abi";

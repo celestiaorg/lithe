@@ -13,7 +13,7 @@ A module groups storage, types, errors, events, constants, and functions under o
 
 ```lithe fragment
 module Ownable is {
-  storage ownable at "example.ownable" is record {
+  storage at "example.ownable" is record {
     owner : address;
   }
 
@@ -25,25 +25,26 @@ module Ownable is {
   }
 
   view function owner() : address is
-    ownable.owner
+    storage.owner
 
   view function onlyOwner()
     raises NotOwner
   is {
-    assert(Evm.sender() = ownable.owner, NotOwner);
+    assert(Evm.sender() = storage.owner, NotOwner);
   }
 
   function transferOwnership(const next : address)
     raises NotOwner
   is {
     onlyOwner();
-    emit OwnershipTransferred { previous = ownable.owner; next = next; };
-    ownable.owner := next;
+    emit OwnershipTransferred { previous = storage.owner; next = next; };
+    storage.owner := next;
   }
 }
 ```
 
-- A module's storage must be **named**. Inside the module it is `ownable.owner`. Everywhere else it is qualified with the module's name: `Ownable.ownable.owner`.
+- A module's state is declared as a contract's is, and every record of it has an ERC-7201 id. Its default storage record, `storage at "example.ownable" is record`, is `storage.owner` inside the module, and a named one, `storage roles at "example.roles" is record`, is `storage.roles.x`. Everywhere else they are qualified with the module's name: `Ownable.storage.owner` and `Ownable.storage.roles.x`.
+- Its default transient record, `transient storage is record`, and its default immutables, `immutable at "example.ownable.config" is record`, are `transient.x` and `immutable.x` inside the module, and `Ownable.transient.x` and `Ownable.immutable.x` everywhere else. A module's default storage and immutables must name their id. Its transient storage has none.
 - A module's functions are internal. A module may also declare `external` functions: the interface it offers. A contract exposes them only by declaring them. See [Exposing a module's externals](#exposing-a-modules-externals).
 - A module's errors and events keep their names, so contracts that use the module raise and log them under the standard signatures.
 - A module's [constants](/by-example/constants), `const maxLinks : uint := 8;`, are bare names inside it and `Links.maxLinks` everywhere else. Its code may also name the constants declared at the top of its file and the files it imports.
@@ -59,15 +60,15 @@ module Counter is {
   }
 
   function bump(const by : uint) is {
-    counter.count += by;
+    storage.counter.count += by;
   }
 
   (* The interface the module offers. *)
   external view function count() : uint is
-    counter.count
+    storage.counter.count
 
   external function reset() is {
-    counter.count := 0;
+    storage.counter.count := 0;
   }
 }
 
@@ -88,7 +89,7 @@ contract App is {
   }
 
   external view function current() : uint is
-    Counter.counter.count
+    Counter.storage.counter.count
 }
 ```
 
@@ -114,7 +115,7 @@ module Counter is {
   }
 
   function bump() is {
-    counter.count += 1;
+    storage.counter.count += 1;
   }
 }
 
@@ -124,7 +125,7 @@ module Visits is {
   }
 
   function note() is {
-    visits.last := Evm.sender();
+    storage.visits.last := Evm.sender();
   }
 }
 
@@ -145,10 +146,10 @@ contract Site is {
   }
 
   external view function signatures() : uint is
-    Counter.counter.count
+    Counter.storage.counter.count
 
   external view function lastSigner() : address is
-    Visits.visits.last
+    Visits.storage.visits.last
 }
 ```
 
@@ -163,7 +164,7 @@ module Counter is {
   }
 
   external view function count() : uint is
-    counter.count
+    storage.counter.count
 }
 
 module Visits is {
@@ -188,7 +189,7 @@ module Counter is {
   }
 
   external view function count() : uint is
-    counter.count
+    storage.counter.count
 }
 
 module Visits is {
@@ -217,8 +218,8 @@ module Counter is {
   hook counted(const count : uint);
 
   external function bump() is {
-    counter.count += 1;
-    counted(counter.count);
+    storage.counter.count += 1;
+    counted(storage.counter.count);
   }
 }
 
@@ -289,7 +290,7 @@ module Ledger is {
   }
 
   external view function balance() : uint is
-    ledger.n
+    storage.ledger.n
 }
 
 contract Token is {
@@ -321,11 +322,11 @@ module Counter is {
   }
 
   function bump(const by : uint) : uint is {
-    counter.count += by;
-  } with counter.count
+    storage.counter.count += by;
+  } with storage.counter.count
 
   external view function count() : uint is
-    counter.count
+    storage.counter.count
 }
 ```
 
@@ -402,7 +403,7 @@ module Tally is {
   }
 
   private function step(const by : uint) is {
-    tally.n += by;
+    storage.tally.n += by;
   }
 
   function bump() is {
@@ -451,11 +452,11 @@ module Prices is {
     raises ZeroPrice
   is {
     assert(price > 0, ZeroPrice);
-    prices.ofToken[tokenId] := price;
+    storage.prices.ofToken[tokenId] := price;
   }
 
   external view function price(const tokenId : uint) : uint is
-    prices.ofToken[tokenId]
+    storage.prices.ofToken[tokenId]
 }
 
 contract Shop is {
@@ -532,7 +533,7 @@ module Notes is {
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.ofId[id] := note;
+    storage.notes.ofId[id] := note;
   }
 }
 
@@ -562,7 +563,7 @@ module Notes is {
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.ofId[id] := note;
+    storage.notes.ofId[id] := note;
   }
 }
 
@@ -589,7 +590,7 @@ module Notes is {
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.ofId[id] := note;
+    storage.notes.ofId[id] := note;
   }
 }
 
@@ -620,11 +621,11 @@ module Notes is {
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.ofId[id] := note;
+    storage.notes.ofId[id] := note;
   }
 
   external view function note(const id : uint) : uint is
-    notes.ofId[id]
+    storage.notes.ofId[id]
 }
 
 contract Board is {
@@ -651,7 +652,7 @@ module Notes is {
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.ofId[id] := note;
+    storage.notes.ofId[id] := note;
   }
 }
 
@@ -679,7 +680,7 @@ module Notes is {
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.ofId[id] := note;
+    storage.notes.ofId[id] := note;
   }
 }
 
@@ -709,7 +710,7 @@ module Notes is {
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.ofId[id] := note;
+    storage.notes.ofId[id] := note;
   }
 }
 
@@ -741,7 +742,7 @@ module Notes is {
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.ofId[id] := note;
+    storage.notes.ofId[id] := note;
   }
 }
 
@@ -775,7 +776,7 @@ module Notes is {
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.ofId[id] := note;
+    storage.notes.ofId[id] := note;
   }
 }
 
@@ -808,7 +809,7 @@ module Notes is {
   guard writer(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(owner) is {
-    notes.ofId[id] := note;
+    storage.notes.ofId[id] := note;
   }
 }
 
@@ -847,15 +848,15 @@ module Tokens is {
   view hook nameOf(const tokenId : uint) : string;
 
   function transfer(const to : address; const tokenId : uint) raises NotOwner is {
-    const from : address := tokens.ownerOf[tokenId];
+    const from : address := storage.tokens.ownerOf[tokenId];
     assert(from = Evm.sender(), NotOwner(tokenId));
     beforeTransfer(from, to, tokenId);
-    tokens.ownerOf[tokenId] := to;
+    storage.tokens.ownerOf[tokenId] := to;
     afterTransfer(from, to, tokenId);
   }
 
   external function mint(const tokenId : uint) is {
-    tokens.ownerOf[tokenId] := Evm.sender();
+    storage.tokens.ownerOf[tokenId] := Evm.sender();
   }
 
   external function send(const to : address; const tokenId : uint) raises NotOwner is
@@ -939,7 +940,7 @@ module Tokens is {
   hook afterTransfer(const to : address; const tokenId : uint);
 
   external function send(const to : address; const tokenId : uint) is {
-    tokens.ownerOf[tokenId] := to;
+    storage.tokens.ownerOf[tokenId] := to;
     afterTransfer(to, tokenId);
   }
 }
@@ -989,8 +990,8 @@ module Tally is {
   hook counted(const count : uint);
 
   function bump() is {
-    tally.count += 1;
-    counted(tally.count);
+    storage.tally.count += 1;
+    counted(storage.tally.count);
   }
 
   external function add() is bump()
@@ -1024,11 +1025,11 @@ module Tally is {
   hook counted(const count : uint);
 
   external function add() is {
-    tally.count += 1;
-    counted(tally.count);
+    storage.tally.count += 1;
+    counted(storage.tally.count);
   }
 
-  external view function count() : uint is tally.count
+  external view function count() : uint is storage.tally.count
 }
 
 contract Counter is {
@@ -1055,8 +1056,8 @@ module Tally is {
   hook counted(const count : uint);
 
   external function add() is {
-    tally.count += 1;
-    counted(tally.count);
+    storage.tally.count += 1;
+    counted(storage.tally.count);
   }
 }
 
@@ -1083,8 +1084,8 @@ module Tally is {
   hook counted(const count : uint);
 
   external function add() is {
-    tally.count += 1;
-    counted(tally.count);
+    storage.tally.count += 1;
+    counted(storage.tally.count);
   }
 }
 
@@ -1115,7 +1116,7 @@ module Tally is {
   pure hook step() : uint;
 
   external function add() is {
-    tally.count += step();
+    storage.tally.count += step();
   }
 }
 
@@ -1145,8 +1146,8 @@ module Tally is {
   view hook limit() : uint;
 
   external function add() is {
-    if tally.count < limit() then {
-      tally.count += 1;
+    if storage.tally.count < limit() then {
+      storage.tally.count += 1;
     }
   }
 }
@@ -1181,8 +1182,8 @@ module Tally is {
   view hook limit() : uint;
 
   external function add() is {
-    if tally.count < limit() then {
-      tally.count += 1;
+    if storage.tally.count < limit() then {
+      storage.tally.count += 1;
     }
   }
 }
@@ -1213,8 +1214,8 @@ module Tally is {
   hook counted(const count : uint);
 
   external function add() is {
-    tally.count += 1;
-    counted(tally.count);
+    storage.tally.count += 1;
+    counted(storage.tally.count);
   }
 }
 
@@ -1270,8 +1271,8 @@ module Tally is {
   hook counted(const count : uint);
 
   function bump() is {
-    tally.count += 1;
-    counted(tally.count);
+    storage.tally.count += 1;
+    counted(storage.tally.count);
   }
 
   external function add() is bump()
@@ -1305,8 +1306,8 @@ module Tally is {
   hook counted(const count : uint);
 
   external function add() is {
-    tally.count += 1;
-    counted(tally.count);
+    storage.tally.count += 1;
+    counted(storage.tally.count);
   }
 }
 
@@ -1342,8 +1343,8 @@ module Tally is {
   view hook limit() : uint;
 
   external function add() is {
-    if tally.count < limit() then {
-      tally.count += 1;
+    if storage.tally.count < limit() then {
+      storage.tally.count += 1;
     }
   }
 }
@@ -1376,8 +1377,8 @@ module Tally is {
   hook counted(const count : uint);
 
   external function add() is {
-    tally.count += 1;
-    counted(tally.count);
+    storage.tally.count += 1;
+    counted(storage.tally.count);
   }
 }
 
@@ -1461,11 +1462,11 @@ module Pausable is {
   view function whenNotPaused()
     raises Paused
   is {
-    assert(not pausable.paused, Paused);
+    assert(not storage.pausable.paused, Paused);
   }
 
   external function pause() is {
-    pausable.paused := true;
+    storage.pausable.paused := true;
   }
 }
 
@@ -1482,15 +1483,15 @@ module Ledger is {
     raises Paused | Insufficient
   is {
     Pausable.whenNotPaused();
-    const have : uint := ledger.balances[Evm.sender()];
+    const have : uint := storage.ledger.balances[Evm.sender()];
     assert(have >= amount, Insufficient(have));
-    ledger.balances[Evm.sender()] := have - amount;
-    ledger.balances[to] += amount;
+    storage.ledger.balances[Evm.sender()] := have - amount;
+    storage.ledger.balances[to] += amount;
   }
 
   (* Reading a required module's storage is allowed. *)
   external view function frozen() : bool is
-    Pausable.pausable.paused
+    Pausable.storage.pausable.paused
 }
 
 contract Token is {
@@ -1519,7 +1520,7 @@ module Ledger is {
   }
 
   function set(const n : uint) is {
-    ledger.n := n;
+    storage.ledger.n := n;
   }
 }
 
@@ -1537,7 +1538,7 @@ contract Token is {
   }
 
   external view function n() : uint is
-    Ledger.ledger.n
+    Ledger.storage.ledger.n
 }
 ```
 
@@ -1556,7 +1557,7 @@ module Ledger is {
   }
 
   function set(const n : uint) is {
-    ledger.n := n;
+    storage.ledger.n := n;
   }
 }
 
@@ -1564,14 +1565,16 @@ contract Token is {
   use Ledger;
 
   external function go(const n : uint) is {
-    ledger.n := n;
+    storage.ledger.n := n;
   }
 }
 ```
 
 ```text
-storage `ledger` belongs to `Ledger`; write `Ledger.ledger`
+`storage.ledger` belongs to `Ledger`; write `Ledger.storage.ledger`
 ```
+
+A field of a module's default record is the same: `storage.n`, written where `Ledger`'s default record has `n`, is `Ledger.storage.n` outside the module.
 
 Reaching into a module's storage like this is allowed, but calling the module's functions is usually clearer, because they maintain its invariants. Because every module's storage sits at its own ERC-7201 root, modules compose without slot collisions. Two modules that claim the same storage id are rejected.
 
@@ -1588,7 +1591,7 @@ module ERC20Votes is {
   }
 
   function delegate(const delegatee : address) is {
-    votes.delegates[Evm.sender()] := delegatee;
+    storage.votes.delegates[Evm.sender()] := delegatee;
   }
 }
 ```

@@ -525,7 +525,9 @@ impl Checker {
                             }
                             // A fixed list's length is in its type, so only a dynamic list
                             // grows with storage.
-                            stateful = self.types[p.ty].bits == 0 && self.reads_state(&base);
+                            stateful = self.types[p.ty].bits == 0
+                                && !self.imm_syms.contains(&p.sym)
+                                && self.reads_state(&base);
                             let sid = self.add_sym(Sym {
                                 ty: TY_UINT,
                                 mutable: false,
@@ -1337,7 +1339,7 @@ impl Checker {
                 return Err(error(line, col, format!("`{name}` is not a record field")));
             }
             let Some(field) = rec.fields.iter().find(|field| field.name == *name) else {
-                return Err(error(line, col, format!("no field `{name}`")));
+                return Err(self.no_field(line, col, ty, name));
             };
             leaf += field.slot;
             ty = field.ty;

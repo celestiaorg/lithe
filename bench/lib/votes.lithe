@@ -69,26 +69,26 @@ module ERC20Votes is {
   } with uint48(timepoint)
 
   external view function getVotes(const account : address) : uint is
-    uint(Checkpoints.latest(votes.delegateCheckpoints[account]))
+    uint(Checkpoints.latest(storage.votes.delegateCheckpoints[account]))
 
   external view function getPastVotes(const account : address; const timepoint : uint) : uint
     raises ERC5805FutureLookup
   is
-    uint(Checkpoints.upperLookupRecent(votes.delegateCheckpoints[account], validateTimepoint(timepoint)))
+    uint(Checkpoints.upperLookupRecent(storage.votes.delegateCheckpoints[account], validateTimepoint(timepoint)))
 
   external view function getPastTotalSupply(const timepoint : uint) : uint
     raises ERC5805FutureLookup
   is
-    uint(Checkpoints.upperLookupRecent(votes.totalCheckpoints, validateTimepoint(timepoint)))
+    uint(Checkpoints.upperLookupRecent(storage.votes.totalCheckpoints, validateTimepoint(timepoint)))
 
   external view function delegates(const account : address) : address is
-    votes.delegatee[account]
+    storage.votes.delegatee[account]
 
   external view function numCheckpoints(const account : address) : uint32 is
-    uint32(Checkpoints.length(votes.delegateCheckpoints[account]))
+    uint32(Checkpoints.length(storage.votes.delegateCheckpoints[account]))
 
   external view function checkpoints(const account : address; const pos : uint32) : flat Checkpoint is
-    Checkpoints.at(votes.delegateCheckpoints[account], uint(pos))
+    Checkpoints.at(storage.votes.delegateCheckpoints[account], uint(pos))
 
   external function delegate(const delegatee : address)
     raises CheckpointUnorderedInsertion
@@ -126,14 +126,14 @@ module ERC20Votes is {
   function delegateAs(const account : address; const delegatee : address)
     raises CheckpointUnorderedInsertion
   is {
-    const previous : address := votes.delegatee[account];
-    votes.delegatee[account] := delegatee;
+    const previous : address := storage.votes.delegatee[account];
+    storage.votes.delegatee[account] := delegatee;
     emit DelegateChanged {
       delegator = account;
       fromDelegate = previous;
       toDelegate = delegatee;
     };
-    moveDelegateVotes(previous, delegatee, ERC20.erc20.balances[account]);
+    moveDelegateVotes(previous, delegatee, ERC20.storage.erc20.balances[account]);
   }
 
   (* After a balance change: a mint checks the supply still fits a checkpoint, then the
@@ -142,23 +142,23 @@ module ERC20Votes is {
     raises ERC20ExceededSafeSupply | CheckpointUnorderedInsertion
   is {
     if from = Address.zero then {
-      const supply : uint := ERC20.erc20.totalSupply;
+      const supply : uint := ERC20.storage.erc20.totalSupply;
       const cap : uint208 := Uint.max;
       assert(supply <= uint(cap), ERC20ExceededSafeSupply { increasedSupply = supply; cap = uint(cap); });
       Checkpoints.push(
-        votes.totalCheckpoints,
+        storage.votes.totalCheckpoints,
         timepoint(),
-        Checkpoints.latest(votes.totalCheckpoints) + uint208(value)
+        Checkpoints.latest(storage.votes.totalCheckpoints) + uint208(value)
       );
     }
     if to = Address.zero then {
       Checkpoints.push(
-        votes.totalCheckpoints,
+        storage.votes.totalCheckpoints,
         timepoint(),
-        Checkpoints.latest(votes.totalCheckpoints) - uint208(value)
+        Checkpoints.latest(storage.votes.totalCheckpoints) - uint208(value)
       );
     }
-    moveDelegateVotes(votes.delegatee[from], votes.delegatee[to], value);
+    moveDelegateVotes(storage.votes.delegatee[from], storage.votes.delegatee[to], value);
   }
 
   function moveDelegateVotes(const from : address; const to : address; const amount : uint)
@@ -166,9 +166,9 @@ module ERC20Votes is {
   is {
     if from <> to and amount > 0 then {
       if from <> Address.zero then {
-        const previous : uint208 := Checkpoints.latest(votes.delegateCheckpoints[from]);
+        const previous : uint208 := Checkpoints.latest(storage.votes.delegateCheckpoints[from]);
         const next : uint208 := previous - uint208(amount);
-        Checkpoints.push(votes.delegateCheckpoints[from], timepoint(), next);
+        Checkpoints.push(storage.votes.delegateCheckpoints[from], timepoint(), next);
         emit DelegateVotesChanged {
           delegate = from;
           previousVotes = uint(previous);
@@ -176,9 +176,9 @@ module ERC20Votes is {
         };
       }
       if to <> Address.zero then {
-        const previous : uint208 := Checkpoints.latest(votes.delegateCheckpoints[to]);
+        const previous : uint208 := Checkpoints.latest(storage.votes.delegateCheckpoints[to]);
         const next : uint208 := previous + uint208(amount);
-        Checkpoints.push(votes.delegateCheckpoints[to], timepoint(), next);
+        Checkpoints.push(storage.votes.delegateCheckpoints[to], timepoint(), next);
         emit DelegateVotesChanged {
           delegate = to;
           previousVotes = uint(previous);

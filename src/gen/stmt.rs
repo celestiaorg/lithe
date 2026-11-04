@@ -2786,7 +2786,7 @@ impl<'a> Gen<'a> {
         self.mstore_off(blob);
         let tail = self.tail_order(&cross.tail);
         for (j, &leaf) in tail.iter().enumerate() {
-            self.mload(self.image + leaf as i32 * 32);
+            self.push_tail_leaf(leaf);
             self.mload(blob);
             self.op(DUP1);
             self.op(MLOAD);
@@ -2796,6 +2796,14 @@ impl<'a> Gen<'a> {
             self.op(MSTORE);
         }
         let words = tail.len() + usize::from(cross.mask.is_some());
+        // The heap ends at the blob's padded end; the words past the blob join it, so values
+        // decoded later find unwritten memory past them.
+        if words > 0 {
+            self.mload(self.blob_ptr);
+            self.push_u64(32 * words as u64);
+            self.op(ADD);
+            self.mstore_off(self.blob_ptr);
+        }
         if let Some(mask) = cross.mask {
             self.push_hook_word(mask);
             self.mload(blob);

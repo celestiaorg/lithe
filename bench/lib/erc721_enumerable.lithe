@@ -23,26 +23,26 @@ module ERC721Enumerable is {
   }
 
   external view function totalSupply() : uint is
-    erc721Enumerable.allTokens.length
+    storage.erc721Enumerable.allTokens.length
 
   external view function tokenByIndex(const index : uint) : uint
     raises ERC721OutOfBoundsIndex
   is {
     assert(
-      index < erc721Enumerable.allTokens.length,
+      index < storage.erc721Enumerable.allTokens.length,
       ERC721OutOfBoundsIndex { owner = Address.zero; index = index; }
     );
-  } with erc721Enumerable.allTokens[index]
+  } with storage.erc721Enumerable.allTokens[index]
 
   external view function tokenOfOwnerByIndex(const owner : address; const index : uint) : uint
     raises ERC721InvalidOwner | ERC721OutOfBoundsIndex
   is {
     assert(owner <> Address.zero, ERC721InvalidOwner(Address.zero));
     assert(
-      index < ERC721.erc721.balances[owner],
+      index < ERC721.storage.erc721.balances[owner],
       ERC721OutOfBoundsIndex { owner = owner; index = index; }
     );
-  } with erc721Enumerable.ownedTokens[owner][index]
+  } with storage.erc721Enumerable.ownedTokens[owner][index]
 
   (* After `ERC721.update`: the enumerations follow the token. *)
   function afterTransfer(const from : address; const to : address; const tokenId : uint) is {
@@ -59,37 +59,37 @@ module ERC721Enumerable is {
   }
 
   function addToOwner(const to : address; const tokenId : uint) is {
-    const length : uint := ERC721.erc721.balances[to] - 1;
-    erc721Enumerable.ownedTokens[to][length] := tokenId;
-    erc721Enumerable.ownedTokensIndex[tokenId] := length;
+    const length : uint := ERC721.storage.erc721.balances[to] - 1;
+    storage.erc721Enumerable.ownedTokens[to][length] := tokenId;
+    storage.erc721Enumerable.ownedTokensIndex[tokenId] := length;
   }
 
   function addToAll(const tokenId : uint) is {
-    erc721Enumerable.allTokensIndex[tokenId] := erc721Enumerable.allTokens.length;
-    List.push(erc721Enumerable.allTokens, tokenId);
+    storage.erc721Enumerable.allTokensIndex[tokenId] := storage.erc721Enumerable.allTokens.length;
+    List.push(storage.erc721Enumerable.allTokens, tokenId);
   }
 
   (* The owner's last token moves into the removed token's place. *)
   function removeFromOwner(const from : address; const tokenId : uint) is {
-    const lastTokenIndex : uint := ERC721.erc721.balances[from];
-    const tokenIndex : uint := erc721Enumerable.ownedTokensIndex[tokenId];
+    const lastTokenIndex : uint := ERC721.storage.erc721.balances[from];
+    const tokenIndex : uint := storage.erc721Enumerable.ownedTokensIndex[tokenId];
     if tokenIndex <> lastTokenIndex then {
-      const lastTokenId : uint := erc721Enumerable.ownedTokens[from][lastTokenIndex];
-      erc721Enumerable.ownedTokens[from][tokenIndex] := lastTokenId;
-      erc721Enumerable.ownedTokensIndex[lastTokenId] := tokenIndex;
+      const lastTokenId : uint := storage.erc721Enumerable.ownedTokens[from][lastTokenIndex];
+      storage.erc721Enumerable.ownedTokens[from][tokenIndex] := lastTokenId;
+      storage.erc721Enumerable.ownedTokensIndex[lastTokenId] := tokenIndex;
     }
-    erc721Enumerable.ownedTokensIndex[tokenId] := 0;
-    erc721Enumerable.ownedTokens[from][lastTokenIndex] := 0;
+    storage.erc721Enumerable.ownedTokensIndex[tokenId] := 0;
+    storage.erc721Enumerable.ownedTokens[from][lastTokenIndex] := 0;
   }
 
   function removeFromAll(const tokenId : uint) is {
-    const lastTokenIndex : uint := erc721Enumerable.allTokens.length - 1;
-    const tokenIndex : uint := erc721Enumerable.allTokensIndex[tokenId];
-    const lastTokenId : uint := erc721Enumerable.allTokens[lastTokenIndex];
-    erc721Enumerable.allTokens[tokenIndex] := lastTokenId;
-    erc721Enumerable.allTokensIndex[lastTokenId] := tokenIndex;
-    erc721Enumerable.allTokensIndex[tokenId] := 0;
-    List.pop(erc721Enumerable.allTokens);
+    const lastTokenIndex : uint := storage.erc721Enumerable.allTokens.length - 1;
+    const tokenIndex : uint := storage.erc721Enumerable.allTokensIndex[tokenId];
+    const lastTokenId : uint := storage.erc721Enumerable.allTokens[lastTokenIndex];
+    storage.erc721Enumerable.allTokens[tokenIndex] := lastTokenId;
+    storage.erc721Enumerable.allTokensIndex[lastTokenId] := tokenIndex;
+    storage.erc721Enumerable.allTokensIndex[tokenId] := 0;
+    List.pop(storage.erc721Enumerable.allTokens);
   }
 }
 

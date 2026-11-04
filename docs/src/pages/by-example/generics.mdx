@@ -65,11 +65,11 @@ module Watchlist is {
   }
 
   external function watch(const who : address) is {
-    SetEnumerable.add(watchlist.watched, who);
+    SetEnumerable.add(storage.watchlist.watched, who);
   }
 
   external view function watchedCount() : uint is
-    SetEnumerable.length(watchlist.watched)
+    SetEnumerable.length(storage.watchlist.watched)
 }
 ```
 
@@ -146,5 +146,5 @@ module SetEnumerable(T : MapKey) is {
 :::
 
 - `Set.add(storage.admins, who)` works on the storage location it is given. The set module owns no storage of its own.
-- `Watchlist` hands `watchlist.watched`, from its own storage, to `SetEnumerable` just as the contract hands over `storage.members`.
+- `Watchlist` hands `storage.watchlist.watched`, from its own storage, to `SetEnumerable` just as the contract hands over `storage.members`.
 - `MapKey` limits `T` to types that can key a map. `Set(string)` is rejected.

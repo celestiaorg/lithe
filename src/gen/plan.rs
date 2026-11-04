@@ -161,7 +161,9 @@ impl<'a> Gen<'a> {
         let mut local = vec![-1; g.checked.syms.len()];
         for (i, slot) in local.iter_mut().enumerate() {
             let sym = &g.checked.syms[i];
-            if sym.storage && !g.checked.slot_syms.contains_key(&i) {
+            if (sym.storage && !g.checked.slot_syms.contains_key(&i))
+                || g.checked.immutable_values.contains(&i)
+            {
                 continue;
             }
             let w = if sym.span > 0 {
@@ -1243,7 +1245,7 @@ impl<'a> Gen<'a> {
                     Sub::QueuePush => (3, 1),
                     Sub::ListHead => (1, 1),
                     Sub::RevertAbi => (3, 0),
-                    Sub::ShortBlob => (1, 1),
+                    Sub::ShortBlob | Sub::ImmutableBytes(_) => (1, 1),
                     Sub::BlobsAbi => (1, 1),
                     Sub::DecodeBytes | Sub::CopyCdBytes => (1, 1),
                     Sub::StoredTail => (3, 1),

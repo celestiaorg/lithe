@@ -22,17 +22,17 @@ module Tok is {
   pure hook parts() : uint;
 
   function transfer(const to : address; const id : uint) raises NotOwner is {
-    const from : address := tok.owner[id];
+    const from : address := storage.tok.owner[id];
     assert(from = Evm.sender(), NotOwner(id));
     beforeTransfer(from, to, id);
-    tok.owner[id] := to;
-    tok.moved := tok.moved + 1;
+    storage.tok.owner[id] := to;
+    storage.tok.moved := storage.tok.moved + 1;
     emit Moved { id = id; to = to; };
     afterTransfer(from, to, id);
   }
 
   external function mint(const to : address; const id : uint) is {
-    tok.owner[id] := to;
+    storage.tok.owner[id] := to;
   }
 
   external function send(const to : address; const id : uint) raises NotOwner is
@@ -44,7 +44,7 @@ module Tok is {
 
   external view function share(const amount : uint) : uint is amount / parts()
 
-  external view function ownerOf(const id : uint) : address is tok.owner[id]
+  external view function ownerOf(const id : uint) : address is storage.tok.owner[id]
 }
 "#;
 
@@ -329,7 +329,7 @@ module Walk is {
   storage walk at "hooks.walk" is record { n : uint; }
   hook step(const n : uint);
   function go(const n : uint) is {
-    walk.n := n;
+    storage.walk.n := n;
     step(n);
   }
   external function start(const n : uint) is go(n)
@@ -359,11 +359,11 @@ module Base is {
   storage base at "hooks.base" is record { n : uint; }
   hook changed(const n : uint);
   function set(const n : uint) is {
-    base.n := n;
+    storage.base.n := n;
     changed(n);
   }
   external function reset() is {
-    base.n := 0;
+    storage.base.n := 0;
   }
   external function put(const n : uint) is set(n)
 }
@@ -440,7 +440,7 @@ module Pay is {
   hook paid(const id : uint);
 
   function settle(const id : uint) is {
-    pay.total := pay.total + id;
+    storage.pay.total := storage.pay.total + id;
     paid(id);
   }
 
@@ -459,7 +459,7 @@ module Tally is {
   hook doubled(const id : uint);
 
   function bump(const id : uint) is {
-    tally.n := tally.n + 1;
+    storage.tally.n := storage.tally.n + 1;
     plain(id);
     doubled(id * 2);
     plain(id);
@@ -467,7 +467,7 @@ module Tally is {
 
   external function run(const id : uint) is bump(id)
 
-  external view function count() : uint is tally.n
+  external view function count() : uint is storage.tally.n
 }
 "#;
 
@@ -648,21 +648,21 @@ module Vault is {
 
   function pay(const ex : address; const id : uint) raises TooMuch is {
     const bump : uint := id * 3;
-    vault.got := vault.got + id;
+    storage.vault.got := storage.vault.got + id;
     defer Evm.call(ex, Abi.encodeWithSelector(0x12345678, id)) then (answer : bytes) {
       const r : uint := Abi.decode(answer, uint);
       assert(r < 100, TooMuch(r));
-      vault.got := vault.got + r + bump;
+      storage.vault.got := storage.vault.got + r + bump;
     };
     moved(id);
   }
 
   function risky(const to : address; const id : uint) is {
     defer Evm.call(to, Abi.encode(id)) then {
-    | Ok(answer : bytes) -> { vault.got := vault.got + answer.length; }
+    | Ok(answer : bytes) -> { storage.vault.got := storage.vault.got + answer.length; }
     | Error(reason : bytes) -> {
-        vault.failed := vault.failed + 1;
-        vault.why := reason;
+        storage.vault.failed := storage.vault.failed + 1;
+        storage.vault.why := reason;
       }
     };
   }
@@ -691,7 +691,7 @@ module Vault is {
     }
   }
 
-  external view function got() : (uint, uint, bytes) is (vault.got, vault.failed, vault.why)
+  external view function got() : (uint, uint, bytes) is (storage.vault.got, storage.vault.failed, storage.vault.why)
 }
 "#;
 
@@ -847,14 +847,14 @@ module Rec is {
     const top : uint := (seed + 7) << 240 | 1 << 100;
     const tiny : uint := (seed + 3) << 220;
     defer Evm.call(to, Abi.encode(full, high, top, tiny)) then (answer : bytes) {
-      rec.sum := rec.sum + (full >> 128) + (high >> 100) + (top >> 200) + (tiny >> 200) + answer.length;
-      rec.last := full;
+      storage.rec.sum := storage.rec.sum + (full >> 128) + (high >> 100) + (top >> 200) + (tiny >> 200) + answer.length;
+      storage.rec.last := full;
     };
   }
 
   function shapes(const to : address; const seed : uint) : uint is {
     plain(to, seed);
-    rec.last := rec.last + kept(seed);
+    storage.rec.last := storage.rec.last + kept(seed);
   } with seed + 1
 }
 "#;
@@ -885,7 +885,7 @@ contract Shaped is {{
     }}
   }}
 
-  external view function seen() : (uint, uint, uint) is (Rec.rec.sum, Rec.rec.last, storage.got)
+  external view function seen() : (uint, uint, uint) is (Rec.storage.rec.sum, Rec.storage.rec.last, storage.got)
 }}
 "
     )
@@ -1029,15 +1029,15 @@ module Chain is {
   hook second(const n : uint);
 
   function note(const n : uint) is {
-    chain.log := chain.log * 10 + n;
+    storage.chain.log := storage.chain.log * 10 + n;
     second(n);
   }
 
   external function run(const n : uint) : uint is {
-    chain.log := n;
+    storage.chain.log := n;
   } with first(n)
 
-  external view function log() : uint is chain.log
+  external view function log() : uint is storage.chain.log
 }
 "#;
 
@@ -1162,8 +1162,8 @@ module Gated is {
   hook changed(const old : uint; const new : uint);
 
   external function set(const n : uint) guarded admin is {
-    const old : uint := gated.n;
-    gated.n := n;
+    const old : uint := storage.gated.n;
+    storage.gated.n := n;
     changed(old, n);
   }
 }
@@ -1393,8 +1393,8 @@ module Bag is {{
   storage bag at \"hooks.bag\" is record {{ xs : list(uint); }}
   hook counted(const xs : list(uint)) : uint;
   external function add(const n : uint) : uint is {{
-    List.push(bag.xs, n);
-  }} with counted(bag.xs)
+    List.push(storage.bag.xs, n);
+  }} with counted(storage.bag.xs)
 }}
 contract Counter is {{
   use Bag{marks} exposing {{ function add(n : uint) : uint; }} with {{
@@ -1427,10 +1427,10 @@ module Log is {
   storage log at "hooks.log" is record { total : uint; }
 
   function add(const n : uint) is {
-    log.total := log.total + n;
+    storage.log.total := storage.log.total + n;
   }
 
-  external view function total() : uint is log.total
+  external view function total() : uint is storage.log.total
 }
 
 module Bump is {
@@ -1439,7 +1439,7 @@ module Bump is {
   hook bumped(const n : uint);
 
   function step(const n : uint) is {
-    bump.count := bump.count + 1;
+    storage.bump.count := storage.bump.count + 1;
     bumped(n);
   }
 
@@ -1487,7 +1487,7 @@ fn facets_take_bits_only_for_hooks_they_reach() {
 module Names is {{
   requires Tok;
 
-  external view function owner(const id : uint) : address is Tok.tok.owner[id]
+  external view function owner(const id : uint) : address is Tok.storage.tok.owner[id]
 }}
 
 contract C is {{
@@ -1518,11 +1518,11 @@ module Stop is {
   error Stopped;
 
   view function check() raises Stopped is {
-    assert(not stop.on, Stopped);
+    assert(not storage.stop.on, Stopped);
   }
 
   external function halt() is {
-    stop.on := true;
+    storage.stop.on := true;
   }
 }
 ";
@@ -1585,9 +1585,9 @@ module M is {{
   storage m at "m" is record {{ last : uint; }}
   hook h(const x : uint) : uint;
   function f(const x : uint) : uint is {{
-    m.last := m.last + h(x);
+    storage.m.last := storage.m.last + h(x);
   }} with x % 7
-  function set(const v : uint) is {{ m.last := v; }}
+  function set(const v : uint) is {{ storage.m.last := v; }}
 }}
 
 storage is record {{ got : uint; }}
@@ -1631,7 +1631,7 @@ fn kept_from(marks: &str) -> String {
   function update(const from : address; const to : address; const ids : list(uint); const amount : uint) is {{
     before(from, to, ids);
     for id : uint in ids do {{
-      ledger.balances[id][to] += amount;
+      storage.ledger.balances[id][to] += amount;
     }}
   }}
 

@@ -1910,13 +1910,13 @@ function credit(storage ledger : map(uint, uint); const k : uint; var by : uint)
 external function places(const k : uint) : uint is {
   transient.t += k;
   transient.t *= 3;
-  tally.count += transient.t;
+  storage.tally.count += transient.t;
   credit(storage.xs, k, 2);
   var p : Pair := { a = 1; b = 2; };
   p.b += 5;
   var xs : list(uint) := [1, 2, 3];
   xs[k - 3] *= 7;
-} with tally.count * 1000 + storage.xs[k] * 100 + p.b * 10 + xs[1]
+} with storage.tally.count * 1000 + storage.xs[k] * 100 + p.b * 10 + xs[1]
 "#;
     let rt = deploy(&compile(src).expect("compile")).expect("deploy");
     let w = Word::from_u64;
@@ -2007,4 +2007,289 @@ external function go(const c : bool) : uint is {
         let err = compile(&format!("{base}{body}")).expect_err(body);
         assert!(err.to_string().contains(want), "{body}: {err}");
     }
+}
+
+#[test]
+fn named_domains_are_reached_through_their_kind() {
+    let src = "module Vault is {\n\
+               \x20 storage config at \"t.vault.config\" is record { fee : uint; }\n\
+               \x20 transient storage scratch is record { n : uint; }\n\
+               \x20 immutable fees at \"t.vault.fees\" is record { bps : uint16; }\n\
+               \x20 function init(const bps : uint16) is { immutable.fees.bps := bps; }\n\
+               \x20 function bump(const config : uint) is {\n\
+               \x20   transient.scratch.n := config;\n\
+               \x20   storage.config.fee += transient.scratch.n;\n\
+               \x20 }\n\
+               \x20 view function bps() : uint is uint(immutable.fees.bps)\n\
+               }\n\
+               use Vault;\n\
+               storage is record { total : uint; }\n\
+               storage config at \"t.config\" is record { fee : uint; }\n\
+               transient storage config is record { n : uint; }\n\
+               deploy() is { Vault.init(7); }\n\
+               external function go(const config : uint) is {\n\
+               \x20 Vault.bump(config);\n\
+               \x20 Vault.storage.config.fee += 1;\n\
+               \x20 Vault.transient.scratch.n += 1;\n\
+               \x20 const scratch : uint := Vault.transient.scratch.n;\n\
+               \x20 transient.config.n := scratch;\n\
+               \x20 storage.config.fee := transient.config.n + uint(Vault.immutable.fees.bps);\n\
+               \x20 storage.total := Vault.storage.config.fee + Vault.bps();\n\
+               }\n\
+               external view function fee() : uint is storage.config.fee\n\
+               external view function vaultFee() : uint is Vault.storage.config.fee\n";
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let st = run_ok(&rt, &HashMap::new(), "go(uint256)", &[n(5)]).storage;
+    assert_eq!(st.get(&n(0)), Some(&n(13)));
+    assert_eq!(st.get(&crate::keccak::erc7201("t.config")), Some(&n(13)));
+    assert_eq!(
+        st.get(&crate::keccak::erc7201("t.vault.config")),
+        Some(&n(6))
+    );
+    assert_eq!(read_ok(&rt, &st, "fee()", &[]), n(13));
+    assert_eq!(read_ok(&rt, &st, "vaultFee()", &[]), n(6));
+
+    let bare = "storage config at \"t.config\" is record { fee : uint; }\n\
+                external function f() is { config.fee := 1; }\n";
+    let err = compile(bare).expect_err("a domain is no name in scope");
+    assert!(
+        err.message.contains("unknown name `config`"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn named_domains_belong_to_their_contract() {
+    let src = "contract A is {\n\
+               \x20 storage is record { config : record { fee : uint; }; }\n\
+               \x20 transient storage is record { scratch : record { n : uint; }; }\n\
+               \x20 external function set(const fee : uint) is {\n\
+               \x20   transient.scratch.n := fee;\n\
+               \x20   storage.config.fee := transient.scratch.n;\n\
+               \x20 }\n\
+               \x20 external view function fee() : uint is storage.config.fee\n\
+               }\n\
+               contract B is {\n\
+               \x20 storage config at \"t.b.config\" is record { fee : uint; }\n\
+               \x20 transient storage scratch is record { n : uint; }\n\
+               \x20 external function set(const fee : uint) is {\n\
+               \x20   transient.scratch.n := fee;\n\
+               \x20   storage.config.fee := transient.scratch.n;\n\
+               \x20 }\n\
+               }\n";
+    let contracts = compile_contracts(src).expect("compile");
+    let (_, a) = contracts.iter().find(|(name, _)| name == "A").expect("A");
+    let rt = deploy(a).expect("deploy");
+    let n = Word::from_u64;
+    let st = run_ok(&rt, &HashMap::new(), "set(uint256)", &[n(9)]).storage;
+    assert_eq!(read_ok(&rt, &st, "fee()", &[]), n(9));
+}
+
+#[test]
+fn a_domain_cannot_take_a_default_field_name() {
+    for (src, message) in [
+        (
+            "storage is record { config : uint; }\n\
+             storage config at \"t.config\" is record { fee : uint; }\n\
+             external function f() is { storage.config.fee := 1; }\n",
+            "`storage.config` and field `config` of `storage` are both `storage.config`; rename one of them",
+        ),
+        (
+            "transient storage is record { s : uint; }\n\
+             transient storage s is record { n : uint; }\n\
+             storage is record { n : uint; }\n\
+             external function f() is { storage.n := 1; }\n",
+            "`transient.s` and field `s` of `transient` are both `transient.s`; rename one of them",
+        ),
+        (
+            "immutable is record { cap : uint; }\n\
+             immutable cap at \"t.cap\" is record { n : uint; }\n\
+             storage is record { n : uint; }\n\
+             deploy() is { immutable.cap := 1; }\n\
+             external function f() is { storage.n := immutable.cap; }\n",
+            "`immutable.cap` and field `cap` of `immutable` are both `immutable.cap`; rename one of them",
+        ),
+    ] {
+        let err = compile(src).expect_err("clash");
+        assert_eq!(err.message, message);
+        assert_eq!(err.line, 2);
+    }
+    let kinds = "storage is record { config : uint; }\n\
+                 transient storage config is record { n : uint; }\n\
+                 external function f() is { transient.config.n := 1; storage.config := transient.config.n; }\n";
+    compile(kinds).expect("kinds apart");
+}
+
+#[test]
+fn module_default_records_are_reached_through_their_kind() {
+    let src = "module Vault is {\n\
+               \x20 storage at \"t.vault\" is record { fee : uint; r : record { a : uint; b : uint; }; }\n\
+               \x20 transient storage is record { n : uint; }\n\
+               \x20 immutable at \"t.vault.imm\" is record { bps : uint16; }\n\
+               \x20 storage config at \"t.vault.config\" is record { cap : uint; }\n\
+               \x20 function init(const bps : uint16) is { immutable.bps := bps; }\n\
+               \x20 function bump(const by : uint) is {\n\
+               \x20   transient.n := by;\n\
+               \x20   storage.fee += transient.n + uint(immutable.bps);\n\
+               \x20   storage.config.cap := storage.fee;\n\
+               \x20 }\n\
+               \x20 view function sum(storage r : record { a : uint; b : uint; }) : uint is r.a + r.b\n\
+               \x20 view function own() : uint is sum(storage.r)\n\
+               }\n\
+               use Vault;\n\
+               storage is record { fee : uint; r : record { a : uint; b : uint; }; }\n\
+               transient storage is record { n : uint; }\n\
+               deploy() is { Vault.init(7); }\n\
+               external function go(const by : uint) is {\n\
+               \x20 Vault.bump(by);\n\
+               \x20 Vault.storage.fee += 1;\n\
+               \x20 Vault.transient.n += 1;\n\
+               \x20 Vault.storage.r.a := 2;\n\
+               \x20 Vault.storage.r := { a = Vault.storage.r.a; b = 3; };\n\
+               \x20 storage.r := { a = 20; b = 30; };\n\
+               \x20 transient.n := Vault.transient.n;\n\
+               \x20 storage.fee := transient.n + uint(Vault.immutable.bps) + Vault.storage.config.cap;\n\
+               }\n\
+               external view function sums() : (uint, uint, uint) is\n\
+               \x20 (Vault.sum(storage.r), Vault.sum(Vault.storage.r), Vault.own())\n\
+               external view function vaultFee() : uint is Vault.storage.fee\n";
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let out = run_ok(&rt, &HashMap::new(), "go(uint256)", &[n(5)]);
+    let root = crate::keccak::erc7201("t.vault");
+    let want: HashMap<Word, Word> = [
+        (n(0), n(6 + 7 + 12)),
+        (n(1), n(20)),
+        (n(2), n(30)),
+        (root, n(13)),
+        (root.wrapping_add(n(1)), n(2)),
+        (root.wrapping_add(n(2)), n(3)),
+        (crate::keccak::erc7201("t.vault.config"), n(12)),
+    ]
+    .into();
+    assert_eq!(out.storage, want);
+    let slot = n(crate::check::module_transient_slot("Vault"));
+    assert_eq!(out.transient.get(&slot), Some(&n(6)));
+    assert_eq!(read_ok(&rt, &out.storage, "vaultFee()", &[]), n(13));
+    let sums = run_ok(&rt, &out.storage, "sums()", &[]).returndata;
+    let words: Vec<Word> = (0..3).map(|i| load_bytes(&sums, i * 32)).collect();
+    assert_eq!(words, [n(50), n(5), n(5)]);
+
+    let checked = crate::check::check(
+        crate::modules::load(&memory(src), Path::new(ENTRY)).expect("load"),
+        Default::default(),
+    )
+    .expect("check");
+    let layout = crate::format_layout(&checked.layout);
+    assert!(layout.contains("Vault.storage \"t.vault\""), "{layout}");
+    let transient = crate::format_transient(&checked.transient_layout);
+    assert!(transient.contains("Vault.transient\n"), "{transient}");
+}
+
+/// A contract's storage that a module's function is given is the contract's, though the
+/// module names a place of its own the same way.
+#[test]
+fn a_contract_place_given_to_a_module_stays_the_contracts() {
+    let src = "module M is {\n\
+               \x20 storage d at \"t.m.d\" is record { r : record { a : uint; b : uint; }; }\n\
+               \x20 function sum(storage r : record { a : uint; b : uint; }) : uint is r.a + r.b + storage.d.r.a\n\
+               }\n\
+               use M;\n\
+               storage d at \"t.app.d\" is record { r : record { a : uint; b : uint; }; }\n\
+               external function go() : uint is {\n\
+               \x20 storage.d.r := { a = 1; b = 2; };\n\
+               \x20 M.storage.d.r.a := 10;\n\
+               } with M.sum(storage.d.r)\n";
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let out = run_ok(&rt, &HashMap::new(), "go()", &[]);
+    assert_eq!(load_bytes(&out.returndata, 0), Word::from_u64(13));
+}
+
+#[test]
+fn module_default_records_need_ids_of_their_own() {
+    for (src, message) in [
+        (
+            "module M is { storage is record { x : uint; } }\n",
+            "a module's default storage record needs an ERC-7201 id: `storage at \"id\" is record`",
+        ),
+        (
+            "module M is { immutable is record { x : uint; } }\n",
+            "a module's default immutable record needs an ERC-7201 id: `immutable at \"id\" is record`",
+        ),
+        (
+            "module M is { storage at \"t.id\" is record { x : uint; }\n\
+             storage other at \"t.id\" is record { y : uint; } }\n\
+             use M;\n\
+             storage is record { n : uint; }\n",
+            "storage id `t.id` conflicts between `M` and `M`",
+        ),
+        (
+            "module M is { immutable at \"t.id\" is record { x : uint; } }\n\
+             use M;\n\
+             storage d at \"t.id\" is record { x : uint; }\n",
+            "storage id `t.id` conflicts between `the contract` and `M`",
+        ),
+        (
+            "module M is { storage at \"t.m\" is record { config : uint; }\n\
+             storage config at \"t.config\" is record { fee : uint; } }\n\
+             use M;\n\
+             storage is record { n : uint; }\n",
+            "`M.storage.config` and field `config` of `M.storage` are both `M.storage.config`; rename one of them",
+        ),
+        (
+            "module M is { transient storage is record { s : uint; }\n\
+             transient storage s is record { n : uint; } }\n\
+             use M;\n\
+             storage is record { n : uint; }\n",
+            "`M.transient.s` and field `s` of `M.transient` are both `M.transient.s`; rename one of them",
+        ),
+        (
+            "module M is { immutable at \"t.m\" is record { cap : uint; }\n\
+             immutable cap at \"t.cap\" is record { n : uint; } }\n\
+             use M;\n\
+             storage is record { n : uint; }\n",
+            "`M.immutable.cap` and field `cap` of `M.immutable` are both `M.immutable.cap`; rename one of them",
+        ),
+        (
+            "module M is { storage at \"t.m\" is record { n : uint; } }\n\
+             use M;\n\
+             storage is record { k : uint; }\n\
+             external function f() is { storage.n := 1; }\n",
+            "`storage.n` belongs to `M`; write `M.storage.n`",
+        ),
+        (
+            "module M is { transient storage is record { n : uint; } }\n\
+             use M;\n\
+             storage is record { k : uint; }\n\
+             transient storage is record { k : uint; }\n\
+             external view function f() : uint is transient.n\n",
+            "`transient.n` belongs to `M`; write `M.transient.n`",
+        ),
+    ] {
+        let err = compile(src).expect_err("rejected");
+        assert!(err.message.starts_with(message), "{}", err.message);
+    }
+}
+
+/// A contract's default immutables may name their id, as its default storage may.
+#[test]
+fn default_immutables_take_an_id() {
+    let src = "immutable at \"t.imm\" is record { cap : uint; }\n\
+               storage is record { n : uint; }\n\
+               deploy(const cap : uint) is { immutable.cap := cap; }\n\
+               external view function cap() : uint is immutable.cap\n";
+    let out = crate::compile(&memory(src), Path::new(ENTRY), &crate::Options::default())
+        .and_then(crate::Output::single)
+        .map_err(first)
+        .expect("compile");
+    assert!(out.immutable_references.iter().any(|(id, _)| id == "t.imm"));
+    let mut init = out.bytecode;
+    init.extend(Word::from_u64(9).to_be_bytes());
+    let rt = deploy(&init).expect("deploy");
+    assert_eq!(
+        read_ok(&rt, &HashMap::new(), "cap()", &[]),
+        Word::from_u64(9)
+    );
 }

@@ -15,12 +15,12 @@ module Settlement is {
   }
 
   function begin() is {
-    execution.active := true;
-    execution.depth += uint8(1);
+    transient.execution.active := true;
+    transient.execution.depth += uint8(1);
   }
 
   view function active() : bool is
-    execution.active
+    transient.execution.active
 }
 
 interface Me is {
@@ -45,10 +45,10 @@ storage is record {
 external function process(const me : Me; const amount : uint)
   raises AlreadyProcessing
 is {
-  assert(not scratch.processing, AlreadyProcessing);
-  scratch.processing := true;
-  scratch.pending := amount;
-  scratch.touched[Evm.sender()] += amount;
+  assert(not transient.scratch.processing, AlreadyProcessing);
+  transient.scratch.processing := true;
+  transient.scratch.pending := amount;
+  transient.scratch.touched[Evm.sender()] += amount;
   transient.locked := true;
   Settlement.begin();
   storage.processed += amount;
@@ -59,10 +59,10 @@ is {
 external function confirm()
   raises NotSettling
 is {
-  assert(Settlement.execution.active, NotSettling);
-  storage.confirmed += scratch.pending;
+  assert(Settlement.transient.execution.active, NotSettling);
+  storage.confirmed += transient.scratch.pending;
 }
 
-external view function processing() : bool is scratch.processing
+external view function processing() : bool is transient.scratch.processing
 
 external view function settling() : bool is Settlement.active()

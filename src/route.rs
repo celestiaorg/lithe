@@ -825,7 +825,7 @@ fn walk_stmt(checked: &Checked, s: &Stmt, fx: &mut Effects<'_>) {
             }
             let label = parts.join(".");
             let label = match root {
-                Some(sym) => space_label(checked, *sym, slot_label(fx, *sym, label)),
+                Some(sym) => slot_label(fx, *sym, label),
                 None => label,
             };
             push(fx.writes, label);
@@ -1357,9 +1357,9 @@ fn note_storage(checked: &Checked, expr: &Expr, fx: &mut Effects<'_>) {
         } => *sym,
         _ => return,
     };
-    if checked.syms.get(sym).is_some_and(|sym| sym.storage) {
+    if sym < checked.syms.len() && checked.state_sym(sym) {
         let label = slot_label(fx, sym, storage_label(expr));
-        push(fx.reads, space_label(checked, sym, label));
+        push(fx.reads, label);
     }
 }
 
@@ -1371,18 +1371,6 @@ fn slot_label(fx: &Effects<'_>, sym: usize, label: String) -> String {
     match label.split_once('.') {
         Some((_, rest)) => format!("{base}.{rest}"),
         None => base.clone(),
-    }
-}
-
-/// Transient storage and immutables are named as such, so they are never mistaken for
-/// persistent state.
-fn space_label(checked: &Checked, sym: usize, label: String) -> String {
-    if checked.is_transient(sym) && !label.starts_with("transient.") {
-        format!("transient {label}")
-    } else if checked.immutable_syms.contains(&sym) && !label.starts_with("immutable.") {
-        format!("immutable {label}")
-    } else {
-        label
     }
 }
 
@@ -1648,15 +1636,20 @@ pub(crate) fn render_analysis(checked: &Checked) -> String {
         let items: Vec<String> = labels
             .iter()
             .map(|label| {
-                let (space, path) = match label.strip_prefix("transient ") {
-                    Some(path) => ("transient", path),
-                    None if label.starts_with("transient.") => ("transient", label.as_str()),
-                    None => match label.strip_prefix("immutable ") {
-                        Some(path) => ("immutable", path),
-                        None if label.starts_with("immutable.") => ("immutable", label.as_str()),
-                        None => ("storage", label.strip_prefix("storage.").unwrap_or(label)),
-                    },
+                // `transient.x` and `M.transient.x` start with their space, past the module.
+                let kind = |part: &str| matches!(part, "storage" | "transient" | "immutable");
+                let mut parts = label.split('.');
+                let space = match parts.next() {
+                    Some(first) if kind(first) => first,
+                    _ => parts
+                        .next()
+                        .filter(|second| kind(second))
+                        .unwrap_or("storage"),
                 };
+                let path = label
+                    .strip_prefix(space)
+                    .and_then(|rest| rest.strip_prefix('.'))
+                    .unwrap_or(label);
                 format!("{{ \"space\": \"{space}\", \"path\": {} }}", json_str(path))
             })
             .collect();

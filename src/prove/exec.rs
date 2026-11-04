@@ -730,7 +730,7 @@ impl<'a> Exec<'a> {
         let Some(sym) = self.checked.syms.get(root) else {
             return Ok(None);
         };
-        if !sym.storage {
+        if !self.checked.state_sym(root) {
             return Ok(None);
         }
         let base = if self.checked.slot_syms.contains_key(&root) {
@@ -2000,7 +2000,7 @@ impl<'a> Exec<'a> {
             }),
             Expr::Ident { sym, ty, .. } => {
                 if let Some(sym) = sym {
-                    if self.checked.syms[*sym].storage {
+                    if self.checked.state_sym(*sym) {
                         return self.approx_fresh(*ty, "a whole storage record");
                     }
                     return Ok(self.local(st, *sym));
@@ -2470,6 +2470,7 @@ impl<'a> Exec<'a> {
         ctx: &Ctx,
     ) -> Res<Val> {
         match b {
+            Builtin::ImmutableRead => self.eval(st, &args[0], ctx),
             Builtin::SpecState(state) => {
                 let Some(states) = &self.states else {
                     return self.eval(st, &args[0], ctx);

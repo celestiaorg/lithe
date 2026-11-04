@@ -8,7 +8,7 @@ module Ledger is {
   }
 
   external function bump() is {
-    ledger.n += hook();
+    storage.ledger.n += hook();
   }
 }
 

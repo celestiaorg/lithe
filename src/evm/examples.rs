@@ -214,11 +214,11 @@ const REJECT_RULES: &[(&str, &str)] = &[
     ),
     (
         "reject/module_storage.lithe",
-        "module `Ledger` uses `Pausable.settings` but does not require `Pausable`",
+        "module `Ledger` uses `Pausable.storage.settings` but does not require `Pausable`",
     ),
     (
         "reject/storage_qualify.lithe",
-        "storage `ledger` belongs to `Ledger`; write `Ledger.ledger`",
+        "`storage.ledger` belongs to `Ledger`; write `Ledger.storage.ledger`",
     ),
     (
         "reject/mixed_contract.lithe",

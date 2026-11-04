@@ -150,11 +150,11 @@ module Counter is {
   }
 
   external function bump(const by : uint) is {
-    counter.count := counter.count + by;
+    storage.counter.count := storage.counter.count + by;
   }
 
   external view function count() : uint is
-    counter.count
+    storage.counter.count
 }
 
 storage is record {
@@ -174,7 +174,7 @@ deploy(const owner : address) is {
 }
 
 migrate init(const fee : uint) is {
-  settings.fee := fee;
+  storage.settings.fee := fee;
 }
 
 use Counter delegated exposing {
@@ -183,7 +183,7 @@ use Counter delegated exposing {
 }
 
 external view function fee() : uint is
-  settings.fee
+  storage.settings.fee
 "#;
 
 /// A standard ERC-1967 proxy's runtime: `delegatecall` the implementation in the slot with
@@ -439,10 +439,10 @@ fn upgrades_bubble_migration_failures_and_take_long_arguments() {
             external function whyNow(const s : string) raises Why is {{ fail Why(s); }}\n\
             migrate divide(const x : uint) is {{ storage.n := 10 / x; }}\n\
             external function divideNow(const x : uint) is {{ storage.n := 10 / x; }}\n\
-            migrate long(const s : string; const xs : list(uint)) is {{ extra.s := s; extra.xs := xs; }}\n\
+            migrate long(const s : string; const xs : list(uint)) is {{ storage.extra.s := s; storage.extra.xs := xs; }}\n\
             external view function n() : uint is storage.n\n\
-            external view function s() : string is extra.s\n\
-            external view function xs() : list(uint) is extra.xs\n"
+            external view function s() : string is storage.extra.s\n\
+            external view function xs() : list(uint) is storage.extra.xs\n"
         )
     };
     let [a, b] = [0xa11, 0xb22].map(Word::from_u64);
@@ -657,8 +657,8 @@ fn facets_run_only_their_module() {
 fn routers_need_their_facets() {
     let plain = "module M is {\n\
           storage m at \"t.m\" is record { a : uint; b : uint; }\n\
-          external function setA(const v : uint) is { m.a := v * 3 + m.b; }\n\
-          external view function sum() : uint is m.a + m.b\n\
+          external function setA(const v : uint) is { storage.m.a := v * 3 + storage.m.b; }\n\
+          external view function sum() : uint is storage.m.a + storage.m.b\n\
         }\n\
         storage is record { n : uint; }\n\
         use M delegated exposing {\n\
@@ -689,9 +689,9 @@ fn delegated_modules_keep_their_constants() {
           const seed : bytes32 := Crypto.keccak256(\"links\");\n\
           storage links at \"t.links\" is record { items : list(uint, maxLinks); total : uint; }\n\
           external function add(const xs : list(uint)) is {\n\
-            for x : uint in xs bound maxLinks do { links.total += x; }\n\
+            for x : uint in xs bound maxLinks do { storage.links.total += x; }\n\
           }\n\
-          external view function total() : (uint, bytes32) is (links.total + maxLinks, seed)\n\
+          external view function total() : (uint, bytes32) is (storage.links.total + maxLinks, seed)\n\
         }\n\
         storage is record { n : uint; }\n\
         use Links delegated exposing {\n\
@@ -743,7 +743,7 @@ module Alpha is {
   error AlphaZero;
 
   function add(const a : uint; const b : uint) is {
-    alphaState.n := alphaState.n + a * b + a / (b + 1);
+    storage.alphaState.n := storage.alphaState.n + a * b + a / (b + 1);
   }
 
   external function alphaAdd(const a : uint; const b : uint) is
@@ -753,12 +753,12 @@ module Alpha is {
     raises AlphaZero
   is {
     assert(c > 0, AlphaZero);
-    alphaState.n := alphaState.n * 3 + a * b * c + (a + b) / c + (a * c) % (b + 5);
+    storage.alphaState.n := storage.alphaState.n * 3 + a * b * c + (a + b) / c + (a * c) % (b + 5);
     add(a % 7, c);
   }
 
   external view function alpha() : uint is
-    alphaState.n
+    storage.alphaState.n
 }
 
 module Beta is {
@@ -767,11 +767,11 @@ module Beta is {
   }
 
   external function betaAdd(const a : uint; const b : uint) is {
-    betaState.m := betaState.m * 2 + a % (b + 3) + b;
+    storage.betaState.m := storage.betaState.m * 2 + a % (b + 3) + b;
   }
 
   external view function beta() : uint is
-    betaState.m
+    storage.betaState.m
 }
 "#;
 
@@ -1092,15 +1092,15 @@ contract Shop is {
 fn module_transient_storage_has_one_slot() {
     let module = "module Lock is {\n\
           transient storage lock is record { held : bool; depth : uint; }\n\
-          external function enter() is { lock.depth := lock.depth + 1; }\n\
+          external function enter() is { transient.lock.depth := transient.lock.depth + 1; }\n\
         }\n";
     let slot_of = |checked: &crate::check::Checked| {
         checked
             .transient_layout
             .iter()
-            .find(|domain| domain.name == "Lock.lock")
+            .find(|domain| domain.name == "Lock.transient.lock")
             .map(|domain| domain.places.join(", "))
-            .expect("Lock.lock")
+            .expect("Lock.transient.lock")
     };
     let a = checked_src(&format!(
         "{module}storage is record {{ n : uint; }}\nuse Lock exposing {{ function enter(); }}\n"
@@ -1127,19 +1127,19 @@ module Folds is {
   }
 
   external function fold(const a : uint; const b : uint; const c : uint) is {
-    folds.count := folds.count + a * b * c + (a + b) / (c + 1) + (a * c) % (b + 5);
+    storage.folds.count := storage.folds.count + a * b * c + (a + b) / (c + 1) + (a * c) % (b + 5);
   }
 
   external function fold2(const a : uint; const b : uint; const c : uint) is {
-    folds.count := folds.count * 2 + a * b * c + (a + b) / (c + 2) + (a * c) % (b + 7);
+    storage.folds.count := storage.folds.count * 2 + a * b * c + (a + b) / (c + 2) + (a * c) % (b + 7);
   }
 
   external function fold3(const a : uint; const b : uint; const c : uint) is {
-    folds.count := folds.count * 3 + a * b * c + (a + b) / (c + 3) + (a * c) % (b + 8);
+    storage.folds.count := storage.folds.count * 3 + a * b * c + (a + b) / (c + 3) + (a * c) % (b + 8);
   }
 
   external view function folded() : uint is
-    folds.count
+    storage.folds.count
 }
 
 contract Factory is {
@@ -1271,7 +1271,7 @@ fn split_tooling_output() {
     let pair = dir.join("src/pair.lithe");
     std::fs::write(&pair, pair_src("")).expect("write");
     let pair2 = dir.join("pair2.lithe");
-    let changed = pair_src("").replace("betaState.m * 2", "betaState.m * 3");
+    let changed = pair_src("").replace("storage.betaState.m * 2", "storage.betaState.m * 3");
     std::fs::write(&pair2, changed).expect("write");
     let opts = crate::Options::default();
     let compiled = crate::compile(&Sources::disk(), &pair, &opts)
@@ -1326,7 +1326,7 @@ fn split_tooling_output() {
     // A second contract with another `Beta` facet: each `Beta` is named by its address, and
     // the `Beta.json` of the build before is gone.
     assert!(out.join("facets/Beta.json").exists());
-    let changed = pair_src("").replace("betaState.m * 2", "betaState.m * 3");
+    let changed = pair_src("").replace("storage.betaState.m * 2", "storage.betaState.m * 3");
     std::fs::write(dir.join("src/pair2.lithe"), changed).expect("write");
     let built = crate::compile_dir(&dir.join("src"), &out, &|_| Ok(opts.clone())).expect("dir");
     assert!(built.failed.is_empty());
@@ -1396,12 +1396,12 @@ import \"std/abi\"; import \"std/crypto\"; module Orders is {
   type Job is record { a : uint; label : string; }
   storage orders at \"t.orders\" is record { h : bytes32; }
 
-  external function place(const o : Order) is { orders.h := Crypto.keccak256(Abi.encode(o)); }
-  external function run(const j : flat Job) is { orders.h := Crypto.keccak256(Abi.encode(j)); }
+  external function place(const o : Order) is { storage.orders.h := Crypto.keccak256(Abi.encode(o)); }
+  external function run(const j : flat Job) is { storage.orders.h := Crypto.keccak256(Abi.encode(j)); }
   external function mark(const m : record { at : uint; note : string; }) is {
-    orders.h := Crypto.keccak256(Abi.encode(m.at, m.note));
+    storage.orders.h := Crypto.keccak256(Abi.encode(m.at, m.note));
   }
-  external view function last() : bytes32 is orders.h
+  external view function last() : bytes32 is storage.orders.h
 }
 ";
 
@@ -1507,17 +1507,17 @@ module Ledger is {
     (n / 2, n - n / 2)
 
   view function balance(const who : address) : uint is
-    ledger.balances[who]
+    storage.ledger.balances[who]
 
   view function check(const who : address; const want : uint)
     raises Short
   is {
-    assert(ledger.balances[who] >= want, Short(ledger.balances[who]));
+    assert(storage.ledger.balances[who] >= want, Short(storage.ledger.balances[who]));
   }
 
   function mint(const to : address; const amount : uint) is {
-    ledger.balances[to] := ledger.balances[to] + amount;
-    ledger.total := ledger.total + amount;
+    storage.ledger.balances[to] := storage.ledger.balances[to] + amount;
+    storage.ledger.total := storage.ledger.total + amount;
     emit Moved { from = to; to = to; amount = amount; };
   }
 
@@ -1525,17 +1525,17 @@ module Ledger is {
     raises Short
   is {
     check(from, amount);
-    ledger.balances[from] := ledger.balances[from] - amount;
-    ledger.balances[to] := ledger.balances[to] + amount;
+    storage.ledger.balances[from] := storage.ledger.balances[from] - amount;
+    storage.ledger.balances[to] := storage.ledger.balances[to] + amount;
     emit Moved { from = from; to = to; amount = amount; };
-    ledger.last := label(amount);
-  } with ledger.balances[to]
+    storage.ledger.last := label(amount);
+  } with storage.ledger.balances[to]
 
   external view function total() : uint is
-    ledger.total
+    storage.ledger.total
 
   external view function last() : string is
-    ledger.last
+    storage.ledger.last
 }
 
 interface Echo is {
@@ -1800,11 +1800,11 @@ fn variants_cross_into_facets() {
     }
 
   function keep(const s : Shape) : Shape is {
-    shapes.last := s;
-    shapes.count := shapes.count + 1;
+    storage.shapes.last := s;
+    storage.shapes.count := storage.shapes.count + 1;
   } with grow(s)
 
-  view function last() : Shape is shapes.last
+  view function last() : Shape is storage.shapes.last
 }
 
 contract C is {
@@ -1974,7 +1974,7 @@ fn facets_do_not_depend_on_what_the_contract_reaches_or_imports() {
   } with xs.length
 
   function add(const n : uint) is {
-    names.count += n;
+    storage.names.count += n;
   }
 
   external function addAll(const xs : list(string)) raises Empty is {
@@ -1982,7 +1982,7 @@ fn facets_do_not_depend_on_what_the_contract_reaches_or_imports() {
     add(total(xs));
   }
 
-  external view function count() : uint is names.count
+  external view function count() : uint is storage.names.count
 }
 ";
     let a = "import \"./names\";
@@ -2075,7 +2075,7 @@ module Book is {
   }
 
   function note(const k : uint) is {
-    book.pages[k] := book.n;
+    storage.book.pages[k] := storage.book.n;
   }
 
   function later(const to : address) is {
@@ -2142,19 +2142,19 @@ module Roles is {
   view function onlyAdmin(const who : address)
     raises NotAdmin
   is {
-    assert(roles.admins[who], NotAdmin(who));
+    assert(storage.roles.admins[who], NotAdmin(who));
   }
 
   function grant(const who : address) is {
-    roles.admins[who] := true;
+    storage.roles.admins[who] := true;
   }
 
   external function bump() guarded admin is {
-    roles.n := roles.n + 1;
+    storage.roles.n := storage.roles.n + 1;
   }
 
   external view function n() : uint is
-    roles.n
+    storage.roles.n
 }
 
 upgradeable
@@ -2240,11 +2240,11 @@ fn crossings_carry_immutables() {
   }
 
   function setBps(const bps : uint) is {
-    fees.bps := bps;
+    immutable.fees.bps := bps;
   }
 
   view function cut(const amount : uint) : uint is
-    amount * fees.bps / 10_000
+    amount * immutable.fees.bps / 10_000
 }
 
 use Fees delegated;
@@ -2287,8 +2287,8 @@ external view function first() : uint is
 const FACET_ADDRESS: &str = "import \"std/evm\";
 module Counter is {
   storage counter at \"example.facet.address\" is record { n : uint; }
-  function bump() is { counter.n := counter.n + 1; }
-  external view function count() : uint is counter.n
+  function bump() is { storage.counter.n := storage.counter.n + 1; }
+  external view function count() : uint is storage.counter.n
 }
 contract App is {
   use Counter delegated exposing { view function count() : uint; }
@@ -2330,8 +2330,8 @@ fn facet_address_needs_a_delegated_module_and_contract_code() {
         err.message
     );
     let in_module = FACET_ADDRESS.replace(
-        "  external view function count() : uint is counter.n\n",
-        "  external view function count() : uint is counter.n\n  pure function here() : address is Evm.facetAddress(Counter)\n",
+        "  external view function count() : uint is storage.counter.n\n",
+        "  external view function count() : uint is storage.counter.n\n  pure function here() : address is Evm.facetAddress(Counter)\n",
     );
     let err = crate::check::check(loaded(&in_module), Default::default())
         .err()

@@ -65,7 +65,7 @@ contract Token is {
       | ERC20InsufficientBalance
   is {
     Ownable.checkOwner();
-    const supply : uint := ERC20.erc20.totalSupply + value;
+    const supply : uint := ERC20.storage.erc20.totalSupply + value;
     assert(supply <= storage.cap, ERC20ExceededCap { increasedSupply = supply; cap = storage.cap; });
     ERC20.mint(to, value);
   }

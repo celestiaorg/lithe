@@ -67,8 +67,9 @@ local bindings require a type
 | a map entry | `storage.balances[who] := 0;` |
 | a nested map entry | `storage.allowances[owner][spender] := n;` |
 | a field of a stored record | `storage.orders[id].status := uint8(2);` |
-| named storage | `config.fee := 30;` |
-| a module's storage, from outside it | `Ledger.ledger.total := 0;` |
+| named storage | `storage.config.fee := 30;` |
+| a module's default storage, from outside it | `Ledger.storage.total := 0;` |
+| a module's named storage, from outside it | `Ledger.storage.ledger.total := 0;` |
 
 An unqualified storage name is an error:
 

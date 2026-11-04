@@ -21,17 +21,17 @@ module Prices is {
     raises Zero
   is {
     assert(price > 0, Zero);
-    prices.byId[tokenId] := price;
+    storage.prices.byId[tokenId] := price;
   }
 
   external view function price(const tokenId : uint) : uint is
-    prices.byId[tokenId]
+    storage.prices.byId[tokenId]
 
   external view function secret() : uint guarded reader is
-    prices.bumps + 42
+    storage.prices.bumps + 42
 
   external function bump() is {
-    prices.bumps := prices.bumps + 1;
+    storage.prices.bumps := storage.prices.bumps + 1;
   }
 }
 "#;
@@ -286,11 +286,11 @@ module Notes is {
   guard admin(const id : uint);
 
   external function write(const id : uint; const note : uint) guarded writer(id) is {
-    notes.byId[id] := note;
+    storage.notes.byId[id] := note;
   }
 
   external function clear(const id : uint) guarded admin(id) is {
-    notes.byId[id] := 0;
+    storage.notes.byId[id] := 0;
   }
 }
 
@@ -367,12 +367,12 @@ module Admin is {
 
   external function act(const action : Action) guarded operator is
     case action of {
-    | SetFee(fee) -> { admin.fee := fee; }
-    | Pause -> { admin.paused := true; }
+    | SetFee(fee) -> { storage.admin.fee := fee; }
+    | Pause -> { storage.admin.paused := true; }
     }
 
   external view function fee() : uint is
-    admin.fee
+    storage.admin.fee
 }
 
 contract Desk is {
@@ -562,7 +562,7 @@ module M is {{
   guard editor(const id : uint);
 
   {header} is {{
-    m.n := id;
+    storage.m.n := id;
   }}
 }}
 
@@ -590,7 +590,7 @@ contract C is {{
     );
     rejects(
         &module(
-            "external function set(const id : uint; const other : address) guarded editor(m.n)",
+            "external function set(const id : uint; const other : address) guarded editor(storage.m.n)",
         ),
         "a guard takes the external's parameters, by name",
     );

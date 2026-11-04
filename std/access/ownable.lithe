@@ -25,7 +25,7 @@ module Ownable is {
   view function checkOwner()
     raises OwnableUnauthorizedAccount
   is {
-    assert(ownable.owner = Evm.sender(), OwnableUnauthorizedAccount(Evm.sender()));
+    assert(storage.ownable.owner = Evm.sender(), OwnableUnauthorizedAccount(Evm.sender()));
   }
 
   function init(const initialOwner : address)
@@ -37,8 +37,8 @@ module Ownable is {
 
   (* Moves ownership without any check. *)
   function setOwner(const newOwner : address) is {
-    const previous : address := ownable.owner;
-    ownable.owner := newOwner;
+    const previous : address := storage.ownable.owner;
+    storage.ownable.owner := newOwner;
     emit OwnershipTransferred {
       previousOwner = previous;
       newOwner = newOwner;
@@ -46,7 +46,7 @@ module Ownable is {
   }
 
   external view function owner() : address is
-    ownable.owner
+    storage.ownable.owner
 
   external function transferOwnership(const newOwner : address)
     raises OwnableUnauthorizedAccount | OwnableInvalidOwner

@@ -1430,7 +1430,7 @@ fn flat_is_rejected_elsewhere() {
         let err = compile(&src).expect_err(body).to_string();
         assert!(err.contains(want), "{body}: {err}");
     }
-    let module = "module Desk is {\n  type Quote is record { who : address; amount : uint; }\n  storage desk at \"t.desk\" is record { n : uint; }\n  external function file(const q : flat Quote) is { desk.n := q.amount; }\n}\n";
+    let module = "module Desk is {\n  type Quote is record { who : address; amount : uint; }\n  storage desk at \"t.desk\" is record { n : uint; }\n  external function file(const q : flat Quote) is { storage.desk.n := q.amount; }\n}\n";
     let err = compile(&format!(
         "{module}contract Shop is {{\n  storage is record {{}}\n  use Desk exposing {{ function file(q : Quote); }}\n}}\n"
     ))

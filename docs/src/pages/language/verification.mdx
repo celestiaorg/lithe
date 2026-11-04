@@ -67,7 +67,7 @@ spec is {
 }
 ```
 
-An invariant describes one state, so it reads storage as code does: `storage.total`, `settings.feeBps`, `Module.domain.x`.
+An invariant describes one state, so it reads storage as code does: `storage.total`, `storage.settings.feeBps`, `Module.storage.domain.x`.
 
 ## Function specs
 
@@ -79,6 +79,8 @@ A function spec talks about two states: before the call and after it. Every read
 | --- | --- |
 | `old.storage.total` | storage before the call |
 | `new.storage.total` | storage once the call's first phase commits |
+| `old.storage.config.fee`, `new.storage.config.fee` | a named domain, in either state |
+| `old.Ownable.storage.ownable.owner` | a module's domain, read from the contract's specs |
 | `old.Evm.balance(a)`, `new.Evm.balance(a)` | an account's balance, or its code with `Evm.codeSize` and `Evm.codeHash` |
 | `old.total_owed()`, `new.total_owed()` | a `view` function, run in that state |
 
@@ -197,8 +199,8 @@ contract Token is {
 ```lithe [token.spec.lithe]
 spec for module ERC20 is {
   spec for move is partial {
-    raises ERC20InsufficientBalance when old.erc20.balances[from] < value;
-    ensures new.erc20.totalSupply = old.erc20.totalSupply;
+    raises ERC20InsufficientBalance when old.storage.erc20.balances[from] < value;
+    ensures new.storage.erc20.totalSupply = old.storage.erc20.totalSupply;
   }
 }
 ```
@@ -367,7 +369,7 @@ A counterexample that rests on what the prover only approximates, such as a prec
 
 An internal function's spec is proved of each body the build compiles once, which its calls jump to. The compiler certifies where the body starts and where its parameters are there; the prover runs it from there, in any state, as an internal function's call starts, to the jump back to its caller. A function the build inlines into a call is proved of each copy, the same way: the compiler marks where each copy starts and ends, and where its parameters are as it starts, and the prover runs it from there, in any state and with the stack its caller left unknown, to its end. The optimizer moves code across a copy's boundary, so the compiler keeps a mark only where every instruction that writes, logs, calls, branches, halts, or reads storage stays on its side; when a pass merges a copy with the code around it, such as a read of storage another copy just wrote, the spec is `unknown`, and the entrypoints that call it answer for it. Over the examples and the standard library, 452 of 539 inlined copies keep their marks. The rest are merged for good: a copy's overflow check joined with its caller's into one branch, its code moved into a helper other call sites share, or its end merged into a tail other code jumps to. A boundary there would put the caller's code inside the copy, or the copy's end past a return it cannot follow, so those specs stay `unknown`. A guard runs at the start of each route through it, inlined, and the compiler marks where the guard's statements end in each route's code: its own `reverts in no other case` is proved of the reverts before that mark, wherever the route adds reverts of its own past it.
 
-The prover reports as `unknown` a `delegatecall` to code the build did not produce, such as a `fallback` that passes its call on.
+The prover reports as `unknown` a `delegatecall` to code the build did not produce, such as a `fallback` that passes its call on. A [`string`, `bytes`, or list immutable](/language/storage#what-immutables-can-hold) keeps its bytes after the code, where `deploy` appended them, at a place only `deploy` fixes, so a phase that reads one reads them as any bytes: its other claims are proved, and a counterexample that rests on them says it may not happen. The initial state is proved when `deploy` appends bytes of a length it fixes, such as a constant's: the creation code returns the runtime the prover proved, with those bytes after it. When the length comes from `deploy`'s parameters, so does the runtime's, which the prover cannot fix, and `deploy`'s rows are `unknown`.
 
 A `selfdestruct` ends its frame and sends the contract's ether to the account it names, which runs no code; since Cancun the contract stays, and one created in the same transaction goes as if it had never been, so only its `deploy` brings it back. A function a spec calls is read in the state the spec reads, with a spec's exact arithmetic: its constants, its `if`s, and its value.
 

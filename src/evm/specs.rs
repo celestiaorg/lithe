@@ -111,17 +111,17 @@ module Coin is {
   }
 
   function mint(const to : address; const value : uint) is {
-    coin.balances[to] := coin.balances[to] + value;
-    coin.totalSupply := coin.totalSupply + value;
+    storage.coin.balances[to] := storage.coin.balances[to] + value;
+    storage.coin.totalSupply := storage.coin.totalSupply + value;
   }
 
   external function transfer(const to : address; const value : uint) : bool
     raises Short
   is {
     const from : address := Evm.sender();
-    assert(coin.balances[from] >= value, Short);
-    coin.balances[from] := coin.balances[from] - value;
-    coin.balances[to] := coin.balances[to] + value;
+    assert(storage.coin.balances[from] >= value, Short);
+    storage.coin.balances[from] := storage.coin.balances[from] - value;
+    storage.coin.balances[to] := storage.coin.balances[to] + value;
   } with true
 }
 
@@ -141,14 +141,14 @@ external function mint(const to : address; const value : uint) is {
 const TOKEN_SPECS: &str = r#"
 spec for module Coin is {
   spec is {
-    invariant supply is coin.totalSupply = sum(coin.balances);
+    invariant supply is storage.coin.totalSupply = sum(storage.coin.balances);
   }
 
   spec for transfer is partial {
     const from : address := Evm.sender();
-    raises Short when old.coin.balances[from] < value;
-    ensures from = to or new.coin.balances[to] = old.coin.balances[to] + value;
-    ensures new.coin.totalSupply = old.coin.totalSupply;
+    raises Short when old.storage.coin.balances[from] < value;
+    ensures from = to or new.storage.coin.balances[to] = old.storage.coin.balances[to] + value;
+    ensures new.storage.coin.totalSupply = old.storage.coin.totalSupply;
   }
 }
 "#;
@@ -239,12 +239,12 @@ spec for deposit(amount : uint) (entrypoint)
 #[test]
 fn module_specs_come_from_the_module_or_a_spec_file() {
     let expected = "spec is
-  invariant Coin.supply: coin.totalSupply = sum(coin.balances)
+  invariant Coin.supply: storage.coin.totalSupply = sum(storage.coin.balances)
 spec for Coin.transfer(to : address; value : uint) (external)
   const from := Evm.sender()
-  raises Short when old.coin.balances[from] < value
-  ensures from = to or new.coin.balances[to] = old.coin.balances[to] + value
-  ensures new.coin.totalSupply = old.coin.totalSupply
+  raises Short when old.storage.coin.balances[from] < value
+  ensures from = to or new.storage.coin.balances[to] = old.storage.coin.balances[to] + value
+  ensures new.storage.coin.totalSupply = old.storage.coin.totalSupply
   may revert in other ways (partial)
 ";
     assert_eq!(
@@ -257,12 +257,12 @@ module Counter is {
   storage counter at "t.counter" is record { n : uint; }
 
   function bump() is {
-    counter.n := counter.n + 1;
+    storage.counter.n := storage.counter.n + 1;
   }
 
   spec for bump is {
-    panics when old.counter.n + 1 > 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
-    ensures new.counter.n = old.counter.n + 1;
+    panics when old.storage.counter.n + 1 > 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
+    ensures new.storage.counter.n = old.storage.counter.n + 1;
   }
 }
 
@@ -504,11 +504,11 @@ module Unused is {
   storage unused at "t.unused" is record { n : uint; }
 
   function bump() is {
-    unused.n := unused.n + 1;
+    storage.unused.n := storage.unused.n + 1;
   }
 
   spec is {
-    invariant small is unused.n < 10;
+    invariant small is storage.unused.n < 10;
   }
 }
 
@@ -907,16 +907,16 @@ module Ledger is {
   }
 
   external function mint(const value : uint) is {
-    ledger.balances[Evm.sender()] := ledger.balances[Evm.sender()] + value;
-    ledger.supply := ledger.supply + value;
+    storage.ledger.balances[Evm.sender()] := storage.ledger.balances[Evm.sender()] + value;
+    storage.ledger.supply := storage.ledger.supply + value;
   }
 
   external function leak(const value : uint) is {
-    ledger.balances[Evm.sender()] := ledger.balances[Evm.sender()] + value;
+    storage.ledger.balances[Evm.sender()] := storage.ledger.balances[Evm.sender()] + value;
   }
 
   spec is {
-    invariant supply is ledger.supply = sum(ledger.balances);
+    invariant supply is storage.ledger.supply = sum(storage.ledger.balances);
   }
 }
 
@@ -1213,7 +1213,7 @@ fn a_checking_build_raises_as_the_plain_build_past_a_word() {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/verification");
     let src = std::fs::read_to_string(root.join("capped_token.lithe")).expect("source");
     let spec = std::fs::read_to_string(root.join("capped_token.spec.lithe")).expect("spec");
-    assert!(spec.contains("old.ERC20.erc20.totalSupply + value > old.storage.cap"));
+    assert!(spec.contains("old.ERC20.storage.erc20.totalSupply + value > old.storage.cap"));
     let mut c = Checked::new(&src, &spec);
     let max = Word::from_u64(0).not();
     c.call(
@@ -1238,4 +1238,54 @@ fn a_checking_build_raises_as_the_plain_build_past_a_word() {
         &[Word::from_u64(7), Word::from_u64(5)],
     )
     .expect("mint");
+}
+
+/// A module's spec block reads the module's default record as `storage.x`, and the
+/// contract's spec file reads it as `M.storage.x`.
+#[test]
+fn specs_read_a_module_s_default_record() {
+    let src = r#"import "std/evm"; 
+module Ledger is {
+  storage at "t.ledger.default" is record {
+    balances : map(address, uint);
+    supply : uint;
+  }
+
+  external function mint(const value : uint) is {
+    storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + value;
+    storage.supply := storage.supply + value;
+  }
+
+  external function leak(const value : uint) is {
+    storage.balances[Evm.sender()] := storage.balances[Evm.sender()] + value;
+  }
+
+  spec is {
+    invariant supply is storage.supply = sum(storage.balances);
+  }
+
+  spec for mint is partial {
+    ensures new.storage.supply = old.storage.supply + value;
+  }
+}
+
+interface ILedger is {
+  function mint(value : uint);
+  function leak(value : uint);
+}
+
+use Ledger exposing ILedger;
+
+storage is record { calls : uint; }
+"#;
+    let spec_file = "spec for mint is partial { ensures new.Ledger.storage.supply >= old.Ledger.storage.supply; }";
+    let out = specs_with(src, spec_file).expect("specs");
+    assert!(out.contains("invariant Ledger.supply"), "{out}");
+    let mut c = Checked::new(src, spec_file);
+    c.call(1, 0, "mint(uint256)", &[Word::from_u64(5)])
+        .expect("mint");
+    assert_eq!(
+        c.call(1, 0, "leak(uint256)", &[Word::from_u64(5)]),
+        Err(violation("invariant Ledger.supply"))
+    );
 }

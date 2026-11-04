@@ -160,7 +160,8 @@ impl Checker {
                     return Err(error(*line, *col, "field access on a non-record"));
                 }
                 let Some(f) = rec.fields.iter().find(|f| f.name == *name) else {
-                    return Err(error(*line, *col, format!("no field `{name}`")));
+                    let record = peel_id(&self.types, base.ty());
+                    return Err(self.no_field(*line, *col, record, name));
                 };
                 *ty = f.ty;
                 Ok(())
@@ -533,6 +534,26 @@ impl Checker {
                 self.pick_overload(*line, *col, base, name, args)?;
                 if let Some(target) = self.generic_call(base, name) {
                     return self.specialize(*line, *col, target, args, callee, ty);
+                }
+                if let Some(Expr::Field {
+                    base: module,
+                    name: kind,
+                    ..
+                }) = base.as_deref()
+                {
+                    if let Expr::Ident { name: module, .. } = module.as_ref() {
+                        if let Some(domain) = self
+                            .is_module(module)
+                            .then(|| self.kind_domain(module, kind, name))
+                            .flatten()
+                        {
+                            if let Some(err) =
+                                self.no_member(*line, *col, module, &domain, "a function")
+                            {
+                                return Err(err);
+                            }
+                        }
+                    }
                 }
                 if let Some(base_expr) = base.as_ref() {
                     if let Expr::Ident { name: alias, .. } = base_expr.as_ref() {

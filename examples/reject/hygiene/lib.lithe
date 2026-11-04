@@ -3,6 +3,6 @@ module Keeper is {
 
   function set(const v : uint) raises Denied is {
     assert(v > 0, Denied);
-    keeper.n := v;
+    storage.keeper.n := v;
   }
 }

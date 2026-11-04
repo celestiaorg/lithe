@@ -1733,7 +1733,7 @@ impl<'a> Gen<'a> {
         self.op(ADD);
         self.op(MSTORE);
         for (j, &leaf) in tail.iter().enumerate() {
-            self.mload(self.image + leaf as i32 * 32);
+            self.push_tail_leaf(leaf);
             self.op(DUP1 + 1);
             self.push_u64(68 + 32 * j as u64);
             self.op(ADD);

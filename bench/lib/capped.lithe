@@ -14,19 +14,19 @@ module ERC20Capped is {
   }
 
   external view function cap() : uint is
-    capped.cap
+    storage.capped.cap
 
   function init(const cap : uint)
     raises ERC20InvalidCap
   is {
     assert(cap > 0, ERC20InvalidCap(0));
-    capped.cap := cap;
+    storage.capped.cap := cap;
   }
 
   view function checkCap(const supply : uint)
     raises ERC20ExceededCap
   is {
-    const cap : uint := capped.cap;
+    const cap : uint := storage.capped.cap;
     assert(supply <= cap, ERC20ExceededCap { increasedSupply = supply; cap = cap; });
   }
 }

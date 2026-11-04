@@ -487,39 +487,72 @@ pub(super) fn check_transient_shape(types: &[RType], ty: usize, at: &str) -> Res
     }
 }
 
-/// The type of each word of a fixed-size value, in word order.
-pub(super) fn word_leaves(types: &[RType], ty: usize, out: &mut Vec<usize>) {
+/// The type of each word of a value in memory, in word order: a string, `bytes`, or
+/// dynamic list is one word, its pointer.
+pub(crate) fn word_leaves(types: &[RType], ty: usize, out: &mut Vec<usize>) {
     let t = &types[peel_id(types, ty)];
-    if matches!(t.kind, TyKind::Record | TyKind::Tuple) {
-        let mut fields: Vec<&RField> = t.fields.iter().collect();
-        fields.sort_by_key(|f| f.slot);
-        for field in fields {
-            word_leaves(types, field.ty, out);
+    match t.kind {
+        TyKind::Record | TyKind::Tuple => {
+            let mut fields: Vec<&RField> = t.fields.iter().collect();
+            fields.sort_by_key(|f| f.slot);
+            for field in fields {
+                word_leaves(types, field.ty, out);
+            }
         }
-    } else {
-        out.push(ty);
+        TyKind::List if t.bits > 0 => {
+            for _ in 0..t.bits {
+                word_leaves(types, t.elem.unwrap_or(TY_UINT), out);
+            }
+        }
+        // The tag of an option with a payload of its own is 1 for `Some`, 0 for `None`.
+        TyKind::Option if t.words > 1 => {
+            out.push(TY_BOOL);
+            word_leaves(types, t.elem.unwrap_or(TY_UINT), out);
+        }
+        _ => out.push(ty),
     }
 }
 
-/// Immutables hold fixed-size values: words, and records and tuples of them.
+/// An immutable holds any value: everything but a map, which is a keyed lookup and not a
+/// value fixed while the contract is set up.
 pub(super) fn check_immutable_shape(types: &[RType], ty: usize, at: &str) -> Result<(), String> {
     let t = &types[peel_id(types, ty)];
     match t.kind {
-        TyKind::Record | TyKind::Tuple if t.variants.is_empty() => t
+        TyKind::Map => Err(format!(
+            "immutable field `{at}` is a map; a map lives in storage, and an immutable holds a value"
+        )),
+        TyKind::Record | TyKind::Tuple => t
             .fields
             .iter()
             .try_for_each(|f| check_immutable_shape(types, f.ty, &f.name)),
-        TyKind::Map | TyKind::List => Err(format!(
-            "immutable field `{at}` is a collection; an immutable holds a fixed-size value"
-        )),
-        TyKind::String | TyKind::Bytes if t.bits == 0 => Err(format!(
-            "immutable field `{at}` is dynamic; an immutable holds a fixed-size value"
-        )),
+        TyKind::List | TyKind::Option => match t.elem {
+            Some(elem) if types[elem].kind != TyKind::Operation => {
+                check_immutable_shape(types, elem, at)
+            }
+            _ => Err(format!("immutable field `{at}` cannot hold this type")),
+        },
         kind if is_word(kind) && t.words == 1 => Ok(()),
-        _ => Err(format!(
-            "immutable field `{at}` must hold a word, or a record or tuple of words"
-        )),
+        _ => Err(format!("immutable field `{at}` cannot hold this type")),
     }
+}
+
+/// Words, and records and tuples of them: an immutable block of these is read straight
+/// from its leaves. Any other block is a value in memory while `deploy` runs.
+pub(crate) fn word_shape(types: &[RType], ty: usize) -> bool {
+    let t = &types[peel_id(types, ty)];
+    match t.kind {
+        TyKind::Record | TyKind::Tuple if t.variants.is_empty() => {
+            t.fields.iter().all(|f| word_shape(types, f.ty))
+        }
+        TyKind::String | TyKind::Bytes if t.bits == 0 => false,
+        kind => is_word(kind) && t.words == 1,
+    }
+}
+
+/// A word held behind a pointer: a string, `bytes`, or a dynamic list.
+pub(crate) fn pointer_word(types: &[RType], ty: usize) -> bool {
+    let t = &types[peel_id(types, ty)];
+    matches!(t.kind, TyKind::String | TyKind::Bytes | TyKind::List) && t.bits == 0
 }
 
 pub(super) fn domain_layout(

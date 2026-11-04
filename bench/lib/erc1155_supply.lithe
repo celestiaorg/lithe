@@ -11,13 +11,13 @@ module ERC1155Supply is {
   }
 
   external view function totalSupply(const id : uint) : uint is
-    erc1155Supply.totalSupply[id]
+    storage.erc1155Supply.totalSupply[id]
 
   external view function totalSupply() : uint is
-    erc1155Supply.totalSupplyAll
+    storage.erc1155Supply.totalSupplyAll
 
   external view function exists(const id : uint) : bool is
-    erc1155Supply.totalSupply[id] > 0
+    storage.erc1155Supply.totalSupply[id] > 0
 
   (* A burn can't take more than was minted, so its totals can't underflow. *)
   function update(const from : address; const to : address; const ids : list(uint); const values : list(uint)) is {
@@ -25,19 +25,19 @@ module ERC1155Supply is {
       var minted : uint := 0;
       for (i, id) : (uint, uint) in ids do {
         const value : uint := values[i];
-        erc1155Supply.totalSupply[id] += value;
+        storage.erc1155Supply.totalSupply[id] += value;
         minted += value;
       }
-      erc1155Supply.totalSupplyAll += minted;
+      storage.erc1155Supply.totalSupplyAll += minted;
     }
     if to = Address.zero then {
       var burned : uint := 0;
       for (i, id) : (uint, uint) in ids do {
         const value : uint := values[i];
-        erc1155Supply.totalSupply[id] -= value;
+        storage.erc1155Supply.totalSupply[id] -= value;
         burned += value;
       }
-      erc1155Supply.totalSupplyAll -= burned;
+      storage.erc1155Supply.totalSupplyAll -= burned;
     }
   }
 }

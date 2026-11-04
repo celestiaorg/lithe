@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn lists_facets_with_their_contract() {
         let vault = "module Counter is {\n  storage counter at \"vault.counter\" is record { n : uint; }\n  \
-            function bump() is { counter.n := counter.n + 1; }\n}\n\
+            function bump() is { storage.counter.n := storage.counter.n + 1; }\n}\n\
             use Counter delegated;\n\
             external function bump() is { Counter.bump(); }\n";
         let names = |target: &str| {

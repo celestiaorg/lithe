@@ -780,6 +780,7 @@ impl<'a> Gen<'a> {
         col: u32,
     ) -> Result<(), Error> {
         match b {
+            Builtin::ImmutableRead => return self.compile_immutable_read(&args[0], ty),
             Builtin::Sender => self.op(CALLER),
             Builtin::Value => self.op(CALLVALUE),
             Builtin::Calldata => return self.compile_calldata(),
@@ -2513,6 +2514,14 @@ impl<'a> Gen<'a> {
 
     /// Writes a value of type `ty` to memory at `dst`, however many words it takes.
     pub(super) fn write_value(&mut self, expr: &Expr, dst: i32, ty: usize) -> Result<(), Error> {
+        if let Expr::Call {
+            builtin: Some(Builtin::ImmutableRead),
+            args,
+            ..
+        } = expr
+        {
+            return self.write_immutable(&args[0], dst, ty);
+        }
         if self.write_decoded(expr, dst, ty)? {
             return Ok(());
         }

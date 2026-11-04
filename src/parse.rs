@@ -597,7 +597,10 @@ impl<'a> Parser<'a> {
                 body.domains.push(decl);
             }
             Kind::Ident if !private && self.slice() == "immutable" => {
-                let decl = self.immutable_decl()?;
+                let mut decl = self.immutable_decl()?;
+                if decl.id.is_empty() {
+                    decl.id = "lithe.immutable".to_string();
+                }
                 body.domains.push(decl);
             }
             _ => {
@@ -775,33 +778,39 @@ impl<'a> Parser<'a> {
                 }
                 Kind::Ident if matches!(self.slice(), "storage" | "transient" | "immutable") => {
                     let mut decl = if self.slice() == "immutable" {
-                        let decl = self.immutable_decl()?;
-                        if decl.name == "immutable" {
-                            return Err(error(
-                                decl.line,
-                                decl.col,
-                                "a module names its immutables: `immutable name at \"id\" is record`",
-                            ));
-                        }
-                        decl
+                        self.immutable_decl()?
                     } else if self.slice() == "transient" {
-                        let decl = self.transient_decl()?;
-                        if decl.name == "transient" {
-                            return Err(error(
-                                decl.line,
-                                decl.col,
-                                "a module names its transient storage: `transient storage name is record`",
-                            ));
-                        }
-                        decl
+                        self.transient_decl()?
                     } else {
-                        let StorageItem::Named(decl) = self.storage_decl()? else {
-                            return Err(self.err(
-                                "a module declares named storage: `storage name at \"id\" is record`",
-                            ));
-                        };
-                        decl
+                        match self.storage_decl()? {
+                            StorageItem::Named(decl) => decl,
+                            StorageItem::Default(decl, id) => DomainDecl {
+                                line: decl.line,
+                                col: decl.col,
+                                origin: String::new(),
+                                name: decl.name,
+                                id,
+                                ty: decl.ty,
+                                owner: None,
+                                transient: false,
+                                immutable: false,
+                            },
+                        }
                     };
+                    if !decl.transient && decl.id.is_empty() {
+                        let kind = if decl.immutable {
+                            "immutable"
+                        } else {
+                            "storage"
+                        };
+                        return Err(error(
+                            decl.line,
+                            decl.col,
+                            format!(
+                                "a module's default {kind} record needs an ERC-7201 id: `{kind} at \"id\" is record`"
+                            ),
+                        ));
+                    }
                     if let Some(have) = domains.iter().find(|have| have.name == decl.name) {
                         return Err(crate::modules::clash(
                             format!(
@@ -1384,7 +1393,7 @@ impl<'a> Parser<'a> {
             };
             return Ok(StorageItem::Default(decl, id));
         }
-        let name = self.ident()?;
+        let name = format!("storage.{}", self.ident()?);
         self.want(Kind::AtKw)?;
         if self.kind() != Kind::String {
             return Err(self.err("storage domain expects a string id"));
@@ -1406,8 +1415,9 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    /// `transient storage name is record { ... }`, or `transient storage is ...`, which is
-    /// reached as `transient`. Transient storage has no id: it never outlives the transaction.
+    /// `transient storage name is record { ... }`, reached as `transient.name`, or `transient
+    /// storage is ...`, reached as `transient`. Transient storage has no id: it never outlives
+    /// the transaction.
     fn transient_decl(&mut self) -> Result<DomainDecl, Error> {
         let (line, col) = self.at();
         self.bump();
@@ -1418,7 +1428,7 @@ impl<'a> Parser<'a> {
         let name = if self.kind() == Kind::Is {
             "transient".to_string()
         } else {
-            self.ident()?
+            format!("transient.{}", self.ident()?)
         };
         self.want(Kind::Is)?;
         let ty = self.ty()?;
@@ -1435,15 +1445,21 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `immutable name at "id" is record { ... }`, or `immutable is ...`, which is reached as
-    /// `immutable` and has the id `lithe.immutable`.
+    /// `immutable name at "id" is record { ... }`, reached as `immutable.name`, or `immutable
+    /// [at "id"] is ...`, reached as `immutable`. A contract's has the id `lithe.immutable`
+    /// when it names none.
     fn immutable_decl(&mut self) -> Result<DomainDecl, Error> {
         let (line, col) = self.at();
         self.bump();
         let (name, id) = if self.kind() == Kind::Is {
-            ("immutable".to_string(), "lithe.immutable".to_string())
+            ("immutable".to_string(), String::new())
+        } else if self.kind() == Kind::AtKw && self.peek_kind(1) == Kind::String {
+            self.bump();
+            let id = self.tok().string.clone().unwrap_or_default();
+            self.bump();
+            ("immutable".to_string(), id)
         } else {
-            let name = self.ident()?;
+            let name = format!("immutable.{}", self.ident()?);
             self.want(Kind::AtKw)?;
             if self.kind() != Kind::String {
                 return Err(self.err("immutables expect a string id"));

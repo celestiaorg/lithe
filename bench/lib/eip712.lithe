@@ -26,15 +26,15 @@ module EIP712 is {
   }
 
   function init(const name : string; const version : string) is {
-    eip712.name := name;
-    eip712.version := version;
+    storage.eip712.name := name;
+    storage.eip712.version := version;
   }
 
   view function domainSeparator() : bytes32 is
     Crypto.keccak256(Abi.encode(
       Crypto.keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-      Crypto.keccak256(eip712.name),
-      Crypto.keccak256(eip712.version),
+      Crypto.keccak256(storage.eip712.name),
+      Crypto.keccak256(storage.eip712.version),
       Evm.chainId(),
       Evm.self()
     ))
@@ -48,8 +48,8 @@ module EIP712 is {
     const extensions : list(uint) := [];
   } with {
     fields = 0x0f;
-    name = eip712.name;
-    version = eip712.version;
+    name = storage.eip712.name;
+    version = storage.eip712.version;
     chainId = Evm.chainId();
     verifyingContract = Evm.self();
     salt = 0x0000000000000000000000000000000000000000000000000000000000000000;

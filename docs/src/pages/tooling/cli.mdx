@@ -87,7 +87,7 @@ Compiles every `.lithe` file under the directory and its subdirectories, but hid
 }
 ```
 
-A contract that builds immutables into its code has `deployedBytecode.immutableReferences`, as Solidity's: each immutable block's id, such as `lithe.immutable`, and the `start` and `length` of every place the creation code writes its values. An upgradeable implementation lists its own address as `__self`. Verifiers such as Sourcify need these to compare the deployed code with the build.
+A contract that builds immutables into its code has `deployedBytecode.immutableReferences`, as Solidity's: each immutable block's id, such as `lithe.immutable`, and the `start` and `length` of every place the creation code writes its values. An upgradeable implementation lists its own address as `__self`. Verifiers such as Sourcify need these to compare the deployed code with the build. A contract whose immutables include a string, `bytes`, or dynamic list also has their bytes after its code, which `deployedBytecode` can't hold: what `deploy` appends follows the code on chain, and each value's location is an immutable reference like any other word.
 
 It prints each path it writes. It keeps going after a failing file, reports every failure, and exits `1` if any file failed. Files that define several contracts are fine in this mode. Two contract files with one name in different subdirectories, even differing only in case, would share `./out/<file>`, so the second fails and writes nothing.
 

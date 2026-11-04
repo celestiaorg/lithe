@@ -66,7 +66,7 @@ module AccessControl is {
     raises AccessControlUnauthorizedAccount
   is {
     assert(
-      access.members[r][account],
+      storage.access.members[r][account],
       AccessControlUnauthorizedAccount { account = account; neededRole = bytes32(r); }
     );
   }
@@ -74,8 +74,8 @@ module AccessControl is {
   (* Grants without checking the caller, for `deploy` and the contract's own rules.
      Granting a role an account already has changes nothing and logs nothing. *)
   function grant(const r : Role; const account : address) is {
-    if not access.members[r][account] then {
-      access.members[r][account] := true;
+    if not storage.access.members[r][account] then {
+      storage.access.members[r][account] := true;
       emit RoleGranted {
         role = bytes32(r);
         account = account;
@@ -85,8 +85,8 @@ module AccessControl is {
   }
 
   function revoke(const r : Role; const account : address) is {
-    if access.members[r][account] then {
-      access.members[r][account] := false;
+    if storage.access.members[r][account] then {
+      storage.access.members[r][account] := false;
       emit RoleRevoked {
         role = bytes32(r);
         account = account;
@@ -96,8 +96,8 @@ module AccessControl is {
   }
 
   function setRoleAdmin(const r : Role; const admin : Role) is {
-    const previous : Role := access.admins[r];
-    access.admins[r] := admin;
+    const previous : Role := storage.access.admins[r];
+    storage.access.admins[r] := admin;
     emit RoleAdminChanged {
       role = bytes32(r);
       previousAdminRole = bytes32(previous);
@@ -106,22 +106,22 @@ module AccessControl is {
   }
 
   external view function hasRole(const role : Role; const account : address) : bool is
-    access.members[role][account]
+    storage.access.members[role][account]
 
   external view function getRoleAdmin(const role : Role) : Role is
-    access.admins[role]
+    storage.access.admins[role]
 
   external function grantRole(const role : Role; const account : address)
     raises AccessControlUnauthorizedAccount
   is {
-    checkRole(access.admins[role]);
+    checkRole(storage.access.admins[role]);
     grant(role, account);
   }
 
   external function revokeRole(const role : Role; const account : address)
     raises AccessControlUnauthorizedAccount
   is {
-    checkRole(access.admins[role]);
+    checkRole(storage.access.admins[role]);
     revoke(role, account);
   }
 

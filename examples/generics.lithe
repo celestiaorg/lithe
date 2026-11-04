@@ -62,16 +62,16 @@ module Watchlist is {
   }
 
   external function watch(const account : address) is {
-    const _ : bool := SetEnumerable.add(watchlist.watched, account);
+    const _ : bool := SetEnumerable.add(storage.watchlist.watched, account);
   }
 
   external function unwatch(const account : address) is {
-    const _ : bool := SetEnumerable.remove(watchlist.watched, account);
+    const _ : bool := SetEnumerable.remove(storage.watchlist.watched, account);
   }
 
   external view function isWatched(const account : address) : bool is
-    SetEnumerable.contains(watchlist.watched, account)
+    SetEnumerable.contains(storage.watchlist.watched, account)
 
   external view function watchedCount() : uint is
-    SetEnumerable.length(watchlist.watched)
+    SetEnumerable.length(storage.watchlist.watched)
 }

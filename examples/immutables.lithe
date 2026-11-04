@@ -1,0 +1,124 @@
+(* Immutables are fixed while `deploy` runs, then built into the code. A word
+   is a push in the code; a string, bytes, or list follows the code. *)
+
+import "std/abi";
+import "std/address";
+import "std/evm";
+import "std/uint";
+
+interface Oracle is {
+  view function price() : uint;
+}
+
+type Tier is Basic | Pro | Enterprise
+
+type Limits is record {
+  daily : wei;
+  perTx : wei;
+}
+
+type Payout is
+  | Hold
+  | Send of address
+  | Split of (address, uint16)
+
+immutable is record {
+  feeBps : uint16;
+  skew : int8;
+  live : bool;
+  owner : address;
+  oracle : Oracle;
+  tag : bytes4;
+  minimum : wei;
+  opened : timestamp;
+  tier : Tier;
+  limits : Limits;
+  pair : (uint8, address);
+  cap : option(uint);
+  payout : Payout;
+  weights : list(uint8, 3);
+  name : string;
+  salt : bytes;
+  admins : list(address);
+}
+
+storage is record {
+  nameLength : uint;
+}
+
+deploy(const name : string; const admins : list(address); const oracle : Oracle) is {
+  immutable.feeBps := 30;
+  immutable.skew := -2;
+  immutable.live := true;
+  immutable.owner := Evm.sender();
+  immutable.oracle := oracle;
+  immutable.tag := 0xdeadbeef;
+  immutable.minimum := 1gwei;
+  immutable.opened := Evm.blockTimestamp();
+  immutable.tier := Pro;
+  immutable.limits := { daily = 10eth; perTx = 1eth; };
+  immutable.pair := (uint8(7), Evm.sender());
+  immutable.cap := if Evm.chainId() = 1 then None else Some(1_000);
+  immutable.payout := Split((Evm.sender(), uint16(250)));
+  immutable.weights := [uint8(50), 30, 20];
+  immutable.name := name;
+  immutable.salt := Abi.encodePacked(Evm.chainId(), Evm.sender());
+  immutable.admins := admins;
+  (* A read in `deploy` sees the value written last. *)
+  storage.nameLength := immutable.name.length;
+}
+
+external view function name() : string is
+  immutable.name
+
+external view function isAdmin(const who : address) : bool is {
+  var found : bool := false;
+  for admin : address in immutable.admins do {
+    if admin = who then {
+      found := true;
+    }
+  }
+} with found
+
+external view function payee() : address is
+  case immutable.payout of {
+    Hold -> Address.zero
+    | Send(to) -> to
+    | Split((to, _)) -> to
+  }
+
+external view function cap() : uint is
+  case immutable.cap of {
+    Some(n) -> n
+    | None -> Uint.max
+  }
+
+external view function weight(const i : uint) : uint8 is
+  immutable.weights[i]
+
+external view function owner() : address is
+  immutable.owner
+
+external view function oracle() : Oracle is
+  immutable.oracle
+
+external view function tier() : Tier is
+  immutable.tier
+
+external view function pair() : (uint8, address) is
+  immutable.pair
+
+external view function stamp() : (int8, bytes4, timestamp) is
+  (immutable.skew, immutable.tag, immutable.opened)
+
+external view function allows(const amount : wei) : bool is
+  immutable.live and amount >= immutable.minimum and amount <= immutable.limits.perTx
+
+external view function fee(const amount : uint) : uint is
+  amount * uint(immutable.feeBps) / 10_000
+
+external view function salt() : bytes is
+  immutable.salt
+
+external view function nameLength() : uint is
+  storage.nameLength

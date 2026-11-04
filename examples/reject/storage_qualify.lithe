@@ -4,7 +4,7 @@ module Ledger is {
   }
 
   function set(const n : uint) is {
-    ledger.n := n;
+    storage.ledger.n := n;
   }
 }
 
@@ -12,6 +12,6 @@ contract Token is {
   use Ledger;
 
   external function go(const n : uint) is {
-    ledger.n := n;
+    storage.ledger.n := n;
   }
 }

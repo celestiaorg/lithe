@@ -10,7 +10,7 @@ module Uris is {
   storage uris at "t.uris" is record { base : string; }
 
   external view function uri(const id : uint) : string is
-    uris.base
+    storage.uris.base
 }
 
 contract T is {
@@ -342,12 +342,12 @@ external function go(const k : address) : uint is {
   bump(storage.a, 5);
   bump(storage.b, 7);
   bumpTwice(storage.a);
-  bump(scratch.t, 100);
-  bump(scratch.t, 1);
+  bump(transient.scratch.t, 100);
+  bump(transient.scratch.t, 1);
   put(storage.nested, k, 9);
   name(storage.names, String.concat("a string that is well ", "past thirty one bytes long"));
 } with storage.a[Evm.sender()] * 1000000 + storage.b[Evm.sender()] * 1000
-  + scratch.t[Evm.sender()]
+  + transient.scratch.t[Evm.sender()]
 
 external view function aOf(const who : address) : uint is storage.a[who]
 external view function bOf(const who : address) : uint is storage.b[who]
@@ -391,7 +391,7 @@ external view function nameOf(const who : address) : string is storage.names[who
         .count();
     assert_eq!(copies, 2, "one copy for persistent maps, one for transient");
     let footprint = footprint(src).expect("footprint");
-    for map in ["a", "b", "nested", "names", "transient scratch.t"] {
+    for map in ["a", "b", "nested", "names", "transient.scratch.t"] {
         assert!(footprint.contains(map), "{map}: {footprint}");
     }
 }
@@ -553,11 +553,11 @@ module Vault is {
   storage vault at "t.vault" is record { total : uint; }
   error TooMuch;
 
-  external view function total() : uint is vault.total
+  external view function total() : uint is storage.vault.total
   external nonreentrant function add(var by : uint) raises TooMuch is {
     assert(by < 1000, TooMuch);
     by := by * 2;
-    vault.total := vault.total + by;
+    storage.vault.total := storage.vault.total + by;
   }
   external pure function version() : uint is 3
 }

@@ -2,13 +2,13 @@
 
 spec for module Ownable is {
   spec for transferOwnership is {
-    raises OwnableUnauthorizedAccount when Evm.sender() <> old.ownable.owner;
+    raises OwnableUnauthorizedAccount when Evm.sender() <> old.storage.ownable.owner;
     raises OwnableInvalidOwner when newOwner = Address.zero;
-    ensures new.ownable.owner = newOwner;
+    ensures new.storage.ownable.owner = newOwner;
   }
 
   spec for renounceOwnership is {
-    raises OwnableUnauthorizedAccount when Evm.sender() <> old.ownable.owner;
-    ensures new.ownable.owner = Address.zero;
+    raises OwnableUnauthorizedAccount when Evm.sender() <> old.storage.ownable.owner;
+    ensures new.storage.ownable.owner = Address.zero;
   }
 }

@@ -72,15 +72,15 @@ module ERC1155 is {
   }
 
   function setURI(const newuri : string) is {
-    erc1155.uri := newuri;
+    storage.erc1155.uri := newuri;
   }
 
   (* One URI for every id; clients substitute the id for `{id}`. *)
   external view function uri(const id : uint) : string is
-    erc1155.uri
+    storage.erc1155.uri
 
   external view function balanceOf(const account : address; const id : uint) : uint is
-    erc1155.balances[id][account]
+    storage.erc1155.balances[id][account]
 
   external view function balanceOfBatch(const accounts : list(address); const ids : list(uint)) : list(uint)
     raises ERC1155InvalidArrayLength
@@ -91,18 +91,18 @@ module ERC1155 is {
     );
     var balances : list(uint) := [];
     for (i, account) : (uint, address) in accounts do {
-      List.push(balances, erc1155.balances[ids[i]][account]);
+      List.push(balances, storage.erc1155.balances[ids[i]][account]);
     }
   } with balances
 
   external view function isApprovedForAll(const account : address; const operator : address) : bool is
-    erc1155.operatorApprovals[account][operator]
+    storage.erc1155.operatorApprovals[account][operator]
 
   view function checkAuthorized(const operator : address; const owner : address)
     raises ERC1155MissingApprovalForAll
   is {
     assert(
-      owner = operator or erc1155.operatorApprovals[owner][operator],
+      owner = operator or storage.erc1155.operatorApprovals[owner][operator],
       ERC1155MissingApprovalForAll { operator = operator; owner = owner; }
     );
   }
@@ -124,15 +124,15 @@ module ERC1155 is {
     for (i, id) : (uint, uint) in ids do {
       const value : uint := values[i];
       if from <> Address.zero then {
-        const fromBalance : uint := erc1155.balances[id][from];
+        const fromBalance : uint := storage.erc1155.balances[id][from];
         assert(
           fromBalance >= value,
           ERC1155InsufficientBalance { sender = from; balance = fromBalance; needed = value; tokenId = id; }
         );
-        erc1155.balances[id][from] := fromBalance - value;
+        storage.erc1155.balances[id][from] := fromBalance - value;
       }
       if to <> Address.zero then {
-        erc1155.balances[id][to] += value;
+        storage.erc1155.balances[id][to] += value;
       }
     }
     if ids.length = 1 then {
@@ -215,7 +215,7 @@ module ERC1155 is {
   is {
     assert(owner <> Address.zero, ERC1155InvalidApprover(Address.zero));
     assert(operator <> Address.zero, ERC1155InvalidOperator(Address.zero));
-    erc1155.operatorApprovals[owner][operator] := approved;
+    storage.erc1155.operatorApprovals[owner][operator] := approved;
     emit ApprovalForAll {
       account = owner;
       operator = operator;

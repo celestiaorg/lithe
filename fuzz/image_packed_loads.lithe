@@ -27,30 +27,30 @@ event Fee of record {
 }
 
 external function setUp(const who : address; const tok : address) is {
-  s.fee := 250;
-  s.who := who;
-  s.tok := tok;
-  s.orders[1] := { kind = SELL; filled = 0; };
+  storage.s.fee := 250;
+  storage.s.who := who;
+  storage.s.tok := tok;
+  storage.s.orders[1] := { kind = SELL; filled = 0; };
 }
 
 view function roy(const p : uint) : (address, uint) is
-  case query Roy(s.tok).royaltyInfo(1, p) of {
+  case query Roy(storage.s.tok).royaltyInfo(1, p) of {
     | Ok(t) -> t
-    | Error(_) -> (s.who, 0)
+    | Error(_) -> (storage.s.who, 0)
   }
 
 function payOut(const p : uint) is {
-  const fee : uint := p * uint(s.fee) / 10000;
+  const fee : uint := p * uint(storage.s.fee) / 10000;
   emit Fee { amount = fee; };
   if fee > 0 then {
-    defer Evm.transfer(s.who, wei(fee));
+    defer Evm.transfer(storage.s.who, wei(fee));
   }
   const (r, a) : (address, uint) := roy(p);
 }
 
 function take(const id : uint) is {
-  const o : Order := s.orders[id];
-  s.orders[id].filled := o.filled + 1;
+  const o : Order := storage.s.orders[id];
+  storage.s.orders[id].filled := o.filled + 1;
   if o.kind = BUY then {
     payOut(1000000);
   } else {

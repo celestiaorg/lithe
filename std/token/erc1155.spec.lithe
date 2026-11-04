@@ -8,17 +8,17 @@
 spec for module ERC1155 is {
   spec for setApprovalForAll is {
     raises ERC1155InvalidOperator when operator = Address.zero;
-    ensures new.erc1155.operatorApprovals[Evm.sender()][operator] = approved;
+    ensures new.storage.erc1155.operatorApprovals[Evm.sender()][operator] = approved;
   }
 
   spec for safeTransferFrom is partial {
     raises ERC1155MissingApprovalForAll
-      when from <> Evm.sender() and not old.erc1155.operatorApprovals[from][Evm.sender()];
+      when from <> Evm.sender() and not old.storage.erc1155.operatorApprovals[from][Evm.sender()];
     raises ERC1155InvalidReceiver when to = Address.zero;
     raises ERC1155InvalidSender when from = Address.zero;
-    raises ERC1155InsufficientBalance when old.erc1155.balances[id][from] < value;
-    ensures from = to or new.erc1155.balances[id][from] = old.erc1155.balances[id][from] - value;
-    ensures from = to or new.erc1155.balances[id][to] = old.erc1155.balances[id][to] + value;
+    raises ERC1155InsufficientBalance when old.storage.erc1155.balances[id][from] < value;
+    ensures from = to or new.storage.erc1155.balances[id][from] = old.storage.erc1155.balances[id][from] - value;
+    ensures from = to or new.storage.erc1155.balances[id][to] = old.storage.erc1155.balances[id][to] + value;
   }
 
   (* A one-element batch moves its value as a single transfer does: the prover settles
@@ -26,7 +26,7 @@ spec for module ERC1155 is {
      list's offset is another, so it is not claimed here. *)
   spec for safeBatchTransferFrom is partial {
     raises ERC1155MissingApprovalForAll
-      when from <> Evm.sender() and not old.erc1155.operatorApprovals[from][Evm.sender()];
+      when from <> Evm.sender() and not old.storage.erc1155.operatorApprovals[from][Evm.sender()];
     raises ERC1155InvalidReceiver when to = Address.zero;
     raises ERC1155InvalidSender when from = Address.zero;
     raises ERC1155InvalidArrayLength when ids.length <> values.length;
