@@ -290,7 +290,7 @@ pub(super) fn cpu_time(pid: u32) -> Option<Duration> {
 
 /// Elsewhere the clock stands in for it.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn cpu_time(_pid: u32) -> Option<Duration> {
+pub(super) fn cpu_time(_pid: u32) -> Option<Duration> {
     None
 }
 

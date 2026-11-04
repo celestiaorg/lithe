@@ -5,7 +5,7 @@ description: "Compile Lithe from Rust: sources on disk or in memory, typed outpu
 
 # Rust library
 
-The compiler is a Rust crate, `lithe`, with no dependencies beyond its lexer. Everything the `lithe` command does, a Rust program can do too, and it gets typed values back instead of text.
+The compiler is a Rust crate, `lithe`. Everything the `lithe` command does, a Rust program can do too, and it gets typed values back instead of text. Outside WebAssembly the crate compiles in the [Z3](https://github.com/Z3Prover/z3) solver, so building it needs CMake, Python 3, and a C++ compiler, and the first build takes a few minutes.
 
 ```toml
 [dependencies]
@@ -97,7 +97,7 @@ The other functions take the same `sources` and entry path, and return what the 
 | `analysis` | `lithe analysis` |
 | `errors` | `lithe errors` |
 | `specs` | `lithe specs` |
-| `prove` | `lithe prove`, with `ProveOptions`, whose `source` proves the source alone; its `Proof` counts what was proved, failed, and unknown |
+| `prove` | `lithe prove`, with `ProveOptions`, whose `source` proves the source alone; its `Proof` counts what was proved, failed, and unknown. Its solvers are the program itself started again, so `main` must call `lithe::serve_if_child()` first |
 | `facets` | `lithe facets` |
 | `stubs` | `lithe stubs` |
 | `storage_layout`, `storage_diff` | `lithe storage` |
