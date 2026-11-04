@@ -23,13 +23,13 @@ It downloads the compiler for your platform, Linux or macOS on x86-64 or ARM64, 
 curl -fsSL https://lithe-lang.org/install.sh | sh -s -- 0.3.0
 ```
 
-Or build a release with Cargo, which installs it to `~/.cargo/bin`:
+Or build a release with Cargo, which installs it to `~/.cargo/bin` and needs the same tools as building from source, below:
 
 ```bash
 cargo install --git https://github.com/celestiaorg/lithe --tag v0.3.0 --locked
 ```
 
-To build from source, run this from the repository root with a recent stable Rust toolchain:
+To build from source, run this from the repository root with a recent stable Rust toolchain, CMake, Python 3, and a C++ compiler (`brew install cmake` on macOS, `sudo apt install cmake python3 g++` on Debian and Ubuntu). The first build also compiles the [Z3](https://github.com/Z3Prover/z3) solver that [`lithe prove`](/language/verification#proving-specs) runs, which takes a few minutes:
 
 ```bash
 cargo build --release
@@ -39,15 +39,6 @@ export PATH="$PWD/target/release:$PATH"
 Check the install with `lithe --version`. Contracts you deploy should be built with a [released compiler](/tooling/cli#releases), so that they can be verified.
 
 Run with no arguments, `lithe` prints its commands. See [Command line](/tooling/cli) for the full list, and [Editors](/tooling/editors) to set up VS Code, Cursor, or Recur.
-
-To prove contracts' specs with [`lithe prove`](/language/verification#proving-specs), also install the [Z3](https://github.com/Z3Prover/z3) solver, which it runs:
-
-```bash
-brew install z3        # macOS
-sudo apt install z3    # Debian and Ubuntu
-```
-
-Or download a release from [github.com/Z3Prover/z3/releases](https://github.com/Z3Prover/z3/releases) and put `z3` on your `PATH`, or set `LITHE_Z3` to its path. Nothing else needs Z3.
 
 ## Write a contract
 

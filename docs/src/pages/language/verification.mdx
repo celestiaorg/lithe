@@ -211,7 +211,7 @@ A spec block can also sit in the source file, where a declaration can, or inside
 
 ## Proving specs
 
-`lithe prove vault.lithe` proves the specs of `vault.lithe` and its spec file against the EVM bytecode `lithe build` emits for it, the creation code and the runtime, with the [Z3](https://github.com/Z3Prover/z3) solver: each invariant in each phase, and each claim of each function spec. A proof holds for the bytes that are deployed, with no trust in the compiler: where the optimizer is wrong, a claim fails. It takes `lithe build`'s flags, such as `--evm-version`, and builds what `lithe build` would. Install Z3 first: `brew install z3` on macOS, `sudo apt install z3` on Debian and Ubuntu, or a [release](https://github.com/Z3Prover/z3/releases) on your `PATH`. Without it, `lithe prove` says so and exits `2`.
+`lithe prove vault.lithe` proves the specs of `vault.lithe` and its spec file against the EVM bytecode `lithe build` emits for it, the creation code and the runtime, with the [Z3](https://github.com/Z3Prover/z3) solver: each invariant in each phase, and each claim of each function spec. A proof holds for the bytes that are deployed, with no trust in the compiler: where the optimizer is wrong, a claim fails. It takes `lithe build`'s flags, such as `--evm-version`, and builds what `lithe build` would. Z3 is part of the compiler: there is nothing else to install.
 
 ```bash
 lithe prove vault.lithe
@@ -248,7 +248,7 @@ The report names the runtime by its size and hash, so a proof can be matched to 
 
 `lithe prove` also proves the specs of the source with the [source prover](#the-source-prover), which takes a fraction of the time. The bytecode's verdict is the result; under a claim the bytecode does not prove, the report shows the source's verdict too: a counterexample in the source's terms, or a claim the source proves, which the bytecode breaks. `lithe prove --source` runs the source prover alone, as a quick first pass while writing specs.
 
-`lithe prove` finds Z3 in `LITHE_Z3`, then on `PATH`, or where `--solver` says, and gives each question `--timeout` seconds of the solver's CPU time, 30 by default, so a busy machine takes longer but proves the same. It exits `0` when everything is proved, `1` when a claim fails, `2` when it finds no Z3, and `3` when something is unknown or not proved.
+`lithe prove` gives each question `--timeout` seconds of the solver's CPU time, 30 by default, so a busy machine takes longer but proves the same. It proves a claim for each of the machine's cores at once, or `--jobs` claims; each claim's solvers run as processes of their own, at a lower priority than the rest of the machine's work. It exits `0` when everything is proved, `1` when a claim fails, `2` on a usage error, and `3` when something is unknown or not proved.
 
 ### Invariants
 

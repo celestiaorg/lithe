@@ -1,25 +1,15 @@
-//! `lithe prove`, against Z3. These run where Z3 is: `LITHE_Z3`, or `z3` on `PATH`.
+//! `lithe prove`, against the Z3 lithe links.
 
 use super::*;
 
-/// The prover's report for `src` and its spec file, or `None` without Z3.
-fn prove(src: &str, spec_file: &str) -> Option<crate::Proof> {
+/// The prover's report for `src` and its spec file.
+fn prove(src: &str, spec_file: &str) -> crate::Proof {
     let sources = Sources::memory([(ENTRY, src), ("contract.spec.lithe", spec_file)]);
     let opts = crate::ProveOptions {
         source: true,
         ..crate::ProveOptions::default()
     };
-    match crate::prove(&sources, Path::new(ENTRY), &opts) {
-        Ok(proof) => Some(proof),
-        Err(err)
-            if err.message.contains("needs the Z3 solver")
-                || err.message.contains("which is no file") =>
-        {
-            eprintln!("skipped: {err}");
-            None
-        }
-        Err(err) => panic!("{err}"),
-    }
+    crate::prove(&sources, Path::new(ENTRY), &opts).unwrap_or_else(|err| panic!("{err}"))
 }
 
 /// The report's line for `phase` under a section, and the lines under it. A section is
@@ -87,16 +77,8 @@ fn the_examples_prove() {
             source: true,
             ..crate::ProveOptions::default()
         };
-        let proof = match crate::prove(&Sources::disk(), &path, &opts) {
-            Ok(proof) => proof,
-            Err(err)
-                if err.message.contains("needs the Z3 solver")
-                    || err.message.contains("which is no file") =>
-            {
-                return
-            }
-            Err(err) => panic!("{}: {err}", path.display()),
-        };
+        let proof = crate::prove(&Sources::disk(), &path, &opts)
+            .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
         assert!(
             proof.failed == 0 && proof.unknown == 0 && proof.proved > 0,
             "{}:\n{}",
@@ -110,9 +92,7 @@ fn the_examples_prove() {
 fn a_broken_phase_fails_with_a_counterexample() {
     let (src, specs) = vault();
     let broken = src.replace("  storage.total += Evm.value();\n", "");
-    let Some(proof) = prove(&broken, &specs) else {
-        return;
-    };
+    let proof = prove(&broken, &specs);
     let deposit = outcome(&proof, "ledger", "deposit");
     assert!(deposit.starts_with("FAILED"), "{deposit}");
     assert!(
@@ -125,9 +105,7 @@ fn a_broken_phase_fails_with_a_counterexample() {
         "defer Evm.transfer(Evm.sender(), amount);",
         "defer Evm.transfer(Evm.sender(), amount + 1wei);",
     );
-    let Some(proof) = prove(&greedy, &specs) else {
-        return;
-    };
+    let proof = prove(&greedy, &specs);
     assert!(
         outcome(&proof, "solvent", "withdraw").contains("FAILED"),
         "{}",
@@ -241,9 +219,7 @@ spec is {
   invariant paced is storage.steps <= 3 * storage.calls;
 }
 "#;
-    let Some(proof) = prove(src, specs) else {
-        return;
-    };
+    let proof = prove(src, specs);
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     for phase in [
         "deploy",
@@ -275,9 +251,7 @@ spec is {
         "storage.pending := storage.pending - got;",
         "storage.pending := storage.pending + got;",
     );
-    let Some(proof) = prove(&broken, specs) else {
-        return;
-    };
+    let proof = prove(&broken, specs);
     assert!(
         outcome(&proof, "bounded", "start, after echo.echo").contains("FAILED"),
         "{}",
@@ -285,9 +259,7 @@ spec is {
     );
     // A route that lowers the cap past what is pending.
     let broken = src.replace("    assert(cap >= storage.pending, NotOwner);\n", "");
-    let Some(proof) = prove(&broken, specs) else {
-        return;
-    };
+    let proof = prove(&broken, specs);
     assert!(
         outcome(&proof, "bounded", "setCap").contains("FAILED"),
         "{}",
@@ -295,9 +267,7 @@ spec is {
     );
     // A loop that runs once more than its bound allows for.
     let broken = src.replace("bound 3", "bound 4");
-    let Some(proof) = prove(&broken, specs) else {
-        return;
-    };
+    let proof = prove(&broken, specs);
     assert!(
         outcome(&proof, "paced", "walk").contains("FAILED"),
         "{}",
@@ -305,9 +275,7 @@ spec is {
     );
     // A module external that mints without the supply.
     let broken = src.replace("    ledger.supply := ledger.supply + value;\n", "");
-    let Some(proof) = prove(&broken, specs) else {
-        return;
-    };
+    let proof = prove(&broken, specs);
     assert!(
         outcome(&proof, "Ledger.supply", "mint").contains("FAILED"),
         "{}",
@@ -332,9 +300,7 @@ external function mask(const n : uint) is {
 }
 "#;
     // `&` is not modeled, so a counterexample may not be real.
-    let Some(proof) = prove(src, "spec is { invariant small is storage.x < 256; }") else {
-        return;
-    };
+    let proof = prove(src, "spec is { invariant small is storage.x < 256; }");
     let mask = outcome(&proof, "small", "mask");
     assert!(mask.contains("not proved"), "{mask}");
     assert!(
@@ -342,21 +308,17 @@ external function mask(const n : uint) is {
         "{mask}"
     );
     // A spec cannot rest on what the prover does not model.
-    let Some(proof) = prove(src, "spec is { invariant masked is storage.x & 1 = 1; }") else {
-        return;
-    };
+    let proof = prove(src, "spec is { invariant masked is storage.x & 1 = 1; }");
     assert!(
         outcome(&proof, "masked", "deploy").contains("the prover does not model `&` in a spec"),
         "{}",
         proof.text
     );
     // Without `deploy`, the empty storage of a new contract must satisfy the invariants.
-    let Some(proof) = prove(
+    let proof = prove(
         "storage is record { cap : uint; }\nexternal function set() is { storage.cap := 100; }\n",
         "spec is { invariant fixed is storage.cap = 100; }",
-    ) else {
-        return;
-    };
+    );
     assert!(
         outcome(&proof, "fixed", "the initial state").contains("FAILED"),
         "{}",
@@ -376,9 +338,7 @@ fn maps_given_to_functions_are_the_maps_they_name() {
     )
     .expect("overloads");
     let specs = "spec is { invariant ledger is storage.total = sum(storage.balances); }";
-    let Some(proof) = prove(&src, specs) else {
-        return;
-    };
+    let proof = prove(&src, specs);
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     assert!(
         outcome(&proof, "ledger", "stake").contains("unchanged"),
@@ -391,9 +351,7 @@ fn maps_given_to_functions_are_the_maps_they_name() {
         proof.text
     );
     let broken = src.replace("  storage.total += amount;\n", "");
-    let Some(proof) = prove(&broken, specs) else {
-        return;
-    };
+    let proof = prove(&broken, specs);
     assert!(
         outcome(&proof, "ledger", "deposit(uint256,uint256)").contains("FAILED"),
         "{}",
@@ -406,11 +364,7 @@ fn function_specs_prove_and_wrong_ones_fail() {
     let (src, _) = vault();
     let case = |spec: &str| prove(&src, spec);
     // A wrong `ensures`, and a block without `raises` claims the call never reverts.
-    let Some(proof) =
-        case("spec for withdraw is { ensures new.storage.total = old.storage.total; }")
-    else {
-        return;
-    };
+    let proof = case("spec for withdraw is { ensures new.storage.total = old.storage.total; }");
     assert!(
         outcome(
             &proof,
@@ -427,11 +381,9 @@ fn function_specs_prove_and_wrong_ones_fail() {
         "{complete}"
     );
     // A condition under which the call still succeeds.
-    let Some(proof) = case(
+    let proof = case(
         "spec for withdraw is partial { raises Insufficient when old.storage.balances[Evm.sender()] <= amount; }",
-    ) else {
-        return;
-    };
+    );
     assert!(
         outcome(
             &proof,
@@ -443,11 +395,9 @@ fn function_specs_prove_and_wrong_ones_fail() {
         proof.text
     );
     // An error raised where no condition of it holds.
-    let Some(proof) = case(
+    let proof = case(
         "spec for withdraw is partial { raises Insufficient when old.storage.balances[Evm.sender()] + 1wei < amount; }",
-    ) else {
-        return;
-    };
+    );
     assert!(
         outcome(&proof, "spec for withdraw", "raises Insufficient only when").contains("FAILED"),
         "{}",
@@ -455,13 +405,11 @@ fn function_specs_prove_and_wrong_ones_fail() {
     );
     // The ledger rules out the underflow of the total, so `withdraw` reverts in no other case.
     let exact = "spec for withdraw is { raises Insufficient when old.storage.balances[Evm.sender()] < amount; }";
-    let Some(proof) = case(&format!(
+    let proof = case(&format!(
         "spec is {{ invariant ledger is storage.total = sum(storage.balances); }}\n{exact}"
-    )) else {
-        return;
-    };
+    ));
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
-    let Some(proof) = case(exact) else { return };
+    let proof = case(exact);
     let complete = outcome(&proof, "spec for withdraw", "reverts in no other case");
     assert!(
         complete.contains("FAILED") && complete.contains("reverts with = a panic"),
@@ -545,9 +493,7 @@ spec for take is partial {
   ensures new.storage.n = old.storage.n - 1;
 }
 "#;
-    let Some(proof) = prove(src, specs) else {
-        return;
-    };
+    let proof = prove(src, specs);
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     assert!(
         outcome(
@@ -561,9 +507,7 @@ spec for take is partial {
     );
     // `setFee` forgets that it rejects a fee over 100.
     let forgot = specs.replace("  raises TooHigh when fee > 100;\n", "");
-    let Some(proof) = prove(src, &forgot) else {
-        return;
-    };
+    let proof = prove(src, &forgot);
     let complete = outcome(&proof, "spec for setFee", "reverts in no other case");
     assert!(
         complete.contains("FAILED") && complete.contains("reverts with = TooHigh"),
@@ -573,9 +517,7 @@ spec for take is partial {
     // An internal function runs inside a phase, where the invariants need not hold: `take`
     // can underflow.
     let never = specs.replace("spec for take is partial {", "spec for take is {");
-    let Some(proof) = prove(src, &never) else {
-        return;
-    };
+    let proof = prove(src, &never);
     assert!(
         outcome(&proof, "spec for take", "never reverts").contains("FAILED"),
         "{}",
@@ -596,9 +538,7 @@ spec for withdraw is partial {
   ensures forall a : address . a = Evm.sender() or new.storage.balances[a] = old.storage.balances[a];
 }
 "#;
-    let Some(proof) = prove(&src, specs) else {
-        return;
-    };
+    let proof = prove(&src, specs);
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     // `withdraw` also takes from the contract's own account: a real bug, but `forall` keeps
     // the prover from showing a counterexample it can vouch for.
@@ -606,17 +546,13 @@ spec for withdraw is partial {
         "storage.balances[Evm.sender()] := have - amount;",
         "storage.balances[Evm.sender()] := have - amount;\n  storage.balances[Evm.self()] := 0wei;",
     );
-    let Some(proof) = prove(&broken, specs) else {
-        return;
-    };
+    let proof = prove(&broken, specs);
     let ensures = outcome(&proof, "spec for withdraw", "ensures forall");
     assert!(ensures.contains("not proved"), "{ensures}");
     assert!(ensures.contains("with `forall`"), "{ensures}");
     // Without `forall`, the prover checks that a counterexample's sum can be real.
     let ledger_only = "spec is { invariant ledger is storage.total = sum(storage.balances); }";
-    let Some(proof) = prove(&broken, ledger_only) else {
-        return;
-    };
+    let proof = prove(&broken, ledger_only);
     let withdraw = outcome(&proof, "ledger", "withdraw");
     assert!(withdraw.contains("FAILED"), "{withdraw}");
 }
@@ -637,9 +573,7 @@ contract Token is {
   }
 }
 "#;
-    let Some(proof) = prove(token, "") else {
-        return;
-    };
+    let proof = prove(token, "");
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     assert!(
         proof.text.contains("invariant ERC20.supply"),
@@ -685,7 +619,7 @@ contract Nft is {
   }
 }
 "#;
-    let Some(proof) = prove(nft, "") else { return };
+    let proof = prove(nft, "");
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     assert!(
         outcome(&proof, "ERC721.approvalsOwned", "burn").contains("proved"),
@@ -697,9 +631,7 @@ contract Nft is {
         "  }\n}\n",
         "  }\n\n  external function gift(const to : address) is {\n    ERC20.erc20.balances[to] := ERC20.erc20.balances[to] + 1;\n  }\n}\n",
     );
-    let Some(proof) = prove(&minter, "") else {
-        return;
-    };
+    let proof = prove(&minter, "");
     assert!(
         outcome(&proof, "ERC20.supply", "gift").contains("FAILED"),
         "{}",
@@ -724,9 +656,7 @@ external function walk(const n : uint) is {
 }
 "#;
     let specs = "spec is { invariant paced is storage.steps <= 100 * storage.calls; }";
-    let Some(proof) = prove(src, specs) else {
-        return;
-    };
+    let proof = prove(src, specs);
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     assert!(
         outcome(
@@ -740,9 +670,7 @@ external function walk(const n : uint) is {
     );
     // Without an invariant, a loop of 100 is too long to follow, and nothing it does is known.
     let bare = src.replace(" invariant storage.steps = start + i", "");
-    let Some(proof) = prove(&bare, specs) else {
-        return;
-    };
+    let proof = prove(&bare, specs);
     let walk = outcome(&proof, "paced", "walk");
     assert!(
         walk.contains("not proved") && walk.contains("a loop that may run more than 16 times"),
@@ -750,9 +678,7 @@ external function walk(const n : uint) is {
     );
     // A wrong invariant fails, and what relies on it is not proved.
     let wrong = src.replace("= start + i", "= start");
-    let Some(proof) = prove(&wrong, specs) else {
-        return;
-    };
+    let proof = prove(&wrong, specs);
     let kept = outcome(
         &proof,
         "loop invariants",
@@ -803,18 +729,14 @@ spec for module Counter is {
   }
 }
 "#;
-    let Some(proof) = prove(modules, spec) else {
-        return;
-    };
+    let proof = prove(modules, spec);
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     assert!(
         proof.text.contains("spec for Counter.bump"),
         "{}",
         proof.text
     );
-    let Some(proof) = prove(modules, &spec.replace("+ 1;", "+ 2;")) else {
-        return;
-    };
+    let proof = prove(modules, &spec.replace("+ 1;", "+ 2;"));
     assert_eq!(proof.failed, 1, "{}", proof.text);
 }
 
@@ -836,9 +758,7 @@ external function reset() is { delete storage.cfg; }
     let spec = "spec is { invariant ledger is storage.total = sum(storage.balances); }
 spec for close is partial { ensures new.storage.balances[Evm.sender()] = 0; }
 spec for reset is { ensures new.storage.cfg.cap = 0 and not new.storage.cfg.open; }";
-    let Some(proof) = prove(src, spec) else {
-        return;
-    };
+    let proof = prove(src, spec);
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
 }
 
@@ -871,11 +791,9 @@ spec for bump is partial { ensures new.storage.n = old.storage.n + 1; }";
                 prove_code(src, spec, None)
             }
         };
-        let Some(proof) = run(spec) else {
-            return;
-        };
+        let proof = run(spec);
         assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
-        let proof = run(&spec.replace("+ 1;", "+ 2;")).unwrap();
+        let proof = run(&spec.replace("+ 1;", "+ 2;"));
         assert_eq!(proof.failed, 1, "{}", proof.text);
     }
 }
@@ -1034,24 +952,14 @@ contract Nft is {
 }
 
 /// The bytecode prover's report for `src` and its spec file, of the code the build emits,
-/// or of `code` when given; `None` without Z3.
-fn prove_code(src: &str, spec_file: &str, code: Option<Vec<u8>>) -> Option<crate::Proof> {
+/// or of `code` when given.
+fn prove_code(src: &str, spec_file: &str, code: Option<Vec<u8>>) -> crate::Proof {
     let sources = Sources::memory([(ENTRY, src), ("contract.spec.lithe", spec_file)]);
     let opts = crate::ProveOptions {
         code,
         ..crate::ProveOptions::default()
     };
-    match crate::prove(&sources, Path::new(ENTRY), &opts) {
-        Ok(proof) => Some(proof),
-        Err(err)
-            if err.message.contains("needs the Z3 solver")
-                || err.message.contains("which is no file") =>
-        {
-            eprintln!("skipped: {err}");
-            None
-        }
-        Err(err) => panic!("{err}"),
-    }
+    crate::prove(&sources, Path::new(ENTRY), &opts).unwrap_or_else(|err| panic!("{err}"))
 }
 
 /// The vault's runtime, as `lithe build` emits it.
@@ -1083,17 +991,13 @@ fn find_ops(code: &[u8], pattern: &[u8]) -> Option<usize> {
 #[test]
 fn the_vault_proves_at_the_bytecode_level() {
     let (src, specs) = vault();
-    let Some(proof) = prove_code(&src, &specs, None) else {
-        return;
-    };
+    let proof = prove_code(&src, &specs, None);
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     assert!(proof.text.starts_with("runtime code: "), "{}", proof.text);
     let hash = crate::keccak::keccak256(&vault_runtime());
     assert!(proof.text.contains(&hex(&hash)), "{}", proof.text);
     // The same runtime, given as deployed code, proves the same.
-    let Some(given) = prove_code(&src, &specs, Some(vault_runtime())) else {
-        return;
-    };
+    let given = prove_code(&src, &specs, Some(vault_runtime()));
     assert_eq!((given.failed, given.unknown), (0, 0), "{}", given.text);
     assert!(given.text.contains(", as given"), "{}", given.text);
 }
@@ -1103,17 +1007,13 @@ fn the_vault_proves_at_the_bytecode_level() {
 #[test]
 fn a_miscompiled_store_fails_at_the_bytecode_level() {
     let (src, specs) = vault();
-    let Some(source) = prove(&src, &specs) else {
-        return;
-    };
+    let source = prove(&src, &specs);
     assert_eq!((source.failed, source.unknown), (0, 0), "{}", source.text);
     let mut code = vault_runtime();
     // `total := total + value`: `PUSH0 SLOAD CALLVALUE ...`, with the value made zero.
     let at = find_ops(&code, &[0x5f, 0x54, 0x34]).expect("the total's update") + 2;
     code[at] = 0x5f;
-    let Some(proof) = prove_code(&src, &specs, Some(code)) else {
-        return;
-    };
+    let proof = prove_code(&src, &specs, Some(code));
     let ledger = outcome(&proof, "ledger", "deposit");
     assert!(ledger.starts_with("FAILED"), "{}", proof.text);
     assert!(ledger.contains("storage.total after"), "{}", proof.text);
@@ -1158,9 +1058,7 @@ fn a_dropped_check_fails_at_the_bytecode_level() {
     let target = find_ops(&code, &block).expect("the Insufficient block");
     let jump = find_ops(&code, &[0x60, target as u8, 0x57]).expect("the check");
     code[jump..jump + 3].copy_from_slice(&[0x50, 0x5b, 0x5b]);
-    let Some(proof) = prove_code(&src, &specs, Some(code)) else {
-        return;
-    };
+    let proof = prove_code(&src, &specs, Some(code));
     let raises = outcome(
         &proof,
         "spec for withdraw",
@@ -1179,13 +1077,10 @@ fn a_dropped_check_fails_at_the_bytecode_level() {
     );
 }
 
-/// `lithe prove` of a file on disk, or `None` without Z3.
-fn prove_bytecode_file(path: &Path) -> Option<crate::Proof> {
-    match crate::prove(&Sources::disk(), path, &crate::ProveOptions::default()) {
-        Ok(proof) => Some(proof),
-        Err(err) if err.message.contains("needs the Z3 solver") => None,
-        Err(err) => panic!("{err}"),
-    }
+/// `lithe prove` of a file on disk.
+fn prove_bytecode_file(path: &Path) -> crate::Proof {
+    crate::prove(&Sources::disk(), path, &crate::ProveOptions::default())
+        .unwrap_or_else(|err| panic!("{err}"))
 }
 
 /// The examples' and ERC-20's specs prove of their bytecode wherever they prove of the
@@ -1193,10 +1088,7 @@ fn prove_bytecode_file(path: &Path) -> Option<crate::Proof> {
 #[test]
 fn the_examples_and_erc20_prove_at_the_bytecode_level() {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let Some(proof) = prove_bytecode_file(&root.join("examples/verification/capped_token.lithe"))
-    else {
-        return;
-    };
+    let proof = prove_bytecode_file(&root.join("examples/verification/capped_token.lithe"));
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     assert!(
         outcome(
@@ -1221,9 +1113,7 @@ contract Token is {
   }
 }
 "#;
-    let Some(proof) = prove_code(token, "", None) else {
-        return;
-    };
+    let proof = prove_code(token, "", None);
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     assert!(
         outcome(
@@ -1279,9 +1169,7 @@ contract Nft is {
   }
 }
 "#;
-    let Some(proof) = prove_code(nft, "", None) else {
-        return;
-    };
+    let proof = prove_code(nft, "", None);
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
 }
 
@@ -1290,9 +1178,7 @@ contract Nft is {
 #[test]
 fn long_loops_prove_by_their_certificates() {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/verification");
-    let Some(proof) = prove_bytecode_file(&root.join("tickets.lithe")) else {
-        return;
-    };
+    let proof = prove_bytecode_file(&root.join("tickets.lithe"));
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     for row in [
         "loop invariant at 17:3 holds as the loop starts",
@@ -1311,9 +1197,7 @@ fn long_loops_prove_by_their_certificates() {
         .filter(|l| !l.trim_start().starts_with("invariant"))
         .collect::<Vec<_>>()
         .join("\n");
-    let Some(proof) = prove_code(&bare, &specs, None) else {
-        return;
-    };
+    let proof = prove_code(&bare, &specs, None);
     let ensures = outcome(
         &proof,
         "spec for issue",
@@ -1353,9 +1237,7 @@ external function addTwo(const a : uint; const b : uint) is {
             }
         };
         let right = spec("ensures new.storage.total = old.storage.total + a + b");
-        let (Some(good), Some(bad)) = (run(&right), run(&spec(wrong))) else {
-            return;
-        };
+        let (good, bad) = (run(&right), run(&spec(wrong)));
         assert_eq!((good.failed, good.unknown), (0, 0), "{}", good.text);
         let line = outcome(&bad, "spec for addTwo", wrong);
         assert!(line.starts_with("FAILED"), "{}", bad.text);
@@ -1416,9 +1298,7 @@ fn only_uncalled_functions_hold_every_claim() {
         )
     };
     let spec = "spec for bump is partial {\n  ensures new.storage.total = old.storage.total;\n}\n";
-    let Some(apart) = prove_code(&src("storage.total := storage.total + n;"), spec, None) else {
-        return;
-    };
+    let apart = prove_code(&src("storage.total := storage.total + n;"), spec, None);
     assert!(
         outcome(
             &apart,
@@ -1429,9 +1309,7 @@ fn only_uncalled_functions_hold_every_claim() {
         "{}",
         apart.text
     );
-    let Some(called) = prove_code(&src("bump(n);"), spec, None) else {
-        return;
-    };
+    let called = prove_code(&src("bump(n);"), spec, None);
     assert_eq!(called.failed, 1, "{}", called.text);
 }
 
@@ -1447,16 +1325,12 @@ external function inc() is { bump(); }
     let spec = "spec is { invariant same is storage.a = storage.b; }
 spec for bump is partial { ensures new.storage.a = new.storage.b; }
 ";
-    let Some(alone) = prove_code(src, spec, None) else {
-        return;
-    };
+    let alone = prove_code(src, spec, None);
     assert_eq!((alone.failed, alone.unknown), (0, 0), "{}", alone.text);
     let weird = format!(
         "{src}external function weird() is {{ storage.a := storage.a + 5; bump(); storage.b := storage.b + 5; }}\n"
     );
-    let Some(shared) = prove_code(&weird, spec, None) else {
-        return;
-    };
+    let shared = prove_code(&weird, spec, None);
     assert!(
         !outcome(&shared, "spec for bump", "every claim").starts_with("proved"),
         "{}",
@@ -1464,23 +1338,18 @@ spec for bump is partial { ensures new.storage.a = new.storage.b; }
     );
 }
 
-/// The bytecode prover's report for a contract whose build `change` alters first, or `None`
-/// without Z3.
+/// The bytecode prover's report for a contract whose build `change` alters first.
 fn prove_changed(
     src: &str,
     spec_file: &str,
     change: impl FnOnce(&mut crate::prove::Built),
-) -> Option<crate::Proof> {
+) -> crate::Proof {
     let sources = Sources::memory([(ENTRY, src), ("contract.spec.lithe", spec_file)]);
     let opts = crate::ProveOptions::default();
     let (specs, mut built) =
         crate::bytecode_inputs(&sources, Path::new(ENTRY), &opts).unwrap_or_else(|e| panic!("{e}"));
     change(&mut built);
-    match crate::prove::prove_bytecode(&specs, &built, &opts) {
-        Ok(proof) => Some(proof),
-        Err(err) if err.message.contains("needs the Z3 solver") => None,
-        Err(err) => panic!("{err}"),
-    }
+    crate::prove::prove_bytecode(&specs, &built, &opts).unwrap_or_else(|err| panic!("{err}"))
 }
 
 /// A certificate is not trusted: a wrong head, counter, or place for a local, or a loop body
@@ -1503,9 +1372,7 @@ external function walk(const n : uint) is {
 }
 "#;
     let specs = "spec is { invariant paced is storage.steps <= 100 * storage.calls; }";
-    let Some(proof) = prove_changed(src, specs, |_: &mut crate::prove::Built| {}) else {
-        return;
-    };
+    let proof = prove_changed(src, specs, |_: &mut crate::prove::Built| {});
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     let all_proved = |p: &crate::Proof| p.failed == 0 && p.unknown == 0;
     type Change = Box<dyn Fn(&mut crate::prove::Built)>;
@@ -1536,9 +1403,7 @@ external function walk(const n : uint) is {
         ),
     ];
     for (what, change) in changes {
-        let Some(proof) = prove_changed(src, specs, &*change) else {
-            return;
-        };
+        let proof = prove_changed(src, specs, &*change);
         assert!(
             !all_proved(&proof),
             "a wrong {what} proved:\n{}",
@@ -1568,9 +1433,7 @@ external function walk(const n : uint) is {
             b.runtime[k] = to;
             b.creation[embedded + k] = to;
         };
-        let Some(proof) = prove_changed(src, specs, patch) else {
-            return;
-        };
+        let proof = prove_changed(src, specs, patch);
         let kept = outcome(
             &proof,
             "loop invariants",
@@ -1589,9 +1452,7 @@ external function walk(const n : uint) is {
         "const start : uint := storage.steps;",
         "const start : uint := storage.steps;\n  storage.steps := storage.steps + 1;",
     );
-    let Some(proof) = prove_changed(&moved, specs, |_: &mut crate::prove::Built| {}) else {
-        return;
-    };
+    let proof = prove_changed(&moved, specs, |_: &mut crate::prove::Built| {});
     assert!(
         !outcome(
             &proof,
@@ -1609,9 +1470,7 @@ external function walk(const n : uint) is {
             "function bump(const n : uint) : uint is { storage.steps := storage.steps + 1; } with n\n\nexternal function walk",
         )
         .replace("0 .. n bound", "0 .. bump(n) bound");
-    let Some(proof) = prove_changed(&ranged, specs, |_: &mut crate::prove::Built| {}) else {
-        return;
-    };
+    let proof = prove_changed(&ranged, specs, |_: &mut crate::prove::Built| {});
     assert!(
         !outcome(
             &proof,
@@ -1639,9 +1498,7 @@ fn example(name: &str) -> (String, String) {
 fn facets_hooks_and_upgrades_prove_at_the_bytecode_level() {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/verification");
     for name in ["split_counter", "tracked_token", "upgradeable_counter"] {
-        let Some(proof) = prove_bytecode_file(&root.join(format!("{name}.lithe"))) else {
-            return;
-        };
+        let proof = prove_bytecode_file(&root.join(format!("{name}.lithe")));
         assert_eq!(
             (proof.failed, proof.unknown),
             (0, 0),
@@ -1658,14 +1515,12 @@ fn only_clearing_the_migration_flag_follows_an_upgrade() {
     let (src, specs) = example("upgradeable_counter");
     // `PUSH0 PUSH1 1 TSTORE STOP`, with the zero made the caller.
     let clear = [0x5f, 0x60, 0x01, 0x5d, 0x00];
-    let Some(proof) = prove_changed(&src, &specs, |built| {
+    let proof = prove_changed(&src, &specs, |built| {
         for code in [&mut built.runtime, &mut built.creation] {
             let at = find_ops(code, &clear).expect("the flag's clearing");
             code[at] = 0x33;
         }
-    }) else {
-        return;
-    };
+    });
     let upgrade = outcome(
         &proof,
         "storage types: each word the layout places holds its fields' types",
@@ -1684,7 +1539,7 @@ fn only_clearing_the_migration_flag_follows_an_upgrade() {
 fn a_changed_facet_or_router_does_not_prove() {
     let (src, specs) = example("split_counter");
     let claim = "ensures new.counter.count = old.counter.count + by";
-    let Some(proof) = prove_changed(&src, &specs, |built| {
+    let proof = prove_changed(&src, &specs, |built| {
         let slots: Vec<Word> = built.layout.leaves.iter().map(|(slot, ..)| *slot).collect();
         let facet = &mut built.facets[0];
         let at = (0..facet.runtime.len().saturating_sub(33))
@@ -1712,12 +1567,10 @@ fn a_changed_facet_or_router_does_not_prove() {
                 code[i..i + 20].copy_from_slice(&facet.address);
             }
         }
-    }) else {
-        return;
-    };
+    });
     let bump = outcome(&proof, "spec for Counter.bump", claim);
     assert!(!bump.starts_with("proved"), "{}", proof.text);
-    let Some(proof) = prove_changed(&src, &specs, |built| {
+    let proof = prove_changed(&src, &specs, |built| {
         let old = built.facets[0].address;
         let i = built
             .runtime
@@ -1725,9 +1578,7 @@ fn a_changed_facet_or_router_does_not_prove() {
             .position(|w| w == old)
             .expect("the facet's address in the router");
         built.runtime[i + 19] ^= 1;
-    }) else {
-        return;
-    };
+    });
     let bump = outcome(&proof, "spec for Counter.bump", claim);
     assert!(bump.starts_with("unknown"), "{}", proof.text);
 }
@@ -1741,9 +1592,7 @@ fn a_selfdestruct_sends_the_ether_away() {
     // The deposit's last store and its `STOP`.
     let at = find_ops(&code, &[0x5f, 0x55, 0x00]).expect("the deposit's end") + 2;
     code[at] = 0xff;
-    let Some(proof) = prove_code(&src, &specs, Some(code)) else {
-        return;
-    };
+    let proof = prove_code(&src, &specs, Some(code));
     let solvent = outcome(&proof, "solvent", "deposit");
     assert!(solvent.starts_with("FAILED"), "{}", proof.text);
     assert!(
@@ -1791,9 +1640,9 @@ fn inlined_copies_certified() {
     eprintln!("certified {certified} of {copies} inlined copies; {guards} guard ends");
 }
 
-/// The source report and the bytecode report for `src`, or `None` without Z3.
-fn prove_both(src: &str, spec_file: &str) -> Option<(crate::Proof, crate::Proof)> {
-    Some((prove(src, spec_file)?, prove_code(src, spec_file, None)?))
+/// The source report and the bytecode report for `src`.
+fn prove_both(src: &str, spec_file: &str) -> (crate::Proof, crate::Proof) {
+    (prove(src, spec_file), prove_code(src, spec_file, None))
 }
 
 /// A list a call takes is a value a spec reads, at both levels: its length, and its
@@ -1812,9 +1661,7 @@ external function put(const ids : list(uint); const values : list(uint)) raises 
 "#;
     let spec =
         "spec for put is partial {\n  raises Mismatch when ids.length <> values.length;\n}\n";
-    let Some((source, bytecode)) = prove_both(src, spec) else {
-        return;
-    };
+    let (source, bytecode) = prove_both(src, spec);
     assert_eq!((source.failed, source.unknown), (0, 0), "{}", source.text);
     assert_eq!(
         (bytecode.failed, bytecode.unknown),
@@ -1824,14 +1671,10 @@ external function put(const ids : list(uint); const values : list(uint)) raises 
     );
     // A list of any length runs turn by turn as far as it may be short.
     let one = "spec for put is partial {\n  ensures ids.length <> 1 or new.storage.bal[ids[0]] = old.storage.bal[ids[0]] + values[0];\n}\n";
-    let Some(source) = prove(src, one) else {
-        return;
-    };
+    let source = prove(src, one);
     assert_eq!((source.failed, source.unknown), (0, 0), "{}", source.text);
     let wrong = one.replace("+ values[0]", "+ values[0] + 1");
-    let Some(source) = prove(src, &wrong) else {
-        return;
-    };
+    let source = prove(src, &wrong);
     assert_eq!(source.failed + source.unknown, 1, "{}", source.text);
 }
 
@@ -1850,9 +1693,7 @@ external function build(const n : uint) is {
 }
 "#;
     let spec = "spec for build is partial {\n  ensures new.storage.total = n;\n}\n";
-    let Some((source, bytecode)) = prove_both(src, spec) else {
-        return;
-    };
+    let (source, bytecode) = prove_both(src, spec);
     assert_eq!((source.failed, source.unknown), (0, 0), "{}", source.text);
     assert_eq!(
         (bytecode.failed, bytecode.unknown),
@@ -1861,9 +1702,7 @@ external function build(const n : uint) is {
         bytecode.text
     );
     let wrong = src.replace("invariant xs.length = i", "invariant xs.length = i + 1");
-    let Some((source, bytecode)) = prove_both(&wrong, spec) else {
-        return;
-    };
+    let (source, bytecode) = prove_both(&wrong, spec);
     assert!(source.failed + source.unknown > 0, "{}", source.text);
     assert!(bytecode.failed + bytecode.unknown > 0, "{}", bytecode.text);
 }
@@ -1883,9 +1722,7 @@ external function add(const n : uint; const k : uint) is {
 "#;
     let spec =
         "spec for add is partial {\n  ensures new.storage.total = old.storage.total + n * k;\n}\n";
-    let Some((source, bytecode)) = prove_both(src, spec) else {
-        return;
-    };
+    let (source, bytecode) = prove_both(src, spec);
     assert_eq!((source.failed, source.unknown), (0, 0), "{}", source.text);
     assert_eq!(
         (bytecode.failed, bytecode.unknown),
@@ -1894,9 +1731,7 @@ external function add(const n : uint; const k : uint) is {
         bytecode.text
     );
     let wrong = spec.replace("n * k", "n * k + 1");
-    let Some(bytecode) = prove_code(src, &wrong, None) else {
-        return;
-    };
+    let bytecode = prove_code(src, &wrong, None);
     assert!(bytecode.failed + bytecode.unknown > 0, "{}", bytecode.text);
 }
 
@@ -1923,14 +1758,10 @@ external function add(const n : uint) raises TooBig is {
   ensures new.storage.count[who] = old.storage.count[who] + 1;
 }
 "#;
-    let Some(proof) = prove_code(src, spec, None) else {
-        return;
-    };
+    let proof = prove_code(src, spec, None);
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     let wrong = spec.replace("old.storage.total + n;", "old.storage.total;");
-    let Some(proof) = prove_code(src, &wrong, None) else {
-        return;
-    };
+    let proof = prove_code(src, &wrong, None);
     assert!(
         !outcome(&proof, "spec for bump", "ensures new.storage.total").starts_with("proved"),
         "{}",
@@ -1940,9 +1771,7 @@ external function add(const n : uint) raises TooBig is {
     let twice = format!(
         "{src}external function addTwice(const n : uint; const to : address) raises TooBig is {{\n  bump(to, n);\n  bump(Evm.sender(), n + 1);\n}}\n"
     );
-    let Some(proof) = prove_code(&twice, spec, None) else {
-        return;
-    };
+    let proof = prove_code(&twice, spec, None);
     assert!(
         outcome(&proof, "spec for bump", "every claim").contains("merged"),
         "{}",
@@ -2000,17 +1829,13 @@ spec for setFee is {
   ensures new.storage.fee = fee;
 }
 "#;
-    let Some(proof) = prove_code(src, spec, None) else {
-        return;
-    };
+    let proof = prove_code(src, spec, None);
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
     let extra = src.replace(
         "  assert(Evm.sender() = storage.owner, NotOwner);\n}",
         "  assert(Evm.sender() = storage.owner, NotOwner);\n  assert(storage.n < 1000, TooHigh);\n}",
     );
-    let Some(proof) = prove_code(&extra, spec, None) else {
-        return;
-    };
+    let proof = prove_code(&extra, spec, None);
     // The guard's new check and the route's share a revert, and the build merges them into
     // one test across the guard's end: then the claim is no longer told apart.
     assert!(
@@ -2024,9 +1849,7 @@ spec for setFee is {
         "external view function main(const x : uint) : uint is x\n\nexternal function main(const action : Action)\n  raises NotOwner | TooHigh\nis {\n  const k : uint := 1;\n}\nwith case action of {",
     );
     assert_ne!(overloaded, extra);
-    let Some(proof) = prove_code(&overloaded, spec, None) else {
-        return;
-    };
+    let proof = prove_code(&overloaded, spec, None);
     assert!(
         !outcome(&proof, "spec for ownerMain", "reverts in no other case").starts_with("proved"),
         "{}",
@@ -2036,9 +1859,7 @@ spec for setFee is {
         "  assert(Evm.sender() = storage.owner, NotOwner);\n}",
         "  assert(Evm.sender() = storage.owner, NotOwner);\n  assert(storage.n < 1000, NotOwner);\n}",
     );
-    let Some(proof) = prove_code(&extra, spec, None) else {
-        return;
-    };
+    let proof = prove_code(&extra, spec, None);
     assert!(
         outcome(&proof, "spec for ownerMain", "reverts in no other case").starts_with("FAILED"),
         "{}",
@@ -2061,9 +1882,7 @@ external function note(const k : uint; const x : Note) raises Empty is {
 "#;
     let spec =
         "spec for note is {\n  raises Empty when k = 0;\n  ensures new.storage.last = k;\n}\n";
-    let Some(proof) = prove_code(src, spec, None) else {
-        return;
-    };
+    let proof = prove_code(src, spec, None);
     assert_eq!((proof.failed, proof.unknown), (0, 0), "{}", proof.text);
 }
 
@@ -2086,9 +1905,7 @@ external function note(const k : uint; const xs : list(list(uint16))) raises Emp
 }
 "#;
     let spec = "spec for note is {\n  raises Empty when k = 0;\n}\n";
-    let Some(proof) = prove_code(src, spec, None) else {
-        return;
-    };
+    let proof = prove_code(src, spec, None);
     assert_eq!(proof.failed, 0, "{}", proof.text);
     for claim in ["raises Empty when k = 0", "raises Empty only when k = 0"] {
         assert!(

@@ -899,6 +899,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "const-hex"
 version = "1.19.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1761,6 +1770,7 @@ version = "0.3.0"
 dependencies = [
  "logos",
  "mimalloc",
+ "z3-sys",
 ]
 
 [[package]]
@@ -2067,6 +2077,12 @@ dependencies = [
  "der",
  "spki",
 ]
+
+[[package]]
+name = "pkg-config"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "portable-atomic"
@@ -3293,6 +3309,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
+]
+
+[[package]]
+name = "z3-src"
+version = "503.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfb8cac8650fc9a7e536c4583f8f68a4ce63eba9f13832ee5a30bce79bd71a6b"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
+name = "z3-sys"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df0e4954175989c52d98ebfa46f48bce05d34b76ba9ee9f741134054b858975b"
+dependencies = [
+ "pkg-config",
+ "z3-src",
 ]
 
 [[package]]

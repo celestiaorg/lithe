@@ -70,7 +70,7 @@ pub use index::{Completion, Def, File, Index, Kind, Ref, Signature, Span};
 pub use lint::{lint_paths, lithe_files, Lint};
 pub use modules::{import_path, Sources};
 pub use packages::{add, install, packages, Add};
-pub use prove::{solver, Proof, ProveOptions};
+pub use prove::{serve_if_child, Proof, ProveOptions};
 pub use route::{
     Abi, AbiError, AbiItem, Constructor, Event, EventParam, Fallback, Function, Param, Receive,
     StateMutability,
@@ -515,6 +515,9 @@ pub fn errors(sources: &Sources, entry: &Path) -> Result<String, Error> {
 ///
 /// A file of modules, with no contract, is proved as a contract that uses each of them and
 /// exposes all their external functions.
+///
+/// Its solvers run as this program started again, which serves as one only when its `main`
+/// calls [`serve_if_child`] first.
 pub fn prove(sources: &Sources, entry: &Path, opts: &ProveOptions) -> Result<Proof, Error> {
     let mut prog = modules::load(sources, entry)?;
     if let Some((path, src)) = module_contract(sources, entry, &prog)? {

@@ -9,6 +9,7 @@ use lithe::Sources;
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
+    lithe::serve_if_child();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
         usage();
@@ -157,10 +158,10 @@ fn main() {
     }
 }
 
-/// `lithe prove file.lithe [--solver path] [--timeout seconds] [--source | --code code]`,
-/// with the build flags for the bytecode it proves. Exits 0 when every
-/// obligation is proved, 1 when one fails or the file does not compile, 2 without Z3, and 3
-/// when one is unknown.
+/// `lithe prove file.lithe [--timeout seconds] [--jobs n] [--source | --code code]`, with
+/// the build flags for the bytecode it proves. Exits 0 when every obligation is proved, 1
+/// when one fails or the file does not compile, 2 on a usage error, and 3 when one is
+/// unknown.
 fn prove(mut args: Vec<String>) -> ! {
     let mut opts = lithe::ProveOptions::default();
     let flags = build_flags(&mut args);
@@ -174,9 +175,9 @@ fn prove(mut args: Vec<String>) -> ! {
                 Some(Err(why)) => usage_exit(&why),
                 None => usage_exit("--code needs the runtime code, as hex or a file of it"),
             },
-            "--solver" => match it.next() {
-                Some(path) => opts.solver = Some(path.into()),
-                None => usage_exit("--solver needs the path to z3"),
+            "--jobs" => match it.next().and_then(|s| s.parse().ok()) {
+                Some(n) if n > 0 => opts.jobs = n,
+                _ => usage_exit("--jobs needs a number of claims to prove at once"),
             },
             "--timeout" => match it.next().and_then(|s| s.parse().ok()) {
                 Some(n) => opts.timeout = n,
@@ -191,9 +192,6 @@ fn prove(mut args: Vec<String>) -> ! {
     };
     if opts.source && opts.code.is_some() {
         usage_exit("--source proves no code; leave out --code or --source");
-    }
-    if let Err(why) = lithe::solver(&opts) {
-        usage_exit(&why);
     }
     if !flags.is_empty() {
         match build_options(Path::new(file), &flags) {
@@ -587,7 +585,7 @@ usage: lithe compile file.lithe
        lithe analysis file.lithe
        lithe errors file.lithe
        lithe specs file.lithe
-       lithe prove file.lithe [--solver path/to/z3] [--timeout seconds]
+       lithe prove file.lithe [--timeout seconds] [--jobs n]
                               [--source | --code <hex|file>]
        lithe lint [--fix] path...
        lithe storage file.lithe
@@ -617,6 +615,8 @@ prove proves the specs of the bytecode the build emits, and shows the source's v
 where it explains one; it also takes
        --source                      prove the source alone, a quick first pass
        --code <hex|file>             prove this runtime code, as deployed, instead
+       --timeout <seconds>           the solver's CPU time for each question, default 30
+       --jobs <n>                    claims proved at once, default one per core
 
 compile also takes
        --check-specs                 a test build that checks the contract's specs as it

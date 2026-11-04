@@ -73,7 +73,7 @@ jobs:
 
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,11 +82,6 @@ jobs:
         with:
           toolchain: 1.95.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Install Z3
-        run: |
-          curl -sSfLO https://github.com/Z3Prover/z3/releases/download/z3-5.1.0/z3-5.1.0-x64-glibc-2.39.zip
-          unzip -q z3-5.1.0-x64-glibc-2.39.zip -d "$RUNNER_TEMP"
-          echo "LITHE_Z3=$RUNNER_TEMP/z3-5.1.0-x64-glibc-2.39/bin/z3" >> "$GITHUB_ENV"
       - run: cargo test --locked
 
   # `lithe prove` over every spec file: each claim proved of the bytecode, none failed or
@@ -94,7 +89,7 @@ jobs:
   # solver time, not the default 30.
   prove:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -103,11 +98,6 @@ jobs:
         with:
           toolchain: 1.95.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Install Z3
-        run: |
-          curl -sSfLO https://github.com/Z3Prover/z3/releases/download/z3-5.1.0/z3-5.1.0-x64-glibc-2.39.zip
-          unzip -q z3-5.1.0-x64-glibc-2.39.zip -d "$RUNNER_TEMP"
-          echo "LITHE_Z3=$RUNNER_TEMP/z3-5.1.0-x64-glibc-2.39/bin/z3" >> "$GITHUB_ENV"
       - run: cargo build --release --locked
       - name: Prove every spec file
         run: |

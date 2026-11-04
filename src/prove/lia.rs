@@ -414,9 +414,7 @@ mod tests {
     /// The integers give each term the value the bitvectors do, on random terms and values.
     #[test]
     fn integers_read_terms_as_bitvectors_do() {
-        let Ok(solver) = Solver::find(None, 30) else {
-            return;
-        };
+        let solver = Solver { timeout: 30 };
         let mut seed = 0x2545_f491_4f6c_dd1du64;
         let mut rnd = move || {
             seed ^= seed << 13;
@@ -433,9 +431,7 @@ mod tests {
                 let w = a.word(Word([rnd(), rnd(), rnd(), rnd() >> (rnd() % 64)]));
                 fixed.push(a.eq(v, w));
             }
-            let Ok(mut bits) = Session::start(&solver) else {
-                return;
-            };
+            let mut bits = Session::start(&solver).unwrap();
             let Reply::Sat(values) = bits.check(&a, &fixed, &[t], false) else {
                 panic!("the bitvectors have no value");
             };
@@ -448,9 +444,7 @@ mod tests {
                 .collect();
             let name = lia.term(&a, t).expect("translates");
             asserts.push(format!("(not (= {name} {value}))"));
-            let Ok(mut ints) = Session::start(&solver) else {
-                return;
-            };
+            let mut ints = Session::start(&solver).unwrap();
             assert_eq!(
                 ints.ask_script(&lia.script, &asserts, 300),
                 "unsat",

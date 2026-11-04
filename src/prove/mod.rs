@@ -15,8 +15,7 @@ mod funcs;
 mod lia;
 mod sevm;
 mod smt;
-
-use std::path::PathBuf;
+mod z3;
 
 use crate::ast::*;
 use crate::check::Checked;
@@ -24,14 +23,16 @@ use crate::spec::Specs;
 use crate::Error;
 use exec::{Arrival, Ctx, Exec, Key, Mode, Stop};
 use smt::{Answer, Solver};
+pub use z3::serve_if_child;
 
 /// How to run the solver.
 #[derive(Clone, Debug, Default)]
 pub struct ProveOptions {
-    /// Z3, when it is not `LITHE_Z3` or on `PATH`.
-    pub solver: Option<PathBuf>,
     /// Seconds each obligation may take; 30 when zero.
     pub timeout: u32,
+    /// How many claims are proved at once, each by solvers of its own; one for each of the
+    /// machine's cores when zero.
+    pub jobs: usize,
     /// Prove the specs of the source alone: a quick first pass, which says nothing of the
     /// bytecode a build emits.
     pub source: bool,
@@ -113,8 +114,7 @@ pub(crate) fn prove_source(specs: &Specs, opts: &ProveOptions) -> Result<Proof, 
 
 fn source(specs: &Specs, opts: &ProveOptions) -> Result<Report, Error> {
     let timeout = if opts.timeout == 0 { 30 } else { opts.timeout };
-    let solver =
-        Solver::find(opts.solver.clone(), timeout).map_err(|why| crate::error(0, 0, why))?;
+    let solver = Solver { timeout };
     let checked = &specs.checked;
     let mut invs = Vec::new();
     for inv in &specs.invariants {
@@ -795,11 +795,6 @@ fn le_decimal(a: &str, b: &str) -> bool {
         return false;
     }
     (a.len(), a) <= (b.len(), b)
-}
-
-/// Where `lithe prove` would find Z3, or why it would not.
-pub fn solver(opts: &ProveOptions) -> Result<PathBuf, String> {
-    Solver::find(opts.solver.clone(), 1).map(|s| s.path)
 }
 
 /// How bad an outcome is, for keeping a loop's worst.
