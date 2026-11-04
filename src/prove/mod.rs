@@ -84,7 +84,7 @@ struct Inv<'a> {
 
 pub(crate) use bytecode::{Built, BuiltFacet};
 #[cfg(test)]
-pub(crate) use sevm::run_known;
+pub(crate) use sevm::{creates, run_known};
 
 /// Each section's header, and each claim's label and outcome under it.
 type Sections = Vec<(String, Vec<(String, Outcome)>)>;

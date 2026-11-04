@@ -1651,6 +1651,17 @@ fn facets_hooks_and_upgrades_prove_at_the_bytecode_level() {
     }
 }
 
+/// Creation code that copies out a runtime of the most bytes a contract may have returns it
+/// whole, as a facet's does when the prover binds it.
+#[test]
+fn creation_code_returns_a_runtime_of_the_largest_size() {
+    let runtime: Vec<u8> = (0..0x6000u32).map(|i| (i % 251) as u8).collect();
+    // `PUSH2 len DUP1 PUSH1 10 PUSH0 CODECOPY PUSH0 RETURN`, then the runtime.
+    let mut init = vec![0x61, 0x60, 0x00, 0x80, 0x60, 0x0a, 0x5f, 0x39, 0x5f, 0xf3];
+    init.extend(&runtime);
+    assert_eq!(crate::prove::creates(&init), Some(runtime));
+}
+
 /// After the upgrade hands the contract on, its code may clear the migration flag and
 /// nothing else: setting it there instead keeps the upgrade from proving.
 #[test]
