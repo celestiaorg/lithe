@@ -5,6 +5,7 @@ export default {
   npmPackage: "@lithe-lang/hardhat",
   hookHandlers: {
     config: () => import("./config.js"),
+    network: () => import("./network.js"),
   },
   tasks: [
     overrideTask("build")

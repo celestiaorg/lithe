@@ -25,4 +25,10 @@ describe("Vault", async () => {
     const fees = await viem.deployContract("Fees", [wallet.account.address, 250n]);
     assert.equal((await fees.read.owner()).toLowerCase(), wallet.account.address.toLowerCase());
   });
+
+  it("deploys a contract with a delegated module", async () => {
+    const counter = await viem.deployContract("Tally");
+    await counter.write.bump([3n]);
+    assert.equal(await counter.read.count(), 3n);
+  });
 });

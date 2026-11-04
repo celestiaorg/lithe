@@ -42,6 +42,8 @@ IVault vault = IVault(deployCode("Vault"));
 
 A contract's `deploy` arguments go where a constructor's would: `viem.deployContract("Fees", [owner, 250n])`, or `deployCode("Fees", abi.encode(owner, 250))`.
 
+A contract with `delegated` modules routes to facets at the addresses `lithe` pins for them. Each connection to a simulated network starts with every built facet's code at its address, so these contracts deploy by name too. On a live network, deploy the facets through the deterministic CREATE2 deployer first.
+
 ## Options
 
 ```ts
