@@ -799,8 +799,8 @@ fn a_checking_build_names_the_plain_build_s_facets() {
     let src = r#"import "std/evm";
 module Counter is {
   storage counter at "example.facet.address" is record { n : uint; }
-  function bump() is { counter.n := counter.n + 1; }
-  external view function count() : uint is counter.n
+  function bump() is { storage.counter.n := storage.counter.n + 1; }
+  external view function count() : uint is storage.counter.n
 }
 contract App is {
   use Counter delegated exposing { view function count() : uint; }
@@ -808,7 +808,7 @@ contract App is {
   external function bump() is Counter.bump()
 }
 "#;
-    let specs = "spec for module Counter is {\n  spec is {\n    invariant bounded is counter.n < 2;\n  }\n}\n";
+    let specs = "spec for module Counter is {\n  spec is {\n    invariant bounded is storage.counter.n < 2;\n  }\n}\n";
     let plain = crate::compile(&memory(src), Path::new(ENTRY), &Options::default())
         .and_then(crate::Output::single)
         .map_err(first)
