@@ -570,7 +570,7 @@ fn run_phase<'a>(
             outcomes.push(Outcome::Unknown(why.clone()));
             continue;
         }
-        let changes = footprints[i].iter().any(|k| st.written.contains(k));
+        let changes = footprints[i].iter().any(|k| k.changed_by(&st.written));
         if phase.assume && !changes {
             outcomes.push(Outcome::Unchanged);
             continue;
