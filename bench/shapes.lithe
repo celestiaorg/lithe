@@ -5,26 +5,26 @@ import "std/evm";
 
 error Unauthorized of record {
   caller : address;
-  role : string;
+  role   : string;
 }
 error OutOfRange of record {
   value : uint;
-  min : uint;
-  max : uint;
+  min   : uint;
+  max   : uint;
 }
 error UnknownItem of record {
-  id : uint;
+  id   : uint;
   name : string;
 }
 error BadItems of list(uint);
 error BadBatch of record {
   reason : string;
-  ids : list(uint);
+  ids    : list(uint);
 }
 error BadData of bytes;
 error Mismatch of record {
   expected : string;
-  actual : string;
+  actual   : string;
 }
 
 immutable is record {
@@ -33,7 +33,7 @@ immutable is record {
 
 storage is record {
   items : uint;
-  sold : uint;
+  sold  : uint;
 }
 
 deploy() is {

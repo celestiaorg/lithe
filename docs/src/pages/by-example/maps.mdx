@@ -11,7 +11,7 @@ description: "Maps, nested maps, defaults, and deletion."
 import "std/evm";
 
 storage is record {
-  balances : map(address, uint);
+  balances   : map(address, uint);
   (* Maps nest: owner -> spender -> amount. *)
   allowances : map(address, map(address, uint));
 }

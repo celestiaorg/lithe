@@ -5,7 +5,7 @@
 import "std/evm";
 
 error AccessControlUnauthorizedAccount of record {
-  account : address;
+  account    : address;
   neededRole : bytes32;
 }
 
@@ -13,7 +13,7 @@ error AccessControlBadConfirmation;
 
 module AccessControl is {
   type RoleData is record {
-    hasRole : map(address, bool);
+    hasRole   : map(address, bool);
     adminRole : bytes32;
   }
 
@@ -22,21 +22,21 @@ module AccessControl is {
   }
 
   event RoleAdminChanged of record {
-    indexed role : bytes32;
+    indexed role              : bytes32;
     indexed previousAdminRole : bytes32;
-    indexed newAdminRole : bytes32;
+    indexed newAdminRole      : bytes32;
   }
 
   event RoleGranted of record {
-    indexed role : bytes32;
+    indexed role    : bytes32;
     indexed account : address;
-    indexed sender : address;
+    indexed sender  : address;
   }
 
   event RoleRevoked of record {
-    indexed role : bytes32;
+    indexed role    : bytes32;
     indexed account : address;
-    indexed sender : address;
+    indexed sender  : address;
   }
 
   const defaultAdminRole : bytes32 := 0x0000000000000000000000000000000000000000000000000000000000000000;

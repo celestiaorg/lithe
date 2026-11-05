@@ -12,13 +12,13 @@ module ERC6909ContentURI is {
 
   storage erc6909ContentURI at "lithe.std.erc6909_content_uri" is record {
     contractURI : string;
-    tokenUris : map(uint, string);
+    tokenUris   : map(uint, string);
   }
 
   event ContractURIUpdated of record {}
 
   event URI of record {
-    value : string;
+    value      : string;
     indexed id : uint;
   }
 

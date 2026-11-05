@@ -11,7 +11,7 @@ error NotSettling;
 module Settlement is {
   transient storage execution is record {
     active : bool;
-    depth : uint8;
+    depth  : uint8;
   }
 
   function begin() is {
@@ -29,8 +29,8 @@ interface Me is {
 
 transient storage scratch is record {
   processing : bool;
-  pending : uint;
-  touched : map(address, uint);
+  pending    : uint;
+  touched    : map(address, uint);
 }
 
 transient storage is record {

@@ -25,8 +25,8 @@ use Watchlist exposing {
 type OrderId is bytes32;
 
 storage is record {
-  admins : Set(address);
-  orders : Set(OrderId);
+  admins  : Set(address);
+  orders  : Set(OrderId);
   members : SetEnumerable(address);
 }
 
@@ -99,7 +99,7 @@ import "std/list";
 
 module SetEnumerable(T : MapKey) is {
   type Self is record {
-    values : list(T);
+    values  : list(T);
     indexes : map(T, uint);
   }
 

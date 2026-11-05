@@ -7,17 +7,17 @@ error Paused;
 
 error Insufficient of record {
   available : wei;
-  required : wei;
+  required  : wei;
 }
 
 event Deposited of record {
   indexed who : address;
-  amount : wei;
+  amount      : wei;
 }
 
 event Withdrawn of record {
   indexed who : address;
-  amount : wei;
+  amount      : wei;
 }
 
 immutable is record {
@@ -25,7 +25,7 @@ immutable is record {
 }
 
 storage is record {
-  paused : bool;
+  paused   : bool;
   deposits : map(address, wei);
 }
 

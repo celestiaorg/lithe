@@ -2,23 +2,23 @@
    several writes to one packed slot, and strings that grow and shrink. *)
 
 type Pos is record {
-  x : uint16;
-  y : uint16;
+  x    : uint16;
+  y    : uint16;
   live : bool;
 }
 
 storage is record {
-  small : uint8;
+  small  : uint8;
   levels : list(uint8, 40);
-  flags : list(bool, 5);
+  flags  : list(bool, 5);
   deltas : list(int16, 3);
-  spot : Pos;
-  pair : (uint32, address);
-  tail : uint64;
-  owner : address;
-  ready : bool;
-  name : string;
-  total : uint;
+  spot   : Pos;
+  pair   : (uint32, address);
+  tail   : uint64;
+  owner  : address;
+  ready  : bool;
+  name   : string;
+  total  : uint;
 }
 
 external function setLevel(const i : uint; const v : uint8) is {

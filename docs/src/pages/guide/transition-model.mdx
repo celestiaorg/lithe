@@ -48,8 +48,8 @@ interface Token is {
 }
 
 storage is record {
-  token : Token;
-  balances : map(address, uint);
+  token          : Token;
+  balances       : map(address, uint);
   totalWithdrawn : uint;
 }
 

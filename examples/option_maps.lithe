@@ -5,22 +5,22 @@ import "std/evm";
 type Entry is record {
   amount : uint;
   expiry : option(uint64);
-  note : option(uint);
+  note   : option(uint);
 }
 
 storage is record {
-  small : map(address, option(uint64));
-  wide : map(uint, option(uint));
-  nested : map(address, map(uint, option(uint)));
+  small   : map(address, option(uint64));
+  wide    : map(uint, option(uint));
+  nested  : map(address, map(uint, option(uint)));
   entries : map(uint, Entry);
-  pts : map(uint, option((uint, uint)));
-  seen : uint;
+  pts     : map(uint, option((uint, uint)));
+  seen    : uint;
 }
 
 transient storage is record {
-  t1 : option(address);
-  t2 : option(uint);
-  tm : map(uint, option(uint));
+  t1  : option(address);
+  t2  : option(uint);
+  tm  : map(uint, option(uint));
   tm8 : map(uint, option(uint8));
 }
 

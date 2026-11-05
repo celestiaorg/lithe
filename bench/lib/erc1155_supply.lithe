@@ -6,7 +6,7 @@ import "std/address";
 
 module ERC1155Supply is {
   storage erc1155Supply at "openzeppelin.storage.ERC1155Supply" is record {
-    totalSupply : map(uint, uint);
+    totalSupply    : map(uint, uint);
     totalSupplyAll : uint;
   }
 

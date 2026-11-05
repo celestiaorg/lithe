@@ -15,7 +15,7 @@ upgrade guard is {
 }
 
 storage settings at "vault.settings" is record {
-  fee : uint;
+  fee    : uint;
   paused : bool;
 }
 

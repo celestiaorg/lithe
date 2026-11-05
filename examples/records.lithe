@@ -1,18 +1,18 @@
 (* Records as values: returned by functions, read field by field, and stored whole. *)
 
 type Range is record {
-  low : uint;
+  low  : uint;
   high : uint;
 }
 
 type Quote is record {
   filled : bool;
-  price : uint;
-  band : Range;
+  price  : uint;
+  band   : Range;
 }
 
 storage is record {
-  last : Quote;
+  last   : Quote;
   quotes : map(uint, Quote);
 }
 

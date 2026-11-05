@@ -7,7 +7,7 @@ import "std/bytes";
 import "std/evm";
 
 type Order is record {
-  id : uint;
+  id   : uint;
   note : string;
   legs : list(uint);
 }
@@ -20,7 +20,7 @@ interface Book is {
 }
 
 storage is record {
-  ids : list(uint);
+  ids     : list(uint);
   refused : uint;
 }
 

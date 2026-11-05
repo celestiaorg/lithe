@@ -17,22 +17,22 @@ import "std/evm";
 error AlreadyStarted;
 error Sold;
 error TooLow of record {
-  paid : wei;
+  paid  : wei;
   price : wei;
 }
 
 event Bought of record {
   indexed buyer : address;
-  price : wei;
+  price         : wei;
 }
 
 storage is record {
-  seller : address;
+  seller     : address;
   startPrice : wei;
-  floor : wei;
-  startedAt : timestamp;
-  duration : uint;
-  sold : bool;
+  floor      : wei;
+  startedAt  : timestamp;
+  duration   : uint;
+  sold       : bool;
 }
 
 external function start(const startPrice : wei; const floor : wei; const duration : uint)

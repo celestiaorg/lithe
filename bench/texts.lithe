@@ -10,15 +10,15 @@ type Blobs is list(bytes);
 type Notes is list(string);
 
 storage is record {
-  saved : list(bytes);
-  names : list(string);
+  saved  : list(bytes);
+  names  : list(string);
   labels : map(uint, string);
-  note : string;
+  note   : string;
 }
 
 event Named of record {
   indexed who : address;
-  names : list(string);
+  names       : list(string);
 }
 
 external function save(const xs : list(bytes)) is {

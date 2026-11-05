@@ -10,13 +10,13 @@ module Ledger is {
 
   error InsufficientBalance of record {
     available : uint;
-    required : uint;
+    required  : uint;
   }
 
   event Transfer of record {
     indexed from : address;
-    indexed to : address;
-    amount : uint;
+    indexed to   : address;
+    amount       : uint;
   }
 
   external view function balanceOf(const account : address) : uint is

@@ -2,9 +2,9 @@
    function. Mirrors profile.sol. *)
 
 storage is record {
-  name : string;
+  name   : string;
   avatar : bytes;
-  bio : string;
+  bio    : string;
 }
 
 deploy(const name : string; const avatar : bytes) is {

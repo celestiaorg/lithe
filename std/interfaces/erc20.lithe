@@ -5,9 +5,9 @@
 import "std/crypto/ecdsa";
 
 error ERC20InsufficientBalance of record {
-  sender : address;
+  sender  : address;
   balance : uint;
-  needed : uint;
+  needed  : uint;
 }
 
 error ERC20InvalidSender of address;
@@ -15,9 +15,9 @@ error ERC20InvalidSender of address;
 error ERC20InvalidReceiver of address;
 
 error ERC20InsufficientAllowance of record {
-  spender : address;
+  spender   : address;
   allowance : uint;
-  needed : uint;
+  needed    : uint;
 }
 
 error ERC20InvalidApprover of address;
@@ -28,7 +28,7 @@ error ERC2612ExpiredSignature of uint;
 
 error ERC2612InvalidSigner of record {
   signer : address;
-  owner : address;
+  owner  : address;
 }
 
 interface IERC20 is {

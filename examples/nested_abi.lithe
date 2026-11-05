@@ -5,7 +5,7 @@ import "std/abi";
 import "std/list";
 
 type Order is record {
-  id : uint;
+  id   : uint;
   note : string;
   legs : list(uint);
 }
@@ -13,7 +13,7 @@ type Order is record {
 type Reserves is record {
   reserve0 : uint112;
   reserve1 : uint112;
-  last : uint32;
+  last     : uint32;
 }
 
 interface Pair is {
@@ -26,12 +26,12 @@ interface Book is {
 
 event Placed of record {
   indexed batch : list(Order);
-  orders : list(Order);
+  orders        : list(Order);
 }
 
 error EmptyLeg of record {
   order : uint;
-  legs : list(list(uint));
+  legs  : list(list(uint));
 }
 
 storage is record {

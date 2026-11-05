@@ -48,7 +48,7 @@ contract Token is {
 
   error ERC20ExceededCap of record {
     increasedSupply : uint;
-    cap : uint;
+    cap             : uint;
   }
 
   deploy()

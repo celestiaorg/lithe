@@ -17,8 +17,8 @@ type Shares is uint;
 
 storage is record {
   balances : map(address, uint);
-  staked : map(address, uint);
-  total : uint;
+  staked   : map(address, uint);
+  total    : uint;
 }
 
 (* One argument or two. One overload can call another. *)

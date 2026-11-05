@@ -21,8 +21,8 @@ error InvalidSignature;
 error NonceUsed of uint;
 
 storage is record {
-  signer : address;
-  used : map(uint, bool);
+  signer   : address;
+  used     : map(uint, bool);
   credited : map(address, uint);
 }
 

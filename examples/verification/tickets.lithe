@@ -8,7 +8,7 @@ import "std/evm";
 storage is record {
   issued : uint;
   owners : map(uint, address);
-  held : map(address, uint);
+  held   : map(address, uint);
 }
 
 external function issue(const n : uint) is {

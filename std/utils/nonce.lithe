@@ -7,7 +7,7 @@
      } *)
 
 error InvalidAccountNonce of record {
-  account : address;
+  account      : address;
   currentNonce : uint;
 }
 

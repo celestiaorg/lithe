@@ -10,9 +10,9 @@ interface Fees is {
 }
 
 storage is record {
-  paid : wei;
+  paid    : wei;
   updated : timestamp;
-  fee : BasisPoints;
+  fee     : BasisPoints;
 }
 
 external function quote(const fee : BasisPoints) is {

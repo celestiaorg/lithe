@@ -12,8 +12,8 @@ import "std/evm";
 
 event Transfer of record {
   indexed from : address;
-  indexed to : address;
-  amount : uint;
+  indexed to   : address;
+  amount       : uint;
 }
 
 storage is record {
@@ -61,7 +61,7 @@ import "std/evm";
 
 event Renamed of record {
   indexed name : string;
-  by : address;
+  by           : address;
 }
 
 storage is record {
@@ -81,8 +81,8 @@ import "std/evm";
 
 anonymous event Moved of record {
   indexed from : address;
-  indexed to : address;
-  indexed id : uint;
+  indexed to   : address;
+  indexed id   : uint;
   indexed kind : uint;
 }
 

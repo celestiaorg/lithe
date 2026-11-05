@@ -6,7 +6,7 @@ import "std/evm";
 
 error NotOwner of address;
 error TooBig of record {
-  have : uint;
+  have  : uint;
   limit : uint;
 }
 
@@ -17,17 +17,17 @@ interface Oracle is {
 storage is record {
   owner : address;
   ready : bool;
-  a : uint;
-  b : uint;
-  c : uint;
+  a     : uint;
+  b     : uint;
+  c     : uint;
   small : uint8;
   total : uint;
-  seen : map(address, uint);
+  seen  : map(address, uint);
 }
 
 event Moved of record {
   indexed who : address;
-  amount : uint;
+  amount      : uint;
 }
 
 view function checkOwner()

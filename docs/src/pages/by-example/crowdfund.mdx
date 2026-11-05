@@ -25,16 +25,16 @@ error NothingPledged;
 
 event Pledged of record {
   indexed backer : address;
-  amount : wei;
+  amount         : wei;
 }
 
 storage is record {
-  creator : address;
-  goal : wei;
+  creator  : address;
+  goal     : wei;
   deadline : timestamp;
-  raised : wei;
-  claimed : bool;
-  pledges : map(address, wei);
+  raised   : wei;
+  claimed  : bool;
+  pledges  : map(address, wei);
 }
 
 external function launch(const goal : wei; const duration : uint)

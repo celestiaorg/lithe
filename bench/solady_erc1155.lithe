@@ -20,24 +20,24 @@ error TransferToNonERC1155ReceiverImplementer;
 
 event TransferSingle of record {
   indexed operator : address;
-  indexed from : address;
-  indexed to : address;
-  id : uint;
-  amount : uint;
+  indexed from     : address;
+  indexed to       : address;
+  id               : uint;
+  amount           : uint;
 }
 
 event TransferBatch of record {
   indexed operator : address;
-  indexed from : address;
-  indexed to : address;
-  ids : list(uint);
-  amounts : list(uint);
+  indexed from     : address;
+  indexed to       : address;
+  ids              : list(uint);
+  amounts          : list(uint);
 }
 
 event ApprovalForAll of record {
-  indexed owner : address;
+  indexed owner    : address;
   indexed operator : address;
-  isApproved : bool;
+  isApproved       : bool;
 }
 
 interface IERC1155 is {
@@ -65,7 +65,7 @@ interface ERC1155Receiver is {
 }
 
 storage is record {
-  balances : map(address, map(uint, uint));
+  balances  : map(address, map(uint, uint));
   operators : map(address, map(address, bool));
 }
 

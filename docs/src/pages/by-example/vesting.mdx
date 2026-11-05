@@ -22,9 +22,9 @@ event Released of record {
 
 storage is record {
   beneficiary : address;
-  start : timestamp;
-  duration : uint;
-  released : wei;
+  start       : timestamp;
+  duration    : uint;
+  released    : wei;
 }
 
 external function init(const beneficiary : address; const start : timestamp; const duration : uint)

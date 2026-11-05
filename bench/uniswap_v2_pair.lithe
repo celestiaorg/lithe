@@ -26,65 +26,65 @@ contract UniswapV2Pair is {
 
   (* Solidity's three packed variables, one slot written at once. *)
   type Reserves is record {
-    reserve0 : uint112;
-    reserve1 : uint112;
+    reserve0           : uint112;
+    reserve1           : uint112;
     blockTimestampLast : uint32;
   }
 
   immutable is record {
     DOMAIN_SEPARATOR : bytes32;
-    factory : address;
+    factory          : address;
   }
 
   storage is record {
-    totalSupply : uint;
-    balanceOf : map(address, uint);
-    allowance : map(address, map(address, uint));
-    nonces : map(address, uint);
-    token0 : IERC20;
-    token1 : IERC20;
-    reserves : Reserves;
+    totalSupply          : uint;
+    balanceOf            : map(address, uint);
+    allowance            : map(address, map(address, uint));
+    nonces               : map(address, uint);
+    token0               : IERC20;
+    token1               : IERC20;
+    reserves             : Reserves;
     price0CumulativeLast : uint;
     price1CumulativeLast : uint;
-    kLast : uint;
-    unlocked : uint;
+    kLast                : uint;
+    unlocked             : uint;
   }
 
   (* `require(condition, "reason")`. *)
   error Error of string;
 
   event Approval of record {
-    indexed owner : address;
+    indexed owner   : address;
     indexed spender : address;
-    value : uint;
+    value           : uint;
   }
 
   event Transfer of record {
     indexed from : address;
-    indexed to : address;
-    value : uint;
+    indexed to   : address;
+    value        : uint;
   }
 
   event Mint of record {
     indexed sender : address;
-    amount0 : uint;
-    amount1 : uint;
+    amount0        : uint;
+    amount1        : uint;
   }
 
   event Burn of record {
     indexed sender : address;
-    amount0 : uint;
-    amount1 : uint;
-    indexed to : address;
+    amount0        : uint;
+    amount1        : uint;
+    indexed to     : address;
   }
 
   event Swap of record {
     indexed sender : address;
-    amount0In : uint;
-    amount1In : uint;
-    amount0Out : uint;
-    amount1Out : uint;
-    indexed to : address;
+    amount0In      : uint;
+    amount1In      : uint;
+    amount0Out     : uint;
+    amount1Out     : uint;
+    indexed to     : address;
   }
 
   event Sync of record {

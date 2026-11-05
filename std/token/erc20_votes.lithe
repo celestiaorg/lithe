@@ -37,26 +37,26 @@ module ERC20Votes is {
   requires ERC20, EIP712, Nonces;
 
   storage erc20Votes at "lithe.std.erc20.votes" is record {
-    delegatee : map(address, address);
+    delegatee           : map(address, address);
     delegateCheckpoints : map(address, Trace);
-    totalCheckpoints : Trace;
+    totalCheckpoints    : Trace;
   }
 
   error ERC20ExceededSafeSupply of record {
     increasedSupply : uint;
-    cap : uint;
+    cap             : uint;
   }
 
   event DelegateChanged of record {
-    indexed delegator : address;
+    indexed delegator    : address;
     indexed fromDelegate : address;
-    indexed toDelegate : address;
+    indexed toDelegate   : address;
   }
 
   event DelegateVotesChanged of record {
     indexed delegate : address;
-    previousVotes : uint;
-    newVotes : uint;
+    previousVotes    : uint;
+    newVotes         : uint;
   }
 
   view function timepoint() : uint48 is

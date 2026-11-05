@@ -5,9 +5,9 @@ import "std/address";
 import "std/uint";
 
 error ERC20InsufficientBalance of record {
-  sender : address;
+  sender  : address;
   balance : uint;
-  needed : uint;
+  needed  : uint;
 }
 
 error ERC20InvalidSender of address;
@@ -15,9 +15,9 @@ error ERC20InvalidSender of address;
 error ERC20InvalidReceiver of address;
 
 error ERC20InsufficientAllowance of record {
-  spender : address;
+  spender   : address;
   allowance : uint;
-  needed : uint;
+  needed    : uint;
 }
 
 error ERC20InvalidApprover of address;
@@ -26,23 +26,23 @@ error ERC20InvalidSpender of address;
 
 module ERC20 is {
   storage erc20 at "openzeppelin.storage.ERC20" is record {
-    balances : map(address, uint);
-    allowances : map(address, map(address, uint));
+    balances    : map(address, uint);
+    allowances  : map(address, map(address, uint));
     totalSupply : uint;
-    name : string;
-    symbol : string;
+    name        : string;
+    symbol      : string;
   }
 
   event Transfer of record {
     indexed from : address;
-    indexed to : address;
-    value : uint;
+    indexed to   : address;
+    value        : uint;
   }
 
   event Approval of record {
-    indexed owner : address;
+    indexed owner   : address;
     indexed spender : address;
-    value : uint;
+    value           : uint;
   }
 
   external view function name() : string is

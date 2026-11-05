@@ -92,7 +92,7 @@ A `storage` parameter is passed a storage path, and the function reads and write
 ```lithe
 storage is record {
   balances : map(address, uint);
-  total : uint;
+  total    : uint;
 }
 
 function credit(storage ledger : map(address, uint); const to : address; const amount : uint) is {
@@ -297,12 +297,12 @@ import "std/evm";
 
 event Received of record {
   indexed from : address;
-  amount : wei;
+  amount       : wei;
 }
 
 storage is record {
   received : wei;
-  unknown : uint;
+  unknown  : uint;
 }
 
 payable receive is {
@@ -371,7 +371,7 @@ error UnknownSelector of bytes4;
 error NotOwner;
 
 storage is record {
-  owner : address;
+  owner  : address;
   routes : map(bytes4, address);
 }
 

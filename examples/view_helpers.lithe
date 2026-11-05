@@ -7,8 +7,8 @@ interface Oracle is {
 }
 
 storage is record {
-  xs : map(uint, address);
-  n : uint;
+  xs     : map(uint, address);
+  n      : uint;
   oracle : Oracle;
 }
 

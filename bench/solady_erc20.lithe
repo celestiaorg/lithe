@@ -18,21 +18,21 @@ error Permit2AllowanceIsFixedAtInfinity;
 
 event Transfer of record {
   indexed from : address;
-  indexed to : address;
-  amount : uint;
+  indexed to   : address;
+  amount       : uint;
 }
 
 event Approval of record {
-  indexed owner : address;
+  indexed owner   : address;
   indexed spender : address;
-  amount : uint;
+  amount          : uint;
 }
 
 storage is record {
   totalSupply : uint;
-  balances : map(address, uint);
-  allowances : map(address, map(address, uint));
-  nonces : map(address, uint);
+  balances    : map(address, uint);
+  allowances  : map(address, map(address, uint));
+  nonces      : map(address, uint);
 }
 
 (* Permit2 may always spend, and its allowance is fixed at the maximum. *)

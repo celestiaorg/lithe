@@ -14,9 +14,9 @@ error ERC721InvalidOwner of address;
 error ERC721NonexistentToken of uint;
 
 error ERC721IncorrectOwner of record {
-  sender : address;
+  sender  : address;
   tokenId : uint;
-  owner : address;
+  owner   : address;
 }
 
 error ERC721InvalidSender of address;
@@ -25,7 +25,7 @@ error ERC721InvalidReceiver of address;
 
 error ERC721InsufficientApproval of record {
   operator : address;
-  tokenId : uint;
+  tokenId  : uint;
 }
 
 error ERC721InvalidApprover of address;
@@ -34,30 +34,30 @@ error ERC721InvalidOperator of address;
 
 module ERC721 is {
   storage erc721 at "openzeppelin.storage.ERC721" is record {
-    name : string;
-    symbol : string;
-    owners : map(uint, address);
-    balances : map(address, uint);
-    tokenApprovals : map(uint, address);
+    name              : string;
+    symbol            : string;
+    owners            : map(uint, address);
+    balances          : map(address, uint);
+    tokenApprovals    : map(uint, address);
     operatorApprovals : map(address, map(address, bool));
   }
 
   event Transfer of record {
-    indexed from : address;
-    indexed to : address;
+    indexed from    : address;
+    indexed to      : address;
     indexed tokenId : uint;
   }
 
   event Approval of record {
-    indexed owner : address;
+    indexed owner    : address;
     indexed approved : address;
-    indexed tokenId : uint;
+    indexed tokenId  : uint;
   }
 
   event ApprovalForAll of record {
-    indexed owner : address;
+    indexed owner    : address;
     indexed operator : address;
-    approved : bool;
+    approved         : bool;
   }
 
   function init(const n : string; const s : string) is {

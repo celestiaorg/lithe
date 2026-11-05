@@ -6,7 +6,7 @@ import "std/evm";
 
 error Failed of string;
 error Denied of record {
-  who : address;
+  who    : address;
   reason : string;
 }
 
@@ -15,8 +15,8 @@ immutable is record {
 }
 
 storage is record {
-  paused : bool;
-  limit : uint;
+  paused   : bool;
+  limit    : uint;
   balances : map(address, uint);
 }
 

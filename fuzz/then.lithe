@@ -19,19 +19,19 @@ interface Exchange is {
 
 storage is record {
   status : uint;
-  out : uint;
-  small : uint8;
-  a : uint;
-  b : uint;
-  name : string;
-  steps : uint;
-  paid : uint;
-  seen : map(address, uint);
+  out    : uint;
+  small  : uint8;
+  a      : uint;
+  b      : uint;
+  name   : string;
+  steps  : uint;
+  paid   : uint;
+  seen   : map(address, uint);
 }
 
 event Executed of record {
   indexed who : address;
-  amountOut : uint;
+  amountOut   : uint;
 }
 
 external function execute(const ex : Exchange; const amount : uint)

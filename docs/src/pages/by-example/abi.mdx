@@ -57,7 +57,7 @@ A tuple of type names decodes one value of each, as Solidity's `abi.decode(data,
 import "std/abi";
 
 type Order is record {
-  id : uint;
+  id   : uint;
   note : string;
   legs : list(uint);
 }
@@ -65,9 +65,9 @@ type Order is record {
 type Orders is list(Order);
 
 type Transfer is record {
-  to : address;
+  to     : address;
   amount : uint;
-  memo : string;
+  memo   : string;
 }
 
 storage is record {

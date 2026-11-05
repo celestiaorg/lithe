@@ -8,7 +8,7 @@ use Votes exposing ITally;
 module Tally(K : MapKey) is {
   type Self is record {
     counts : map(K, uint);
-    total : uint;
+    total  : uint;
   }
 
   view function count(storage tally : Self; const key : K) : uint is

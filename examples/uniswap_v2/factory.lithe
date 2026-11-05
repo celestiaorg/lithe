@@ -13,10 +13,10 @@ import "std/utils/create2";
 
 contract UniswapV2Factory is {
   storage is record {
-    feeTo : address;
+    feeTo       : address;
     feeToSetter : address;
-    pairs : map(address, map(address, address));
-    allPairs : list(address);
+    pairs       : map(address, map(address, address));
+    allPairs    : list(address);
   }
 
   error IdenticalAddresses;
@@ -27,8 +27,8 @@ contract UniswapV2Factory is {
   event PairCreated of record {
     indexed token0 : address;
     indexed token1 : address;
-    pair : address;
-    length : uint;
+    pair           : address;
+    length         : uint;
   }
 
   deploy(const feeToSetter : address) is {

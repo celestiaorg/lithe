@@ -6,7 +6,7 @@ error NotOwner;
 error Closed;
 
 storage is record {
-  open : bool;
+  open  : bool;
   owner : address;
 }
 

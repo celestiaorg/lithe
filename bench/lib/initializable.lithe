@@ -5,7 +5,7 @@ error InvalidInitialization;
 
 module Initializable is {
   storage initializable at "openzeppelin.storage.Initializable" is record {
-    initialized : uint64;
+    initialized  : uint64;
     initializing : bool;
   }
 

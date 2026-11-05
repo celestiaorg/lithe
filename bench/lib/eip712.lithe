@@ -8,21 +8,21 @@ import "std/crypto";
 import "std/evm";
 
 type Domain is record {
-  fields : bytes1;
-  name : string;
-  version : string;
-  chainId : uint;
+  fields            : bytes1;
+  name              : string;
+  version           : string;
+  chainId           : uint;
   verifyingContract : address;
-  salt : bytes32;
-  extensions : list(uint);
+  salt              : bytes32;
+  extensions        : list(uint);
 }
 
 module EIP712 is {
   storage eip712 at "openzeppelin.storage.EIP712" is record {
-    hashedName : bytes32;
+    hashedName    : bytes32;
     hashedVersion : bytes32;
-    name : string;
-    version : string;
+    name          : string;
+    version       : string;
   }
 
   function init(const name : string; const version : string) is {

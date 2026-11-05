@@ -55,7 +55,7 @@ import "std/evm";
 
 storage is record {
   deadline : timestamp;
-  period : uint;
+  period   : uint;
 }
 
 external function start() is {
@@ -71,9 +71,9 @@ A `0x...` literal can be an integer, an `address`, a `bytesN`, or `bytes`, depen
 ```lithe
 storage is record {
   selector : bytes4;
-  blob : bytes;
-  owner : address;
-  mask : uint;
+  blob     : bytes;
+  owner    : address;
+  mask     : uint;
 }
 
 external function set() is {
@@ -118,7 +118,7 @@ Any other escape is an error. For bytes above `7f` that aren't UTF-8, use a hex 
 
 ```lithe
 type Payment is record {
-  to : address;
+  to     : address;
   amount : uint;
 }
 

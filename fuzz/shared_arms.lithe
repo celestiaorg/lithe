@@ -12,14 +12,14 @@ interface Echo is {
 }
 
 storage is record {
-  n : uint;
+  n    : uint;
   last : uint;
   seen : map(address, uint);
 }
 
 event Retried of record {
   indexed to : address;
-  x : uint;
+  x          : uint;
 }
 
 external function retry(const to : Echo; const x : uint)

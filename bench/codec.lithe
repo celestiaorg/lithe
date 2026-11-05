@@ -6,7 +6,7 @@ import "std/abi";
 import "std/crypto";
 
 type Order is record {
-  id : uint;
+  id   : uint;
   note : string;
   legs : list(uint);
 }
@@ -16,9 +16,9 @@ type Grid is list(list(uint));
 
 (* Several values decoded at once, returned as several results. *)
 type Flat is record {
-  who : address;
+  who    : address;
   amount : uint;
-  memo : string;
+  memo   : string;
 }
 
 interface Book is {
@@ -26,7 +26,7 @@ interface Book is {
 }
 
 storage is record {
-  seen : uint;
+  seen   : uint;
   digest : bytes32;
 }
 

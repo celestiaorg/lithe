@@ -5,10 +5,10 @@ import "std/list";
 
 storage is record {
   balances : map(address, uint);
-  echo : uint;
-  ids : list(address);
-  slots : list(uint, 4);
-  admin : option(address);
+  echo     : uint;
+  ids      : list(address);
+  slots    : list(uint, 4);
+  admin    : option(address);
 }
 
 external function deposit(const amount : uint) is {

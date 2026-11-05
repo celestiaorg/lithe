@@ -7,17 +7,17 @@
 import "std/evm";
 
 type Inner is record {
-  flag : bool;
+  flag  : bool;
   delta : int16;
 }
 
 type Order is record {
   status : uint8;
-  owner : address;
+  owner  : address;
   amount : uint;
-  small : uint32;
-  inner : Inner;
-  last : uint64;
+  small  : uint32;
+  inner  : Inner;
+  last   : uint64;
 }
 
 type Pair is record {
@@ -33,15 +33,15 @@ interface Oracle is {
 
 event Placed of record {
   indexed id : uint;
-  amount : uint;
-  status : uint8;
+  amount     : uint;
+  status     : uint8;
 }
 
 storage is record {
-  count : uint;
+  count  : uint;
   orders : map(uint, Order);
-  pairs : map(address, map(uint, Pair));
-  tail : uint8;
+  pairs  : map(address, map(uint, Pair));
+  tail   : uint8;
 }
 
 external function place(const id : uint; const amount : uint; const small : uint32; const delta : int16) is {

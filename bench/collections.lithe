@@ -5,7 +5,7 @@ import "std/collections/queue";
 import "std/collections/map_enumerable";
 
 storage is record {
-  pending : Queue(address);
+  pending  : Queue(address);
   balances : MapEnumerable(address, uint);
 }
 

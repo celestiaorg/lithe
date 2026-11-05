@@ -18,7 +18,7 @@ type TokenId is uint;
 type OrderId is bytes32;
 
 storage is record {
-  fee : BasisPoints;
+  fee    : BasisPoints;
   owners : map(TokenId, address);
 }
 

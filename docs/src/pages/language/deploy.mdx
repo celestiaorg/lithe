@@ -11,13 +11,13 @@ A `deploy` declaration runs once, when the contract is created. It plays the par
 error FeeTooHigh of uint;
 
 storage is record {
-  owner : address;
+  owner  : address;
   feeBps : uint;
 }
 
 event Configured of record {
   indexed owner : address;
-  feeBps : uint;
+  feeBps        : uint;
 }
 
 deploy(const owner : address; const feeBps : uint)
@@ -104,7 +104,7 @@ error NotOwner;
 
 storage is record {
   owner : address;
-  cap : uint;
+  cap   : uint;
 }
 
 upgrade guard is {

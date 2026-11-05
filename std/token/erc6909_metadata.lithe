@@ -11,8 +11,8 @@ module ERC6909Metadata is {
   requires ERC6909;
 
   type TokenMetadata is record {
-    name : string;
-    symbol : string;
+    name     : string;
+    symbol   : string;
     decimals : uint8;
   }
 
@@ -22,16 +22,16 @@ module ERC6909Metadata is {
 
   event ERC6909NameUpdated of record {
     indexed id : uint;
-    newName : string;
+    newName    : string;
   }
 
   event ERC6909SymbolUpdated of record {
     indexed id : uint;
-    newSymbol : string;
+    newSymbol  : string;
   }
 
   event ERC6909DecimalsUpdated of record {
-    indexed id : uint;
+    indexed id  : uint;
     newDecimals : uint8;
   }
 

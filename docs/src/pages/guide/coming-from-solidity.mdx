@@ -38,12 +38,12 @@ import "std/evm";
 
 error Insufficient of record {
   available : wei;
-  required : wei;
+  required  : wei;
 }
 
 event Withdrawn of record {
   indexed who : address;
-  amount : wei;
+  amount      : wei;
 }
 
 storage is record {

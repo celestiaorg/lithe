@@ -20,23 +20,23 @@ error AlreadyExecuted of uint;
 error AlreadyConfirmed of uint;
 error NotConfirmed of uint;
 error NotEnoughConfirmations of record {
-  id : uint;
+  id            : uint;
   confirmations : uint;
 }
 
 event Submitted of record {
   indexed id : uint;
   indexed to : address;
-  value : wei;
+  value      : wei;
 }
 
 event Confirmed of record {
-  indexed id : uint;
+  indexed id    : uint;
   indexed owner : address;
 }
 
 event Revoked of record {
-  indexed id : uint;
+  indexed id    : uint;
   indexed owner : address;
 }
 
@@ -45,17 +45,17 @@ event Executed of record {
 }
 
 type Payment is record {
-  to : address;
-  value : wei;
-  executed : bool;
+  to            : address;
+  value         : wei;
+  executed      : bool;
   confirmations : uint;
 }
 
 storage is record {
-  isOwner : map(address, bool);
+  isOwner   : map(address, bool);
   threshold : uint;
-  count : uint;
-  payments : map(uint, Payment);
+  count     : uint;
+  payments  : map(uint, Payment);
   confirmed : map(uint, map(address, bool));
 }
 

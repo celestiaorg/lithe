@@ -10,13 +10,13 @@ error Nobody;
 
 event Sent of record {
   indexed to : address;
-  amount : uint;
+  amount     : uint;
 }
 
 storage is record {
   balances : map(address, uint);
-  owners : list(address);
-  isOwner : map(address, bool);
+  owners   : list(address);
+  isOwner  : map(address, bool);
 }
 
 external pure function sum(const xs : list(uint)) : uint is {

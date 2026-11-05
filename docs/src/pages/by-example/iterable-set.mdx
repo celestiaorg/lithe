@@ -17,8 +17,8 @@ import "std/evm";
 error OutOfRange of uint;
 
 storage is record {
-  members : list(address);
-  count : uint;
+  members   : list(address);
+  count     : uint;
   (* index + 1, so that 0 means absent *)
   positions : map(address, uint);
 }

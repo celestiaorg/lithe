@@ -23,20 +23,20 @@ error TransferToNonERC721ReceiverImplementer;
 
 event Transfer of record {
   indexed from : address;
-  indexed to : address;
-  indexed id : uint;
+  indexed to   : address;
+  indexed id   : uint;
 }
 
 event Approval of record {
-  indexed owner : address;
+  indexed owner   : address;
   indexed account : address;
-  indexed id : uint;
+  indexed id      : uint;
 }
 
 event ApprovalForAll of record {
-  indexed owner : address;
+  indexed owner    : address;
   indexed operator : address;
-  isApproved : bool;
+  isApproved       : bool;
 }
 
 interface IERC721 is {
@@ -62,13 +62,13 @@ interface ERC721Receiver is {
 }
 
 type Token is record {
-  owner : address;
+  owner    : address;
   approved : address;
 }
 
 storage is record {
-  tokens : map(uint, Token);
-  balances : map(address, uint);
+  tokens    : map(uint, Token);
+  balances  : map(address, uint);
   operators : map(address, map(address, bool));
 }
 

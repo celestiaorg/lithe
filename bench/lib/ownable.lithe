@@ -14,7 +14,7 @@ module Ownable is {
 
   event OwnershipTransferred of record {
     indexed previousOwner : address;
-    indexed newOwner : address;
+    indexed newOwner      : address;
   }
 
   external view function owner() : address is

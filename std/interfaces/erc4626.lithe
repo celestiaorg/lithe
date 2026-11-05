@@ -8,26 +8,26 @@ import "std/interfaces/erc20";
 
 error ERC4626ExceededMaxDeposit of record {
   receiver : address;
-  assets : uint;
-  max : uint;
+  assets   : uint;
+  max      : uint;
 }
 
 error ERC4626ExceededMaxMint of record {
   receiver : address;
-  shares : uint;
-  max : uint;
+  shares   : uint;
+  max      : uint;
 }
 
 error ERC4626ExceededMaxWithdraw of record {
-  owner : address;
+  owner  : address;
   assets : uint;
-  max : uint;
+  max    : uint;
 }
 
 error ERC4626ExceededMaxRedeem of record {
-  owner : address;
+  owner  : address;
   shares : uint;
-  max : uint;
+  max    : uint;
 }
 
 interface IERC4626 is {

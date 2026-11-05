@@ -17,8 +17,8 @@ interface Sink is {
 
 storage is record {
   owner : address;
-  last : uint;
-  sent : wei;
+  last  : uint;
+  sent  : wei;
   calls : uint;
 }
 

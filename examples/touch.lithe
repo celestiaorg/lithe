@@ -6,7 +6,7 @@ error NotGuard;
 
 storage is record {
   updated : timestamp;
-  guard : address;
+  guard   : address;
 }
 
 external function touch()

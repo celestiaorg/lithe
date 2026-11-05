@@ -1,14 +1,14 @@
 (* Fuzz target: arithmetic on every width with caller-chosen operands. *)
 
 storage is record {
-  a8 : uint8;
-  i8 : int8;
+  a8  : uint8;
+  i8  : int8;
   i16 : int16;
-  n : uint;
-  z : int;
+  n   : uint;
+  z   : int;
   u32 : uint32;
-  b : bool;
-  c : bool;
+  b   : bool;
+  c   : bool;
 }
 
 external function add8(const x : uint8; const y : uint8) is { storage.a8 := x + y; }

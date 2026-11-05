@@ -4,12 +4,12 @@ import "std/list";
 
 storage is record {
   saved : list(uint);
-  tags : list(bytes4);
+  tags  : list(bytes4);
 }
 
 event Batch of record {
   indexed who : address;
-  ids : list(uint);
+  ids         : list(uint);
 }
 
 external function save(const xs : list(uint)) is {

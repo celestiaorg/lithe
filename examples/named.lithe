@@ -1,13 +1,13 @@
 (* Two ERC-7201 domains. Each field lives at the domain root plus its offset. *)
 
 storage settings at "example.settings" is record {
-  fee : uint;
+  fee    : uint;
   paused : bool;
 }
 
 storage treasury at "example.treasury" is record {
   recipient : address;
-  saved : wei;
+  saved     : wei;
 }
 
 external function configure(const fee : uint; const recipient : address) is {

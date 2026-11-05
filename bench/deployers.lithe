@@ -10,7 +10,7 @@ import "std/utils/create3";
 
 contract Deployers is {
   storage is record {
-    last : address;
+    last    : address;
     pointer : address;
   }
 

@@ -2,13 +2,13 @@
    field in use: name, version, chain id, verifying contract, then salt. *)
 
 type EIP712Domain is record {
-  fields : bytes1;
-  name : string;
-  version : string;
-  chainId : uint;
+  fields            : bytes1;
+  name              : string;
+  version           : string;
+  chainId           : uint;
   verifyingContract : address;
-  salt : bytes32;
-  extensions : list(uint);
+  salt              : bytes32;
+  extensions        : list(uint);
 }
 
 interface IERC5267 is {

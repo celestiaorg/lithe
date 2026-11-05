@@ -13,8 +13,8 @@ interface Echo is {
 type Nums is list(uint);
 
 storage is record {
-  got : list(uint);
-  kept : list(address);
+  got   : list(uint);
+  kept  : list(address);
   label : string;
   total : uint;
 }

@@ -8,11 +8,11 @@ error Refused of uint;
 
 storage is record {
   lastOperator : address;
-  lastFrom : address;
-  lastToken : uint;
-  lastData : bytes;
-  calls : uint;
-  mode : uint;
+  lastFrom     : address;
+  lastToken    : uint;
+  lastData     : bytes;
+  calls        : uint;
+  mode         : uint;
 }
 
 external function setMode(const m : uint) is {

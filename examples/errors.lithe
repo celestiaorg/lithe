@@ -5,9 +5,9 @@ type Trait is string;
 
 error UnknownTrait of Trait;
 error AttributeNotFound of record {
-  tokenId : uint;
+  tokenId   : uint;
   traitType : string;
-  known : list(uint);
+  known     : list(uint);
 }
 
 storage is record {

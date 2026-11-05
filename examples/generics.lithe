@@ -15,9 +15,9 @@ type AddressSet is Set(address);
 type Cursor is SetEnumerable(address).Iterator;
 
 storage is record {
-  admins : AddressSet;
+  admins     : AddressSet;
   validators : SetEnumerable(address);
-  orders : Set(OrderId);
+  orders     : Set(OrderId);
 }
 
 pure function identity(T)(const value : T) : T is

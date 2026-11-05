@@ -16,10 +16,10 @@ module ERC721Enumerable is {
   requires ERC721;
 
   storage erc721Enumerable at "openzeppelin.storage.ERC721Enumerable" is record {
-    ownedTokens : map(address, map(uint, uint));
+    ownedTokens      : map(address, map(uint, uint));
     ownedTokensIndex : map(uint, uint);
-    allTokens : list(uint);
-    allTokensIndex : map(uint, uint);
+    allTokens        : list(uint);
+    allTokensIndex   : map(uint, uint);
   }
 
   external view function totalSupply() : uint is

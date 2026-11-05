@@ -11,15 +11,15 @@ interface Roy is {
 type Kind is BUY | SELL
 
 type Order is record {
-  kind : Kind;
+  kind   : Kind;
   filled : uint;
 }
 
 storage s at "t" is record {
   orders : map(uint, Order);
-  fee : uint16;
-  who : address;
-  tok : address;
+  fee    : uint16;
+  who    : address;
+  tok    : address;
 }
 
 event Fee of record {

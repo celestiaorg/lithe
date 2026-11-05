@@ -7,8 +7,8 @@ type Shares is uint;
 
 storage is record {
   balances : map(address, uint);
-  staked : map(address, uint);
-  total : uint;
+  staked   : map(address, uint);
+  total    : uint;
 }
 
 pure function fee(const amount : uint) : uint is

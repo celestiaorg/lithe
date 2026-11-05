@@ -96,8 +96,8 @@ A record is a struct: a fixed set of named, typed fields.
 import "std/evm";
 
 type Position is record {
-  owner : address;
-  amount : uint;
+  owner    : address;
+  amount   : uint;
   openedAt : timestamp;
 }
 
@@ -128,12 +128,12 @@ A record is a Solidity struct: wherever it meets the ABI, it is one tuple, with 
 import "std/evm";
 
 type ExactInputSingle is record {
-  tokenIn : address;
-  tokenOut : address;
-  fee : uint24;
-  recipient : address;
-  amountIn : uint;
-  amountOutMinimum : uint;
+  tokenIn           : address;
+  tokenOut          : address;
+  fee               : uint24;
+  recipient         : address;
+  amountIn          : uint;
+  amountOutMinimum  : uint;
   sqrtPriceLimitX96 : uint160;
 }
 
@@ -143,8 +143,8 @@ interface SwapRouter is {
 
 storage is record {
   router : SwapRouter;
-  weth : address;
-  usdc : address;
+  weth   : address;
+  usdc   : address;
 }
 
 external function buy(const amount : uint; const least : uint) is {
@@ -166,9 +166,9 @@ external function buy(const amount : uint; const least : uint) is {
 import "std/evm";
 
 type Domain is record {
-  fields : bytes1;
-  name : string;
-  chainId : uint;
+  fields     : bytes1;
+  name       : string;
+  chainId    : uint;
   extensions : list(uint);
 }
 
@@ -216,7 +216,7 @@ import "std/list";
 
 storage is record {
   history : list(uint);
-  top3 : list(address, 3);
+  top3    : list(address, 3);
 }
 
 external function push(const value : uint) is {
@@ -247,7 +247,7 @@ import "std/evm";
 import "std/list";
 
 type Checkpoint is record {
-  key : uint48;
+  key   : uint48;
   value : uint208;
 }
 
@@ -301,7 +301,7 @@ external pure function pair(const a : uint; const b : uint) : list(uint) is {
 
 ```lithe fragment
 storage is record {
-  balances : map(address, uint);
+  balances   : map(address, uint);
   allowances : map(address, map(address, uint));
 }
 
@@ -316,11 +316,11 @@ import "std/list";
 
 type Role is record {
   members : map(address, bool);
-  admin : bytes32;
+  admin   : bytes32;
 }
 
 storage is record {
-  roles : map(bytes32, Role);
+  roles    : map(bytes32, Role);
   deposits : map(address, list(uint));
 }
 
@@ -461,7 +461,7 @@ import "std/evm";
 
 type Fill is record {
   amountOut : uint;
-  at : uint64;
+  at        : uint64;
 }
 
 type OrderStatus is
@@ -471,7 +471,7 @@ type OrderStatus is
   | Unwound
 
 type Order is record {
-  owner : address;
+  owner  : address;
   status : OrderStatus;
 }
 
@@ -527,7 +527,7 @@ An arm binds a record payload whole in parentheses, `| Filled(f) -> f.amountOut`
 ```lithe
 type Fill is record {
   amountOut : uint;
-  at : uint64;
+  at        : uint64;
 }
 
 type Status is
@@ -590,7 +590,7 @@ A variant with payloads is one ABI tuple, `(uint8 tag, bytes payload)`, Solidity
 ```lithe
 type Fill is record {
   amountOut : uint;
-  at : uint64;
+  at        : uint64;
 }
 
 type OrderStatus is
@@ -601,7 +601,7 @@ type OrderStatus is
 
 event StatusChanged of record {
   indexed id : uint;
-  status : OrderStatus;
+  status     : OrderStatus;
 }
 
 storage is record {

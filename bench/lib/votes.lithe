@@ -16,14 +16,14 @@ import "./nonces";
 
 error ERC20ExceededSafeSupply of record {
   increasedSupply : uint;
-  cap : uint;
+  cap             : uint;
 }
 
 error ERC6372InconsistentClock;
 
 error ERC5805FutureLookup of record {
   timepoint : uint;
-  clock : uint48;
+  clock     : uint48;
 }
 
 error VotesExpiredSignature of uint;
@@ -32,21 +32,21 @@ module ERC20Votes is {
   requires ERC20, EIP712, Nonces;
 
   storage votes at "openzeppelin.storage.Votes" is record {
-    delegatee : map(address, address);
+    delegatee           : map(address, address);
     delegateCheckpoints : map(address, Trace);
-    totalCheckpoints : Trace;
+    totalCheckpoints    : Trace;
   }
 
   event DelegateChanged of record {
-    indexed delegator : address;
+    indexed delegator    : address;
     indexed fromDelegate : address;
-    indexed toDelegate : address;
+    indexed toDelegate   : address;
   }
 
   event DelegateVotesChanged of record {
     indexed delegate : address;
-    previousVotes : uint;
-    newVotes : uint;
+    previousVotes    : uint;
+    newVotes         : uint;
   }
 
   view function timepoint() : uint48 is

@@ -8,12 +8,12 @@ import "std/uint";
 
 module Math is {
   error MathInvalidRange of record {
-    low : uint;
+    low  : uint;
     high : uint;
   }
 
   error MathInvalidSignedRange of record {
-    low : int;
+    low  : int;
     high : int;
   }
 

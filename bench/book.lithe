@@ -4,7 +4,7 @@
 import "std/list";
 
 type Order is record {
-  id : uint;
+  id   : uint;
   note : string;
   legs : list(uint);
 }
@@ -12,7 +12,7 @@ type Order is record {
 error Rejected of uint;
 
 storage is record {
-  notes : map(uint, string);
+  notes  : map(uint, string);
   placed : uint;
 }
 

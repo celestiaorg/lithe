@@ -26,12 +26,12 @@ import "std/evm";
 
 error InsufficientBalance of record {
   available : wei;
-  required : wei;
+  required  : wei;
 }
 
 event Withdrawn of record {
   indexed account : address;
-  amount : wei;
+  amount          : wei;
 }
 
 storage is record {

@@ -10,12 +10,12 @@ type Notes is list(string);
 
 storage is record {
   notes : list(string);
-  byId : map(uint, string);
+  byId  : map(uint, string);
 }
 
 event Noted of record {
   indexed who : address;
-  notes : list(string);
+  notes       : list(string);
 }
 
 external function setNotes(const xs : list(string)) is {

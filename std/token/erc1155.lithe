@@ -28,31 +28,31 @@ import "std/interfaces/erc1155";
 
 module ERC1155 is {
   storage erc1155 at "lithe.std.erc1155" is record {
-    balances : map(uint, map(address, uint));
+    balances          : map(uint, map(address, uint));
     operatorApprovals : map(address, map(address, bool));
-    uri : string;
+    uri               : string;
   }
 
   event TransferSingle of record {
     indexed operator : address;
-    indexed from : address;
-    indexed to : address;
-    id : uint;
-    value : uint;
+    indexed from     : address;
+    indexed to       : address;
+    id               : uint;
+    value            : uint;
   }
 
   event TransferBatch of record {
     indexed operator : address;
-    indexed from : address;
-    indexed to : address;
-    ids : list(uint);
-    values : list(uint);
+    indexed from     : address;
+    indexed to       : address;
+    ids              : list(uint);
+    values           : list(uint);
   }
 
   event ApprovalForAll of record {
-    indexed account : address;
+    indexed account  : address;
     indexed operator : address;
-    approved : bool;
+    approved         : bool;
   }
 
   hook beforeTransfer(const from : address; const to : address; const ids : list(uint); const values : list(uint));

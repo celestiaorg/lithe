@@ -26,9 +26,9 @@ error Stale of bytes32;
 
 event Queued of record {
   indexed id : bytes32;
-  to : address;
-  value : wei;
-  eta : timestamp;
+  to         : address;
+  value      : wei;
+  eta        : timestamp;
 }
 
 event Executed of record {
@@ -40,7 +40,7 @@ event Cancelled of record {
 }
 
 storage is record {
-  admin : address;
+  admin  : address;
   queued : map(bytes32, bool);
 }
 

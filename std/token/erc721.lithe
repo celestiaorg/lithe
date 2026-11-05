@@ -32,33 +32,33 @@ import "std/interfaces/erc721";
 
 module ERC721 is {
   immutable erc721Metadata at "lithe.std.erc721.metadata" is record {
-    name : string;
+    name   : string;
     symbol : string;
   }
 
   storage erc721 at "lithe.std.erc721" is record {
-    owners : map(uint, address);
-    balances : map(address, uint);
-    tokenApprovals : map(uint, address);
+    owners            : map(uint, address);
+    balances          : map(address, uint);
+    tokenApprovals    : map(uint, address);
     operatorApprovals : map(address, map(address, bool));
   }
 
   event Transfer of record {
-    indexed from : address;
-    indexed to : address;
+    indexed from    : address;
+    indexed to      : address;
     indexed tokenId : uint;
   }
 
   event Approval of record {
-    indexed owner : address;
+    indexed owner    : address;
     indexed approved : address;
-    indexed tokenId : uint;
+    indexed tokenId  : uint;
   }
 
   event ApprovalForAll of record {
-    indexed owner : address;
+    indexed owner    : address;
     indexed operator : address;
-    approved : bool;
+    approved         : bool;
   }
 
   hook beforeTransfer(const to : address; const tokenId : uint; const auth : address);

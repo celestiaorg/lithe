@@ -12,7 +12,7 @@ A record is a struct. Record literals use `{ field = value; }`, and stored recor
 
 type Todo is record {
   priority : uint8;
-  done : bool;
+  done     : bool;
 }
 
 type Point is record {
@@ -21,8 +21,8 @@ type Point is record {
 }
 
 storage is record {
-  todos : map(uint, Todo);
-  count : uint;
+  todos  : map(uint, Todo);
+  count  : uint;
   origin : Point;
 }
 

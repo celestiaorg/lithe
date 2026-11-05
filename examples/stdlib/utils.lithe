@@ -26,14 +26,14 @@ contract Utils is {
   use EIP712 exposing IERC5267;
 
   storage is record {
-    claimed : Bitmap;
-    history : Trace;
-    pending : Queue(address);
-    members : Set(address);
-    listed : SetEnumerable(address);
+    claimed  : Bitmap;
+    history  : Trace;
+    pending  : Queue(address);
+    members  : Set(address);
+    listed   : SetEnumerable(address);
     balances : MapEnumerable(address, uint);
-    tags : MapEnumerable(bytes4, address);
-    flags : Bitmap;
+    tags     : MapEnumerable(bytes4, address);
+    flags    : Bitmap;
   }
 
   deploy() is {

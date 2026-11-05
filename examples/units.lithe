@@ -3,10 +3,10 @@
 import "std/evm";
 
 storage is record {
-  price : wei;
-  wait : uint;
+  price    : wei;
+  wait     : uint;
   unlockAt : timestamp;
-  elapsed : uint;
+  elapsed  : uint;
 }
 
 external function set() is {

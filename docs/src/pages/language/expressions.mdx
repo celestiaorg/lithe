@@ -77,8 +77,8 @@ Shifts do not overflow. Bits shifted past a type's width are dropped, so for a `
 import "std/uint";
 
 storage is record {
-  q : uint;
-  r : uint;
+  q      : uint;
+  r      : uint;
   masked : uint;
   narrow : uint8;
 }
@@ -137,7 +137,7 @@ error Shut;
 
 storage is record {
   phase : Phase;
-  fee : uint;
+  fee   : uint;
 }
 
 external view function fee() : uint raises Shut is

@@ -14,21 +14,21 @@ import "std/int";
 import "std/uint";
 
 storage is record {
-  flag : bool;
+  flag     : bool;
   (* `uint` is uint256, `int` is int256. *)
-  amount : uint;
-  delta : int;
+  amount   : uint;
+  delta    : int;
   (* Fixed widths are distinct types, from 8 to 256 bits. *)
-  small : uint8;
-  offset : int16;
-  owner : address;
+  small    : uint8;
+  offset   : int16;
+  owner    : address;
   (* Fixed-size and dynamic byte strings. *)
-  tag : bytes4;
-  hash : bytes32;
-  blob : bytes;
-  name : string;
+  tag      : bytes4;
+  hash     : bytes32;
+  blob     : bytes;
+  name     : string;
   (* Semantic types: both are uint256 in the ABI, but neither mixes with `uint`. *)
-  price : wei;
+  price    : wei;
   deadline : timestamp;
 }
 

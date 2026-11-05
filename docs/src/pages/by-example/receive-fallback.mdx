@@ -15,18 +15,18 @@ import "std/evm";
 
 event Received of record {
   indexed from : address;
-  amount : wei;
+  amount       : wei;
 }
 
 event Unknown of record {
   indexed selector : bytes4;
-  data : bytes;
+  data             : bytes;
 }
 
 error NotOwner;
 
 storage is record {
-  owner : address;
+  owner    : address;
   received : wei;
 }
 
@@ -74,7 +74,7 @@ error NotAdmin;
 
 storage proxy at "example.proxy" is record {
   implementation : address;
-  admin : address;
+  admin          : address;
 }
 
 deploy(const implementation : address; const admin : address) is {

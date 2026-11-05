@@ -33,23 +33,23 @@ type Payout is
   | Split of (address, uint16)
 
 immutable is record {
-  feeBps : uint16;
-  skew : int8;
-  live : bool;
-  owner : address;
-  oracle : Oracle;
-  tag : bytes4;
+  feeBps  : uint16;
+  skew    : int8;
+  live    : bool;
+  owner   : address;
+  oracle  : Oracle;
+  tag     : bytes4;
   minimum : wei;
-  opened : timestamp;
-  tier : Tier;
-  limits : Limits;
-  pair : (uint8, address);
-  cap : option(uint);
-  payout : Payout;
+  opened  : timestamp;
+  tier    : Tier;
+  limits  : Limits;
+  pair    : (uint8, address);
+  cap     : option(uint);
+  payout  : Payout;
   weights : list(uint8, 3);
-  name : string;
-  salt : bytes;
-  admins : list(address);
+  name    : string;
+  salt    : bytes;
+  admins  : list(address);
 }
 
 storage is record {
@@ -185,7 +185,7 @@ error NotOwner;
 
 immutable is record {
   owner : address;
-  name : string;
+  name  : string;
   motto : string;
 }
 

@@ -35,24 +35,24 @@ module ERC4626 is {
   requires ERC20;
 
   immutable erc4626 at "lithe.std.erc4626" is record {
-    asset : IERC20;
-    decimals : uint8;
+    asset         : IERC20;
+    decimals      : uint8;
     virtualShares : uint64;
   }
 
   event Deposit of record {
     indexed sender : address;
-    indexed owner : address;
-    assets : uint;
-    shares : uint;
+    indexed owner  : address;
+    assets         : uint;
+    shares         : uint;
   }
 
   event Withdraw of record {
-    indexed sender : address;
+    indexed sender   : address;
     indexed receiver : address;
-    indexed owner : address;
-    assets : uint;
-    shares : uint;
+    indexed owner    : address;
+    assets           : uint;
+    shares           : uint;
   }
 
   (* Set once, from `deploy` or a migration. `decimals` is the asset's, which

@@ -6,7 +6,7 @@ import "std/evm";
 error Insufficient;
 
 storage is record {
-  total : wei;
+  total    : wei;
   balances : map(address, wei);
 }
 

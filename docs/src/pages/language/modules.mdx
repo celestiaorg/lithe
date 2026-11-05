@@ -21,7 +21,7 @@ module Ownable is {
 
   event OwnershipTransferred of record {
     indexed previous : address;
-    indexed next : address;
+    indexed next     : address;
   }
 
   view function owner() : address is
@@ -802,7 +802,7 @@ import "std/evm";
 
 module Notes is {
   storage notes at "example.notes" is record {
-    ofId : map(uint, uint);
+    ofId  : map(uint, uint);
     owner : address;
   }
 
@@ -885,7 +885,7 @@ contract Gallery is {
 
   storage is record {
     frozen : map(uint, bool);
-    moves : uint;
+    moves  : uint;
   }
 
   error Frozen of uint;

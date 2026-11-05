@@ -14,7 +14,7 @@ A larger continuation example. `executeAndDeposit` swaps, and its continuation d
 
 type SwapResult is record {
   amountOut : uint;
-  fee : uint;
+  fee       : uint;
 }
 
 interface Exchange is {
@@ -30,38 +30,38 @@ type OrderStatus is
   | Unwound
 
 type Order is record {
-  status : OrderStatus;
-  amountIn : uint;
+  status    : OrderStatus;
+  amountIn  : uint;
   amountOut : uint;
-  shares : uint;
+  shares    : uint;
 }
 
 error AlreadyExecuted of uint;
 error NotComplete of uint;
 error TooLittle of record {
   amountOut : uint;
-  floor : uint;
+  floor     : uint;
 }
 
 event Executed of record {
   indexed id : uint;
-  amountOut : uint;
-  fee : uint;
+  amountOut  : uint;
+  fee        : uint;
 }
 
 event Deposited of record {
   indexed id : uint;
-  shares : uint;
+  shares     : uint;
 }
 
 storage is record {
   exchange : Exchange;
-  floor : uint;
+  floor    : uint;
   executed : uint;
   totalOut : uint;
-  left : uint;
-  right : uint;
-  orders : map(uint, Order);
+  left     : uint;
+  right    : uint;
+  orders   : map(uint, Order);
 }
 
 external function init(const exchange : Exchange; const floor : uint) is {

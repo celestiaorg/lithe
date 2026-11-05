@@ -36,26 +36,26 @@ import "std/interfaces/erc20";
 
 module ERC20 is {
   immutable erc20Metadata at "lithe.std.erc20.metadata" is record {
-    name : string;
+    name   : string;
     symbol : string;
   }
 
   storage erc20 at "lithe.std.erc20" is record {
-    balances : map(address, uint);
-    allowances : map(address, map(address, uint));
+    balances    : map(address, uint);
+    allowances  : map(address, map(address, uint));
     totalSupply : uint;
   }
 
   event Transfer of record {
     indexed from : address;
-    indexed to : address;
-    value : uint;
+    indexed to   : address;
+    value        : uint;
   }
 
   event Approval of record {
-    indexed owner : address;
+    indexed owner   : address;
     indexed spender : address;
-    value : uint;
+    value           : uint;
   }
 
   hook beforeTransfer(const from : address; const to : address; const value : uint);

@@ -5,7 +5,7 @@ error Paused;
 
 error InsufficientBalance of record {
   available : uint;
-  required : uint;
+  required  : uint;
 }
 
 error InvalidAmount of uint;
@@ -16,14 +16,14 @@ errors withdrawalErrors is
   | InsufficientBalance
 
 storage is record {
-  owner : address;
-  paused : bool;
+  owner   : address;
+  paused  : bool;
   balance : uint;
 }
 
 event Withdrawal of record {
   account : address;
-  amount : uint;
+  amount  : uint;
 }
 
 view function requireOwner()

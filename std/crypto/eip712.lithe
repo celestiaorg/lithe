@@ -31,14 +31,14 @@ import "std/bytes";
 
 module EIP712 is {
   immutable eip712 at "lithe.std.eip712" is record {
-    hashedName : bytes32;
+    hashedName    : bytes32;
     hashedVersion : bytes32;
-    name : bytes32;
-    version : bytes32;
+    name          : bytes32;
+    version       : bytes32;
   }
 
   type Names is record {
-    name : string;
+    name    : string;
     version : string;
   }
 

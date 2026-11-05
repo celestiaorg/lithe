@@ -17,7 +17,7 @@ import "std/math/math";
 error CheckpointUnorderedInsertion;
 
 type Checkpoint is record {
-  key : uint48;
+  key   : uint48;
   value : uint208;
 }
 

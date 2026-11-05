@@ -5,7 +5,7 @@ import "std/evm";
 
 error TooBig of uint;
 error BadPair of record {
-  left : uint;
+  left  : uint;
   right : uint;
 }
 
@@ -15,28 +15,28 @@ type Point is record {
 }
 
 storage is record {
-  owner : address;
+  owner    : address;
   balances : map(address, uint);
-  allowed : map(uint, bool);
-  ids : list(uint);
-  slots : list(uint, 4);
-  admin : option(address);
-  spot : Point;
-  name : string;
-  blob : bytes;
-  count : uint;
-  pair : (uint, uint);
+  allowed  : map(uint, bool);
+  ids      : list(uint);
+  slots    : list(uint, 4);
+  admin    : option(address);
+  spot     : Point;
+  name     : string;
+  blob     : bytes;
+  count    : uint;
+  pair     : (uint, uint);
 }
 
 event Moved of record {
   indexed who : address;
-  amount : uint;
-  total : uint;
+  amount      : uint;
+  total       : uint;
 }
 
 event Named of record {
   indexed label : string;
-  size : uint;
+  size          : uint;
 }
 
 function bump(const k : uint) : uint is {

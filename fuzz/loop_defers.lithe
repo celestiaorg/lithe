@@ -13,8 +13,8 @@ interface Echo is {
 }
 
 storage is record {
-  n : uint;
-  last : uint;
+  n     : uint;
+  last  : uint;
   total : uint;
 }
 

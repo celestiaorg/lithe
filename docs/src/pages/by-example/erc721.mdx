@@ -22,7 +22,7 @@ error ERC721NonexistentToken of uint;
 error ERC721InvalidReceiver of address;
 error ERC721InsufficientApproval of record {
   operator : address;
-  tokenId : uint;
+  tokenId  : uint;
 }
 error ERC721InvalidSender of address;
 error ERC721InvalidOwner of address;
@@ -30,27 +30,27 @@ error AlreadyMinted of uint;
 error NotMinter of address;
 
 event Transfer of record {
-  indexed from : address;
-  indexed to : address;
+  indexed from    : address;
+  indexed to      : address;
   indexed tokenId : uint;
 }
 
 event Approval of record {
-  indexed owner : address;
+  indexed owner    : address;
   indexed approved : address;
-  indexed tokenId : uint;
+  indexed tokenId  : uint;
 }
 
 event ApprovalForAll of record {
-  indexed owner : address;
+  indexed owner    : address;
   indexed operator : address;
-  approved : bool;
+  approved         : bool;
 }
 
 storage is record {
-  minter : address;
-  owners : map(uint, address);
-  balances : map(address, uint);
+  minter    : address;
+  owners    : map(uint, address);
+  balances  : map(address, uint);
   approvals : map(uint, address);
   operators : map(address, map(address, bool));
 }

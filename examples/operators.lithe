@@ -5,29 +5,29 @@ import "std/int";
 import "std/uint";
 
 storage is record {
-  q : uint;
-  r : uint;
-  sq : int;
-  sr : int;
-  remNat : uint;
-  divInt : int;
-  remInt : int;
-  masked : uint;
-  flags : uint;
-  toggled : uint;
-  inverted : uint;
-  shifted : uint;
-  back : uint;
-  uq : uint32;
-  ur : uint32;
+  q           : uint;
+  r           : uint;
+  sq          : int;
+  sr          : int;
+  remNat      : uint;
+  divInt      : int;
+  remInt      : int;
+  masked      : uint;
+  flags       : uint;
+  toggled     : uint;
+  inverted    : uint;
+  shifted     : uint;
+  back        : uint;
+  uq          : uint32;
+  ur          : uint32;
   narrowShift : uint8;
-  narrowNot : uint8;
-  sar : int;
-  half : uint;
-  rest : uint;
-  pairAmount : uint;
-  nestedFlag : bool;
-  payment : (address, uint);
+  narrowNot   : uint8;
+  sar         : int;
+  half        : uint;
+  rest        : uint;
+  pairAmount  : uint;
+  nestedFlag  : bool;
+  payment     : (address, uint);
 }
 
 view function split(const amount : uint) : (uint, uint) is

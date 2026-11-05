@@ -20,15 +20,15 @@ interface Hook is {
 
 event PayoutFailed of record {
   indexed to : address;
-  amount : wei;
+  amount     : wei;
 }
 
 storage is record {
-  oracle : Oracle;
+  oracle        : Oracle;
   lastGoodPrice : uint;
-  hook : Hook;
-  hookFailures : uint;
-  unpaid : map(address, wei);
+  hook          : Hook;
+  hookFailures  : uint;
+  unpaid        : map(address, wei);
 }
 
 (* A query's outcome is available now, so it matches with an ordinary `case`. *)

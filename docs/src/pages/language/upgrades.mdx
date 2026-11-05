@@ -81,7 +81,7 @@ upgradeable
 error NotOwner;
 
 storage is record {
-  owner : address;
+  owner    : address;
   upgrades : uint;
 }
 
@@ -144,7 +144,7 @@ storage is record {
 }
 
 storage settings at "vault.settings" is record {
-  feeBps : uint;
+  feeBps   : uint;
   treasury : address;
 }
 

@@ -1,13 +1,13 @@
 error FeeTooHigh of uint;
 
 storage is record {
-  owner : address;
+  owner  : address;
   feeBps : uint;
 }
 
 event Configured of record {
   indexed owner : address;
-  feeBps : uint;
+  feeBps        : uint;
 }
 
 deploy(const owner : address; const feeBps : uint)

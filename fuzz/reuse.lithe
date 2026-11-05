@@ -3,13 +3,13 @@
 error Over of uint;
 
 storage is record {
-  owner : address;
+  owner  : address;
   totals : map(address, uint);
-  limit : uint;
-  last : uint;
-  spare : option(uint);
-  pair : (uint, uint);
-  flag : bool;
+  limit  : uint;
+  last   : uint;
+  spare  : option(uint);
+  pair   : (uint, uint);
+  flag   : bool;
 }
 
 pure function clamp(const x : uint; const hi : uint) : uint is {

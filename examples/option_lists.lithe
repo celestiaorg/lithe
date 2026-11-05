@@ -3,11 +3,11 @@
 import "std/list";
 
 storage is record {
-  small : list(option(uint8));
-  wide : list(option(uint));
+  small  : list(option(uint8));
+  wide   : list(option(uint));
   fixed8 : list(option(bool), 3);
-  fixed : list(option(uint), 3);
-  after : uint;
+  fixed  : list(option(uint), 3);
+  after  : uint;
 }
 
 pure function orZero(const o : option(uint)) : uint is

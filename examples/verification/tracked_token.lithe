@@ -21,7 +21,7 @@ contract TrackedToken is {
 
   storage is record {
     owner : address;
-    last : address;
+    last  : address;
     moved : uint;
   }
 

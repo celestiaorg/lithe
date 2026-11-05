@@ -27,7 +27,7 @@ import "std/utils/clones";
 contract Factory is {
   storage is record {
     implementation : address;
-    instances : list(address);
+    instances      : list(address);
   }
 
   external function open() is {
@@ -177,7 +177,7 @@ import "std/utils/checkpoint";
 contract Supply is {
   storage is record {
     history : Trace;
-    total : uint;
+    total   : uint;
   }
 
   external function grow(const amount : uint)

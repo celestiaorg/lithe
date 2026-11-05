@@ -7,7 +7,7 @@ import "std/utils/date_time";
 contract Billing is {
   storage is record {
     started : uint;
-    renews : uint;
+    renews  : uint;
   }
 
   external function startOn(const year : uint; const month : uint; const day : uint) is {

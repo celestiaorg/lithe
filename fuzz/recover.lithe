@@ -13,13 +13,13 @@ interface Ext is {
 }
 
 storage is record {
-  status : uint;
-  out : uint;
+  status   : uint;
+  out      : uint;
   failures : uint;
   notified : bool;
-  price : uint;
-  small : uint8;
-  reason : bytes;
+  price    : uint;
+  small    : uint8;
+  reason   : bytes;
 }
 
 external function execute(const ex : Ext; const amount : uint) is {

@@ -15,7 +15,7 @@ error EnumerableMapNonexistentKey of bytes32;
 
 module MapEnumerable(K : MapKey, V) is {
   type Self is record {
-    keys : SetEnumerable(K);
+    keys   : SetEnumerable(K);
     values : map(K, V);
   }
 

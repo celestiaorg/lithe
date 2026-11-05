@@ -21,7 +21,7 @@ error TooSmall of uint;
 (* Named fields: `InsufficientBalance(uint256 available, uint256 required)` *)
 error InsufficientBalance of record {
   available : uint;
-  required : uint;
+  required  : uint;
 }
 
 (* A named set of errors, for reuse in `raises`. *)
@@ -30,7 +30,7 @@ errors withdrawErrors is
   | InsufficientBalance
 
 storage is record {
-  owner : address;
+  owner    : address;
   balances : map(address, uint);
 }
 

@@ -31,19 +31,19 @@ contract UniswapV2Pair is {
 
   (* One slot, written at once. *)
   type Reserves is record {
-    reserve0 : uint112;
-    reserve1 : uint112;
+    reserve0           : uint112;
+    reserve1           : uint112;
     blockTimestampLast : uint32;
   }
 
   storage is record {
-    factory : IUniswapV2Factory;
-    token0 : Token;
-    token1 : Token;
-    reserves : Reserves;
+    factory              : IUniswapV2Factory;
+    token0               : Token;
+    token1               : Token;
+    reserves             : Reserves;
     price0CumulativeLast : uint;
     price1CumulativeLast : uint;
-    kLast : uint;
+    kLast                : uint;
   }
 
   error Forbidden;
@@ -59,24 +59,24 @@ contract UniswapV2Pair is {
 
   event Mint of record {
     indexed sender : address;
-    amount0 : uint;
-    amount1 : uint;
+    amount0        : uint;
+    amount1        : uint;
   }
 
   event Burn of record {
     indexed sender : address;
-    amount0 : uint;
-    amount1 : uint;
-    indexed to : address;
+    amount0        : uint;
+    amount1        : uint;
+    indexed to     : address;
   }
 
   event Swap of record {
     indexed sender : address;
-    amount0In : uint;
-    amount1In : uint;
-    amount0Out : uint;
-    amount1Out : uint;
-    indexed to : address;
+    amount0In      : uint;
+    amount1In      : uint;
+    amount0Out     : uint;
+    amount1Out     : uint;
+    indexed to     : address;
   }
 
   event Sync of record {

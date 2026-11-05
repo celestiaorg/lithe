@@ -5,25 +5,25 @@ import "std/evm";
 
 type SwapResult is record {
   amountOut : uint;
-  fee : uint;
+  fee       : uint;
 }
 
 error Slippage of record {
   amountOut : uint;
-  minOut : uint;
+  minOut    : uint;
 }
 
 event Swapped of record {
   indexed trader : address;
-  amountIn : uint;
-  amountOut : uint;
+  amountIn       : uint;
+  amountOut      : uint;
 }
 
 storage is record {
-  volume : uint;
-  fees : uint;
+  volume      : uint;
+  fees        : uint;
   totalShares : uint;
-  shares : map(address, uint);
+  shares      : map(address, uint);
 }
 
 external function swap(const amountIn : uint; const minOut : uint) : flat SwapResult

@@ -11,7 +11,7 @@ error NotOwner;
 
 storage is record {
   owner : address;
-  cap : uint;
+  cap   : uint;
 }
 
 upgrade guard is {

@@ -7,10 +7,10 @@ import "std/evm";
 import "std/list";
 
 storage is record {
-  bios : map(address, string);
-  files : map(bytes32, bytes);
+  bios   : map(address, string);
+  files  : map(bytes32, bytes);
   titles : map(address, map(uint, string));
-  log : list(string);
+  log    : list(string);
 }
 
 external function setBio(const bio : string) is {

@@ -12,7 +12,7 @@ event Paid of record {
 
 type Payment is record {
   recipient : address;
-  amount : uint;
+  amount    : uint;
   expiresAt : timestamp;
 }
 

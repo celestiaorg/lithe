@@ -33,7 +33,7 @@ module ERC721URIStorage is {
 
   event BatchMetadataUpdate of record {
     fromTokenId : uint;
-    toTokenId : uint;
+    toTokenId   : uint;
   }
 
   (* ERC-4906's id, which the standard fixes rather than derives from functions. *)

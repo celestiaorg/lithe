@@ -2,7 +2,7 @@
 
 storage is record {
   small : uint8;
-  wide : uint64;
+  wide  : uint64;
   delta : int;
 }
 

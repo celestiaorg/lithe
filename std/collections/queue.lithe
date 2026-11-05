@@ -12,8 +12,8 @@
 module Queue(T) is {
   type Self is record {
     items : map(uint, T);
-    head : uint;
-    tail : uint;
+    head  : uint;
+    tail  : uint;
   }
 
   error QueueEmpty;

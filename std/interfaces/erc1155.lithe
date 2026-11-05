@@ -3,9 +3,9 @@
    so its ERC-165 id is the standard's: `0xd9b67a26` and `0x0e89341c`. *)
 
 error ERC1155InsufficientBalance of record {
-  sender : address;
+  sender  : address;
   balance : uint;
-  needed : uint;
+  needed  : uint;
   tokenId : uint;
 }
 
@@ -15,7 +15,7 @@ error ERC1155InvalidReceiver of address;
 
 error ERC1155MissingApprovalForAll of record {
   operator : address;
-  owner : address;
+  owner    : address;
 }
 
 error ERC1155InvalidApprover of address;
@@ -23,7 +23,7 @@ error ERC1155InvalidApprover of address;
 error ERC1155InvalidOperator of address;
 
 error ERC1155InvalidArrayLength of record {
-  idsLength : uint;
+  idsLength    : uint;
   valuesLength : uint;
 }
 

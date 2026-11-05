@@ -32,7 +32,7 @@ storage is record {
 }
 
 storage settings at "example.upgradeable.settings" is record {
-  fee : uint;
+  fee    : uint;
   paused : bool;
 }
 

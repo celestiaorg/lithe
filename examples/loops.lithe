@@ -10,18 +10,18 @@ interface Exchange is {
 
 event Paid of record {
   indexed to : address;
-  amount : wei;
+  amount     : wei;
 }
 
 storage is record {
-  total : uint;
-  gcd : uint;
-  found : uint;
-  members : list(address);
+  total    : uint;
+  gcd      : uint;
+  found    : uint;
+  members  : list(address);
   isMember : map(address, bool);
   exchange : Exchange;
-  results : map(uint, uint);
-  paid : uint;
+  results  : map(uint, uint);
+  paid     : uint;
 }
 
 (* A range is half-open: 0 <= i < n. *)

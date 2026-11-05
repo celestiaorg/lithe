@@ -8,18 +8,18 @@ type Point is record {
 }
 
 type Slot is record {
-  held : option(uint);
+  held  : option(uint);
   small : option(uint8);
-  n : uint;
+  n     : uint;
 }
 
 storage is record {
-  pos : option(Point);
-  deep : option(option(uint));
+  pos   : option(Point);
+  deep  : option(option(uint));
   deep8 : option(option(uint8));
-  pair : (option(uint), option(address));
-  last : option(uint);
-  flag : bool;
+  pair  : (option(uint), option(address));
+  last  : option(uint);
+  flag  : bool;
 }
 
 pure function bump(const o : option(uint)) : option(uint) is

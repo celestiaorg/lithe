@@ -4,37 +4,37 @@
 import "std/address";
 
 error ERC2981InvalidDefaultRoyalty of record {
-  numerator : uint;
+  numerator   : uint;
   denominator : uint;
 }
 
 error ERC2981InvalidDefaultRoyaltyReceiver of address;
 
 error ERC2981InvalidTokenRoyalty of record {
-  tokenId : uint;
-  numerator : uint;
+  tokenId     : uint;
+  numerator   : uint;
   denominator : uint;
 }
 
 error ERC2981InvalidTokenRoyaltyReceiver of record {
-  tokenId : uint;
+  tokenId  : uint;
   receiver : address;
 }
 
 type RoyaltyQuote is record {
-  receiver : address;
+  receiver      : address;
   royaltyAmount : uint;
 }
 
 module ERC2981 is {
   type RoyaltyInfo is record {
-    receiver : address;
+    receiver        : address;
     royaltyFraction : uint96;
   }
 
   storage erc2981 at "openzeppelin.storage.ERC2981" is record {
     defaultRoyaltyInfo : RoyaltyInfo;
-    tokenRoyaltyInfo : map(uint, RoyaltyInfo);
+    tokenRoyaltyInfo   : map(uint, RoyaltyInfo);
   }
 
   external view function royaltyInfo(const tokenId : uint; const salePrice : uint) : flat RoyaltyQuote is {

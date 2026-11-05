@@ -26,33 +26,33 @@ import "std/uint";
 
 module ERC6909 is {
   storage erc6909 at "lithe.std.erc6909" is record {
-    balances : map(address, map(uint, uint));
+    balances          : map(address, map(uint, uint));
     operatorApprovals : map(address, map(address, bool));
-    allowances : map(address, map(address, map(uint, uint)));
+    allowances        : map(address, map(address, map(uint, uint)));
   }
 
   hook beforeTransfer(const from : address; const to : address; const id : uint; const amount : uint);
   hook afterTransfer(const from : address; const to : address; const id : uint; const amount : uint);
 
   event Transfer of record {
-    caller : address;
-    indexed sender : address;
+    caller           : address;
+    indexed sender   : address;
     indexed receiver : address;
-    indexed id : uint;
-    amount : uint;
+    indexed id       : uint;
+    amount           : uint;
   }
 
   event OperatorSet of record {
-    indexed owner : address;
+    indexed owner   : address;
     indexed spender : address;
-    approved : bool;
+    approved        : bool;
   }
 
   event Approval of record {
-    indexed owner : address;
+    indexed owner   : address;
     indexed spender : address;
-    indexed id : uint;
-    amount : uint;
+    indexed id      : uint;
+    amount          : uint;
   }
 
   (* ERC-6909 and ERC-165 itself. *)

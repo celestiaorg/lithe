@@ -6,7 +6,7 @@ import "std/abi";
 import "std/crypto";
 
 type Order is record {
-  id : uint;
+  id   : uint;
   note : string;
   legs : list(uint);
 }
@@ -15,9 +15,9 @@ type Orders is list(Order);
 type Grid is list(list(uint));
 
 type Transfer is record {
-  to : address;
+  to     : address;
   amount : uint;
-  memo : string;
+  memo   : string;
 }
 
 storage is record {

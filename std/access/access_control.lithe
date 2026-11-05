@@ -24,7 +24,7 @@ import "std/evm";
 type Role is bytes32;
 
 error AccessControlUnauthorizedAccount of record {
-  account : address;
+  account    : address;
   neededRole : bytes32;
 }
 
@@ -33,25 +33,25 @@ error AccessControlBadConfirmation;
 module AccessControl is {
   storage access at "lithe.std.access_control" is record {
     members : map(Role, map(address, bool));
-    admins : map(Role, Role);
+    admins  : map(Role, Role);
   }
 
   event RoleAdminChanged of record {
-    indexed role : bytes32;
+    indexed role              : bytes32;
     indexed previousAdminRole : bytes32;
-    indexed newAdminRole : bytes32;
+    indexed newAdminRole      : bytes32;
   }
 
   event RoleGranted of record {
-    indexed role : bytes32;
+    indexed role    : bytes32;
     indexed account : address;
-    indexed sender : address;
+    indexed sender  : address;
   }
 
   event RoleRevoked of record {
-    indexed role : bytes32;
+    indexed role    : bytes32;
     indexed account : address;
-    indexed sender : address;
+    indexed sender  : address;
   }
 
   const defaultAdminRole : Role := Role(0x0000000000000000000000000000000000000000000000000000000000000000);

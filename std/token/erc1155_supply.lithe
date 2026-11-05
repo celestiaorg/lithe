@@ -17,7 +17,7 @@ module ERC1155Supply is {
   requires ERC1155;
 
   storage erc1155Supply at "lithe.std.erc1155_supply" is record {
-    totalSupply : map(uint, uint);
+    totalSupply    : map(uint, uint);
     totalSupplyAll : uint;
   }
 

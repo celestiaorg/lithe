@@ -3,7 +3,7 @@
 
 error ERC20ExceededCap of record {
   increasedSupply : uint;
-  cap : uint;
+  cap             : uint;
 }
 
 error ERC20InvalidCap of uint;

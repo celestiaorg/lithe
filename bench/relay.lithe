@@ -13,7 +13,7 @@ interface Keeper is {
 
 storage is record {
   names : list(string);
-  kept : list(string);
+  kept  : list(string);
   count : uint;
 }
 

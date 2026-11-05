@@ -110,7 +110,7 @@ The arithmetic operators keep a ledger:
 ```lithe
 storage is record {
   balances : map(address, uint);
-  total : uint;
+  total    : uint;
 }
 
 external function credit(const who : address; const amount : uint) is {
@@ -218,9 +218,9 @@ A `for` loop runs its body once per element of a list, or once per number in a h
 
 ```lithe
 storage is record {
-  owners : list(address, 3);
+  owners  : list(address, 3);
   isOwner : map(address, bool);
-  total : uint;
+  total   : uint;
 }
 
 external function mark() is {

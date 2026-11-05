@@ -11,7 +11,7 @@ interface Vault is {
 }
 
 storage is record {
-  vault : Vault;
+  vault     : Vault;
   forwarded : wei;
 }
 

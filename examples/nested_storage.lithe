@@ -5,18 +5,18 @@
 import "std/list";
 
 type Checkpoint is record {
-  key : uint48;
+  key   : uint48;
   value : uint208;
 }
 
 type Role is record {
   members : map(address, bool);
-  admin : bytes32;
+  admin   : bytes32;
 }
 
 type Card is record {
-  name : string;
-  age : uint8;
+  name  : string;
+  age   : uint8;
   inner : record { bio : string; score : uint16; };
 }
 
@@ -26,13 +26,13 @@ type Account is record {
 }
 
 storage is record {
-  total : list(Checkpoint);
-  history : map(address, list(Checkpoint));
-  roles : map(bytes32, Role);
+  total    : list(Checkpoint);
+  history  : map(address, list(Checkpoint));
+  roles    : map(bytes32, Role);
   accounts : map(uint, Account);
-  counts : map(address, list(uint));
-  fixed : list(Checkpoint, 3);
-  cards : map(uint, Card);
+  counts   : map(address, list(uint));
+  fixed    : list(Checkpoint, 3);
+  cards    : map(uint, Card);
 }
 
 (* The newest value, or zero. *)

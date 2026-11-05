@@ -32,9 +32,9 @@ import "std/address";
 import "std/evm";
 
 type ERC7821Call is record {
-  to : address;
+  to    : address;
   value : uint;
-  data : bytes;
+  data  : bytes;
 }
 
 type ERC7821Calls is list(ERC7821Call);

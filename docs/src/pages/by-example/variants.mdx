@@ -15,7 +15,7 @@ A variant type lists every case a value can take, and each case may carry a payl
 import "std/evm";
 
 type SendParams is record {
-  to : address;
+  to     : address;
   amount : uint;
 }
 
@@ -76,7 +76,7 @@ error NotSettled;
 
 storage is record {
   phase : Phase;
-  bids : map(address, uint);
+  bids  : map(address, uint);
 }
 
 external function bid(const amount : uint) raises NotOpen is {

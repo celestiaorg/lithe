@@ -14,14 +14,14 @@ import "std/evm";
 
 event Transfer of record {
   indexed from : address;
-  indexed to : address;
-  amount : uint;
+  indexed to   : address;
+  amount       : uint;
 }
 
 (* An indexed string or list is logged as its keccak256 hash, as in Solidity. *)
 event Renamed of record {
   indexed name : string;
-  by : address;
+  by           : address;
 }
 
 event Ping of record {}

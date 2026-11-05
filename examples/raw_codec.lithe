@@ -19,14 +19,14 @@ interface Pair is {
 type Reserves is record {
   reserve0 : uint112;
   reserve1 : uint112;
-  last : uint32;
+  last     : uint32;
 }
 
 error TransferRefused;
 
 storage is record {
-  sent : uint;
-  refusals : uint;
+  sent      : uint;
+  refusals  : uint;
   lastError : bytes4;
 }
 

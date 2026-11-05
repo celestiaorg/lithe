@@ -27,11 +27,11 @@ event Refunded of record {
 }
 
 storage is record {
-  buyer : address;
-  seller : address;
+  buyer   : address;
+  seller  : address;
   arbiter : address;
-  amount : wei;
-  funded : bool;
+  amount  : wei;
+  funded  : bool;
 }
 
 external payable function fund(const seller : address; const arbiter : address)

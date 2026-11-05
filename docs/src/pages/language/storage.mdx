@@ -24,9 +24,9 @@ A contract keeps its state in one default storage record. A contract with no sta
 import "std/evm";
 
 storage is record {
-  owner : address;
-  paused : bool;
-  total : uint;
+  owner    : address;
+  paused   : bool;
+  total    : uint;
   balances : map(address, uint);
 }
 
@@ -58,7 +58,7 @@ A named domain has its own ERC-7201 root, derived from its id string:
 
 ```lithe
 storage settings at "vault.settings" is record {
-  feeBps : uint;
+  feeBps   : uint;
   treasury : address;
 }
 
@@ -182,7 +182,7 @@ error FeeTooHigh of uint;
 
 immutable is record {
   factory : address;
-  feeBps : uint16;
+  feeBps  : uint16;
 }
 
 storage is record {
@@ -212,7 +212,7 @@ use Fees;
 
 module Fees is {
   immutable fees at "vault.fees" is record {
-    bps : uint16;
+    bps      : uint16;
     treasury : address;
   }
 
@@ -300,9 +300,9 @@ type Payout is
   | Split of (address, uint16)
 
 immutable is record {
-  name : string;
+  name   : string;
   admins : list(address);
-  cap : option(uint);
+  cap    : option(uint);
   payout : Payout;
 }
 

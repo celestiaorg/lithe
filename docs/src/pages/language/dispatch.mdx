@@ -79,9 +79,9 @@ type Action is
   | User of UserAction
 
 storage is record {
-  owner : address;
-  paused : bool;
-  fee : uint;
+  owner    : address;
+  paused   : bool;
+  fee      : uint;
   deposits : map(address, uint);
 }
 

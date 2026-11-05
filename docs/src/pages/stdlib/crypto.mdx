@@ -192,7 +192,7 @@ import "std/crypto/merkle";
 
 contract Allowlist is {
   storage is record {
-    root : bytes32;
+    root   : bytes32;
     joined : map(address, bool);
   }
 
@@ -245,8 +245,8 @@ contract PasskeyCounter is {
   error NotSigned;
 
   storage is record {
-    x : bytes32;
-    y : bytes32;
+    x     : bytes32;
+    y     : bytes32;
     count : uint;
   }
 

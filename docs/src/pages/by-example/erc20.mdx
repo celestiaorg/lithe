@@ -16,15 +16,15 @@ import "std/evm";
 import "std/uint";
 
 error ERC20InsufficientBalance of record {
-  sender : address;
+  sender  : address;
   balance : uint;
-  needed : uint;
+  needed  : uint;
 }
 
 error ERC20InsufficientAllowance of record {
-  spender : address;
+  spender   : address;
   allowance : uint;
-  needed : uint;
+  needed    : uint;
 }
 
 error ERC20InvalidReceiver of address;
@@ -33,23 +33,23 @@ error AlreadyInitialized;
 
 event Transfer of record {
   indexed from : address;
-  indexed to : address;
-  value : uint;
+  indexed to   : address;
+  value        : uint;
 }
 
 event Approval of record {
-  indexed owner : address;
+  indexed owner   : address;
   indexed spender : address;
-  value : uint;
+  value           : uint;
 }
 
 storage is record {
-  owner : address;
-  name : string;
-  symbol : string;
+  owner       : address;
+  name        : string;
+  symbol      : string;
   totalSupply : uint;
-  balances : map(address, uint);
-  allowances : map(address, map(address, uint));
+  balances    : map(address, uint);
+  allowances  : map(address, map(address, uint));
 }
 
 external function initialize(const name : string; const symbol : string)

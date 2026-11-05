@@ -12,7 +12,7 @@ error ERC2612ExpiredSignature of uint;
 
 error ERC2612InvalidSigner of record {
   signer : address;
-  owner : address;
+  owner  : address;
 }
 
 module ERC20Permit is {

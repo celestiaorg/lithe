@@ -5,22 +5,22 @@ import "std/evm";
 import "std/string";
 
 error NameTaken of record {
-  name : string;
+  name  : string;
   owner : address;
 }
 error TooLong of record {
-  name : string;
+  name  : string;
   limit : uint;
 }
 error NotOwner of record {
   caller : address;
-  name : string;
+  name   : string;
 }
 
 event Renamed of record {
   indexed who : address;
-  oldName : string;
-  newName : string;
+  oldName     : string;
+  newName     : string;
 }
 
 immutable is record {
@@ -28,7 +28,7 @@ immutable is record {
 }
 
 storage is record {
-  name : string;
+  name        : string;
   description : string;
 }
 

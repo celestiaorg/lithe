@@ -12,7 +12,7 @@ error ERC6372InconsistentClock;
 
 error ERC5805FutureLookup of record {
   timepoint : uint;
-  clock : uint48;
+  clock     : uint48;
 }
 
 interface IERC6372 is {

@@ -5,7 +5,7 @@
 
 type SwapResult is record {
   amountOut : uint;
-  fee : uint;
+  fee       : uint;
 }
 
 interface Exchange is {
@@ -28,26 +28,26 @@ type OrderStatus is
   | Redeemed
 
 type Order is record {
-  status : OrderStatus;
+  status    : OrderStatus;
   amountOut : uint;
-  shares : uint;
+  shares    : uint;
 }
 
 error AlreadyPlaced of uint;
 
 event Executed of record {
   indexed id : uint;
-  amountOut : uint;
-  fee : uint;
+  amountOut  : uint;
+  fee        : uint;
 }
 
 storage is record {
-  exchange : Exchange;
-  vault : Vault;
-  orders : map(uint, Order);
+  exchange  : Exchange;
+  vault     : Vault;
+  orders    : map(uint, Order);
   principal : uint;
-  earned : uint;
-  paidOut : bool;
+  earned    : uint;
+  paidOut   : bool;
 }
 
 external function init(const exchange : Exchange; const vault : Vault) is {

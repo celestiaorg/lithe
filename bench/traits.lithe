@@ -2,7 +2,7 @@
 
 error EmptyTrait of string;
 error AttributeNotFound of record {
-  tokenId : uint;
+  tokenId   : uint;
   traitType : string;
 }
 error NotMinted of list(uint);

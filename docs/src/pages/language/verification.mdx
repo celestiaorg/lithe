@@ -21,7 +21,7 @@ import "std/evm";
 error Insufficient;
 
 storage is record {
-  total : wei;
+  total    : wei;
   balances : map(address, wei);
 }
 
@@ -140,9 +140,9 @@ type Action is
   | Owner of OwnerAction
 
 storage is record {
-  owner : address;
+  owner  : address;
   paused : bool;
-  fee : uint;
+  fee    : uint;
 }
 
 function ownerMain(const action : OwnerAction)

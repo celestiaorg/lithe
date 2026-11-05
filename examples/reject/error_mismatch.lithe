@@ -5,7 +5,7 @@ error Closed;
 
 storage is record {
   owner : address;
-  open : bool;
+  open  : bool;
 }
 
 external function go()

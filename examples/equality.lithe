@@ -4,7 +4,7 @@
 type Label is string;
 
 storage is record {
-  name : string;
+  name  : string;
   names : list(string);
 }
 

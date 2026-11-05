@@ -21,10 +21,10 @@ module ERC721Enumerable is {
   requires ERC721;
 
   storage erc721Enumerable at "lithe.std.erc721.enumerable" is record {
-    ownedTokens : map(address, map(uint, uint));
+    ownedTokens      : map(address, map(uint, uint));
     ownedTokensIndex : map(uint, uint);
-    allTokens : list(uint);
-    allTokensIndex : map(uint, uint);
+    allTokens        : list(uint);
+    allTokensIndex   : map(uint, uint);
   }
 
   (* After `ERC721` moves, mints, or burns a token: the enumerations follow it. *)

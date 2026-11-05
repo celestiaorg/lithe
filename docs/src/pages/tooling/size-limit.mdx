@@ -17,14 +17,14 @@ A contract that marks nothing compiles as it always does, byte for byte. When it
 module Ledger is {
   storage ledger at "example.ledger" is record {
     balances : map(address, uint);
-    total : uint;
+    total    : uint;
   }
 
   error Short of uint;
 
   event Minted of record {
     indexed to : address;
-    amount : uint;
+    amount     : uint;
   }
 
   pure function fee(const amount : uint) : uint is

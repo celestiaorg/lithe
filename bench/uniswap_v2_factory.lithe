@@ -16,10 +16,10 @@ contract UniswapV2Factory is {
   }
 
   storage is record {
-    feeTo : address;
+    feeTo       : address;
     feeToSetter : address;
-    getPair : map(address, map(address, address));
-    allPairs : list(address);
+    getPair     : map(address, map(address, address));
+    allPairs    : list(address);
   }
 
   (* `require(condition, "reason")`. *)
@@ -28,8 +28,8 @@ contract UniswapV2Factory is {
   event PairCreated of record {
     indexed token0 : address;
     indexed token1 : address;
-    pair : address;
-    length : uint;
+    pair           : address;
+    length         : uint;
   }
 
   deploy(const feeToSetter : address) is {

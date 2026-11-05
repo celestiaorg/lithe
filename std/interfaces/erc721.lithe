@@ -8,9 +8,9 @@ error ERC721InvalidOwner of address;
 error ERC721NonexistentToken of uint;
 
 error ERC721IncorrectOwner of record {
-  sender : address;
+  sender  : address;
   tokenId : uint;
-  owner : address;
+  owner   : address;
 }
 
 error ERC721InvalidSender of address;
@@ -19,7 +19,7 @@ error ERC721InvalidReceiver of address;
 
 error ERC721InsufficientApproval of record {
   operator : address;
-  tokenId : uint;
+  tokenId  : uint;
 }
 
 error ERC721InvalidApprover of address;

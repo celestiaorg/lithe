@@ -14,17 +14,17 @@ interface Exchange is {
 
 event Swapped of record {
   indexed id : uint;
-  amountOut : uint;
+  amountOut  : uint;
 }
 
 type Order is record {
-  status : uint8;
+  status    : uint8;
   amountOut : uint;
 }
 
 storage is record {
   exchange : Exchange;
-  orders : map(uint, Order);
+  orders   : map(uint, Order);
 }
 
 external nonreentrant function execute(const id : uint; const amountIn : uint) is {
@@ -66,10 +66,10 @@ interface Vault is {
 }
 
 storage is record {
-  vault : Vault;
+  vault     : Vault;
   principal : uint;
-  earned : uint;
-  shares : uint;
+  earned    : uint;
+  shares    : uint;
 }
 
 external nonreentrant function redeem(const shares : uint) is {
@@ -127,9 +127,9 @@ interface Registry is {
 }
 
 storage is record {
-  registry : Registry;
-  notified : map(uint, bool);
-  failures : uint;
+  registry  : Registry;
+  notified  : map(uint, bool);
+  failures  : uint;
   lastError : bytes;
 }
 
@@ -163,7 +163,7 @@ interface Oracle is {
 }
 
 storage is record {
-  oracle : Oracle;
+  oracle        : Oracle;
   fallbackPrice : uint;
 }
 

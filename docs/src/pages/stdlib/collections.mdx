@@ -17,9 +17,9 @@ import "std/collections/queue";
 
 contract Airdrop is {
   storage is record {
-    admins : Set(address);
+    admins  : Set(address);
     holders : SetEnumerable(address);
-    claims : MapEnumerable(address, uint);
+    claims  : MapEnumerable(address, uint);
     claimed : Bitmap;
     waiting : Queue(address);
   }

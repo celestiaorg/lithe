@@ -17,7 +17,7 @@ contract CappedToken is {
 
   storage is record {
     owner : address;
-    cap : uint;
+    cap   : uint;
   }
 
   deploy() is {

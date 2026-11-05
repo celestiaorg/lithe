@@ -5,7 +5,7 @@ import "std/string";
 
 storage is record {
   greeting : string;
-  blob : bytes;
+  blob     : bytes;
 }
 
 external function greet(const name : string) is {

@@ -4,17 +4,17 @@
    `IERC6909`, and each extension's own functions for the others. *)
 
 error ERC6909InsufficientBalance of record {
-  sender : address;
+  sender  : address;
   balance : uint;
-  needed : uint;
-  id : uint;
+  needed  : uint;
+  id      : uint;
 }
 
 error ERC6909InsufficientAllowance of record {
-  spender : address;
+  spender   : address;
   allowance : uint;
-  needed : uint;
-  id : uint;
+  needed    : uint;
+  id        : uint;
 }
 
 error ERC6909InvalidApprover of address;

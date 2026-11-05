@@ -1,7 +1,7 @@
 (* Per-account counters for replay protection, like OpenZeppelin's `NoncesUpgradeable`. *)
 
 error InvalidAccountNonce of record {
-  account : address;
+  account      : address;
   currentNonce : uint;
 }
 

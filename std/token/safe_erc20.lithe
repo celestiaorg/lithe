@@ -18,8 +18,8 @@ import "std/evm";
 error SafeERC20FailedOperation of address;
 
 error SafeERC20FailedDecreaseAllowance of record {
-  spender : address;
-  currentAllowance : uint;
+  spender           : address;
+  currentAllowance  : uint;
   requestedDecrease : uint;
 }
 

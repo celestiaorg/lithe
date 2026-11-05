@@ -7,13 +7,13 @@ error NotOwner;
 
 error InsufficientBalance of record {
   available : uint;
-  required : uint;
+  required  : uint;
 }
 
 event Transfer of record {
   indexed from : address;
-  indexed to : address;
-  amount : uint;
+  indexed to   : address;
+  amount       : uint;
 }
 
 immutable is record {
@@ -21,7 +21,7 @@ immutable is record {
 }
 
 storage is record {
-  total : uint;
+  total    : uint;
   balances : map(address, uint);
 }
 

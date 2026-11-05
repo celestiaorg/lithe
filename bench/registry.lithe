@@ -9,16 +9,16 @@ event Renamed of record {
 
 event Tagged of record {
   indexed who : address;
-  tag : bytes4;
-  level : uint8;
+  tag         : bytes4;
+  level       : uint8;
 }
 
 storage is record {
-  name : string;
-  blob : bytes;
+  name    : string;
+  blob    : bytes;
   updates : uint;
-  tag : bytes4;
-  level : uint8;
+  tag     : bytes4;
+  level   : uint8;
 }
 
 deploy(const n : string) is {

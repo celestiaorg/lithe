@@ -49,7 +49,7 @@ Records follow the [same rule as external functions](/language/types#records-in-
 type Reserves is record {
   reserve0 : uint112;
   reserve1 : uint112;
-  last : uint32;
+  last     : uint32;
 }
 
 interface Pair is {
@@ -122,7 +122,7 @@ error PriceTooLow of uint;
 
 storage is record {
   oracle : Oracle;
-  floor : uint;
+  floor  : uint;
 }
 
 external view function price(const asset : address) : uint is
@@ -171,7 +171,7 @@ interface Token is {
 
 storage is record {
   token : Token;
-  paid : map(address, uint);
+  paid  : map(address, uint);
 }
 
 external nonreentrant function pay(const to : address; const amount : uint) is {
@@ -367,7 +367,7 @@ contract Factory is {
 contract Vault is {
   storage is record {
     owner : address;
-    cap : uint;
+    cap   : uint;
   }
 
   deploy(const owner : address; const cap : uint) is {
@@ -487,7 +487,7 @@ A creation fails if the factory cannot pay the value, if the salted address is a
 ```lithe
 contract Factory is {
   storage is record {
-    last : address;
+    last   : address;
     failed : uint;
   }
 

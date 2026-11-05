@@ -19,13 +19,13 @@ storage is record {
 }
 
 storage config at "example.config" is record {
-  fee : uint;
+  fee      : uint;
   treasury : address;
 }
 
 storage stats at "example.stats" is record {
   volume : uint;
-  users : map(address, bool);
+  users  : map(address, bool);
 }
 
 (* A named domain is reached through `storage`, then its name. *)

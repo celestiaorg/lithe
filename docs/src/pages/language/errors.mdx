@@ -21,7 +21,7 @@ error TooLarge of uint;
 (* Named fields. In the ABI: InsufficientBalance(uint256 available, uint256 required) *)
 error InsufficientBalance of record {
   available : uint;
-  required : uint;
+  required  : uint;
 }
 
 (* Strings, bytes, and lists too. In the ABI: UnknownKey(string) *)
@@ -29,7 +29,7 @@ error UnknownKey of string;
 
 (* In the ABI: AttributeNotFound(uint256 tokenId, string traitType) *)
 error AttributeNotFound of record {
-  tokenId : uint;
+  tokenId   : uint;
   traitType : string;
 }
 
@@ -65,11 +65,11 @@ error Unauthorized;
 error TooLarge of uint;
 error InsufficientBalance of record {
   available : uint;
-  required : uint;
+  required  : uint;
 }
 
 storage is record {
-  owner : address;
+  owner    : address;
   balances : map(address, uint);
 }
 
@@ -100,7 +100,7 @@ error Closed;
 
 storage is record {
   owner : address;
-  open : bool;
+  open  : bool;
 }
 
 external function go()
@@ -201,7 +201,7 @@ errors withdrawErrors is
   | Insufficient
 
 storage is record {
-  paused : bool;
+  paused  : bool;
   balance : uint;
 }
 

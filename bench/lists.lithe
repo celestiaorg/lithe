@@ -6,19 +6,19 @@ import "std/evm";
 import "std/list";
 
 storage is record {
-  saved : list(uint);
+  saved  : list(uint);
   owners : list(address);
 }
 
 event Batch of record {
   indexed who : address;
-  ids : list(uint);
-  note : string;
+  ids         : list(uint);
+  note        : string;
 }
 
 event Tagged of record {
   indexed tags : list(bytes4);
-  count : uint;
+  count        : uint;
 }
 
 external function save(const xs : list(uint)) is {

@@ -11,7 +11,7 @@ error BadSignature;
 storage is record {
   ownerX : bytes32;
   ownerY : bytes32;
-  nonce : uint;
+  nonce  : uint;
 }
 
 deploy(const x : bytes32; const y : bytes32) is {

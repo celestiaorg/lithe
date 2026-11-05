@@ -447,7 +447,7 @@ fn render(src: &str, max: usize) -> Result<String, Error> {
     loop {
         let (out, starts) = print(src, &pieces);
         let Some((a, b)) = long_line(&out, &starts, &stuck, max) else {
-            return Ok(out);
+            return align_fields(&out, max);
         };
         let from = line_start(&out, starts[a]);
         let options = options(src, &pieces, &partner, &out, &starts, from, a, b, max);
@@ -464,6 +464,80 @@ fn render(src: &str, max: usize) -> Result<String, Error> {
             None => stuck.push(a),
         }
     }
+}
+
+/// The `:` of record fields on consecutive lines in one column. A blank line, or a field that
+/// shares its line, starts a new run. A run whose padding would push a line past `max` stays
+/// unaligned.
+fn align_fields(out: &str, max: usize) -> Result<String, Error> {
+    let pieces = lex::pieces(out)?;
+    let partner = partners(&pieces);
+    let mut colons = Vec::new();
+    for (i, piece) in pieces.iter().enumerate() {
+        let o = next_token(&pieces, i);
+        if token_kind(piece) != Some(Kind::Record)
+            || o == pieces.len()
+            || token_kind(&pieces[o]) != Some(Kind::LBrace)
+        {
+            continue;
+        }
+        let Some(c) = partner[o] else { continue };
+        let mut run: Vec<usize> = Vec::new();
+        let mut j = o + 1;
+        while j < c {
+            let start = next_token(&pieces, j - 1);
+            if start >= c {
+                break;
+            }
+            let blank = pieces[j..=start].iter().any(|p| p.newlines_before > 1);
+            let mut colon = None;
+            j = start;
+            while j < c && token_kind(&pieces[j]) != Some(Kind::Semi) {
+                match token_kind(&pieces[j]) {
+                    Some(Kind::Colon) if colon.is_none() => colon = Some(j),
+                    Some(Kind::LParen | Kind::LBrack | Kind::LBrace) => j = partner[j].unwrap_or(j),
+                    _ => {}
+                }
+                j += 1;
+            }
+            let ends_line = j >= c
+                || pieces[j + 1..=next_token(&pieces, j)]
+                    .iter()
+                    .any(|p| p.newlines_before > 0);
+            j += 1;
+            let at = pieces[start].start;
+            let own_line = colon.filter(|&k| {
+                ends_line
+                    && out[line_start(out, at)..at].trim().is_empty()
+                    && !out[at..pieces[k].start].contains('\n')
+            });
+            if blank || own_line.is_none() {
+                colons.push(std::mem::take(&mut run));
+            }
+            run.extend(own_line.map(|k| pieces[k].start));
+        }
+        colons.push(run);
+    }
+    let col = |at: usize| width(&out[line_start(out, at)..at]);
+    let line = |at: usize| {
+        let end = out[at..].find('\n').map_or(out.len(), |n| at + n);
+        width(&out[line_start(out, at)..end])
+    };
+    let mut pads: Vec<(usize, usize)> = colons
+        .iter()
+        .filter_map(|run| {
+            let to = run.iter().map(|&at| col(at)).max().unwrap_or(0);
+            let fits = run.iter().all(|&at| line(at) + to - col(at) <= max);
+            fits.then(|| run.iter().map(move |&at| (at, to - col(at))))
+        })
+        .flatten()
+        .collect();
+    pads.sort();
+    let mut text = out.to_string();
+    for &(at, n) in pads.iter().rev() {
+        text.insert_str(at, &" ".repeat(n));
+    }
+    Ok(text)
 }
 
 fn print(src: &str, pieces: &[Piece]) -> (String, Vec<usize>) {
@@ -1508,6 +1582,10 @@ mod tests {
                 "function f(const n : uint) is {\n  n + 1\n}\n",
             ),
             (
+                "event E of record {\n  indexed a : uint;\n  bb : uint;\n\n  ccc : uint;\n  d : uint; e : uint;\n  ff : uint;\n  g : uint;\n}\n",
+                "event E of record {\n  indexed a : uint;\n  bb        : uint;\n\n  ccc : uint;\n  d : uint; e : uint;\n  ff : uint;\n  g  : uint;\n}\n",
+            ),
+            (
                 "function f(const n : uint)\nraises Err\nis\nn\n",
                 "function f(const n : uint)\n  raises Err\nis\n  n\n",
             ),
@@ -1684,6 +1762,10 @@ mod tests {
             let out = format_source(src, 100).unwrap_or_else(|err| panic!("{err}\n{src}"));
             assert_eq!(out, want.replace('X', &pad), "from {src:?}");
         }
+        let long = "y".repeat(55);
+        let wide = "map(address, map(address, map(address, map(address, uint))))";
+        let src = format!("type T is record {{\n  {long} : uint;\n  b : {wide};\n}}\n");
+        assert_eq!(format_source(&src, 100).expect("format"), src);
         let lhs = format!("storage.r[0x{}1].members[someone]", "0".repeat(63));
         let out = format_source(&format!("{lhs} := flag = p;\n"), 100).expect("format");
         assert_eq!(out, format!("{lhs} :=\n  flag = p;\n"));

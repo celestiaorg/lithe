@@ -18,12 +18,12 @@ error NotAdmin;
 error NotMinter;
 
 type MintParams is record {
-  to : address;
+  to     : address;
   amount : uint;
 }
 
 type TransferParams is record {
-  to : address;
+  to     : address;
   amount : uint;
 }
 
@@ -43,8 +43,8 @@ type Action is
   | Holder of HolderAction
 
 storage is record {
-  admin : address;
-  minter : address;
+  admin    : address;
+  minter   : address;
   balances : map(address, uint);
 }
 

@@ -24,11 +24,11 @@ import "std/abi";
    `"type":"` start in `clientDataJson`. *)
 type WebauthnAuth is record {
   authenticatorData : bytes;
-  clientDataJson : string;
-  challengeIndex : uint;
-  typeIndex : uint;
-  r : bytes32;
-  s : bytes32;
+  clientDataJson    : string;
+  challengeIndex    : uint;
+  typeIndex         : uint;
+  r                 : bytes32;
+  s                 : bytes32;
 }
 
 module WebAuthn is {

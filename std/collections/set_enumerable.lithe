@@ -4,7 +4,7 @@ import "std/list";
 
 module SetEnumerable(T : MapKey) is {
   type Self is record {
-    values : list(T);
+    values  : list(T);
     indexes : map(T, uint);
   }
 

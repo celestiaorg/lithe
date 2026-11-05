@@ -33,7 +33,7 @@ module OwnableRoles is {
   }
 
   event RolesUpdated of record {
-    indexed user : address;
+    indexed user  : address;
     indexed roles : Roles;
   }
 

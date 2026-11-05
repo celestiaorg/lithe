@@ -9,31 +9,31 @@ interface Target is {
 }
 
 storage is record {
-  caller : address;
-  paid : wei;
-  time : timestamp;
-  number : uint;
-  chain : uint;
-  mine : address;
-  bal : wei;
-  sel : bytes4;
-  origin : address;
-  price : wei;
-  coin : address;
-  fee : wei;
-  rand : bytes32;
-  limit : uint;
-  codesz : uint;
+  caller   : address;
+  paid     : wei;
+  time     : timestamp;
+  number   : uint;
+  chain    : uint;
+  mine     : address;
+  bal      : wei;
+  sel      : bytes4;
+  origin   : address;
+  price    : wei;
+  coin     : address;
+  fee      : wei;
+  rand     : bytes32;
+  limit    : uint;
+  codesz   : uint;
   codehash : bytes32;
-  bhash : bytes32;
-  blob : bytes32;
-  gas : uint;
-  digest : bytes32;
-  sha : bytes32;
-  ripe : bytes20;
-  round : uint;
-  packed : bytes;
-  blobFee : wei;
+  bhash    : bytes32;
+  blob     : bytes32;
+  gas      : uint;
+  digest   : bytes32;
+  sha      : bytes32;
+  ripe     : bytes20;
+  round    : uint;
+  packed   : bytes;
+  blobFee  : wei;
 }
 
 external payable function take() is {

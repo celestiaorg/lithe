@@ -4,10 +4,10 @@ import "std/evm";
 import "std/list";
 
 storage is record {
-  names : map(uint, string);
-  blobs : map(bytes32, bytes);
+  names  : map(uint, string);
+  blobs  : map(bytes32, bytes);
   labels : map(address, map(uint, string));
-  notes : list(string);
+  notes  : list(string);
 }
 
 external function setName(const id : uint; const n : string) is {
