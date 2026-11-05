@@ -364,6 +364,12 @@ fn named_storage_and_upgrade_migrate_once() {
     let abi = crate::abi(&Sources::disk(), &path).expect("abi").to_json();
     assert!(abi.contains("upgradeToAndCall"), "{abi}");
     assert!(abi.contains("proxiableUUID"), "{abi}");
+    let upgraded = abi
+        .split("\n  {")
+        .find(|item| item.contains("\"name\": \"Upgraded\""))
+        .unwrap_or_else(|| panic!("no Upgraded event: {abi}"));
+    assert!(upgraded.contains("\"type\": \"event\""), "{upgraded}");
+    assert!(upgraded.contains("\"indexed\": true"), "{upgraded}");
     assert!(!abi.contains("\"name\": \"init\""), "{abi}");
     let layout = crate::storage_layout(&Sources::disk(), &path).expect("layout");
     assert!(layout.contains("vault.settings"), "{layout}");

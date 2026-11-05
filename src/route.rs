@@ -2064,6 +2064,22 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
         }));
     }
     if checked.prog.upgradeable {
+        let logged = items
+            .iter()
+            .any(|item| matches!(item, AbiItem::Event(e) if e.name == "Upgraded"));
+        if !logged {
+            items.push(AbiItem::Event(Event {
+                name: "Upgraded".to_string(),
+                inputs: vec![EventParam {
+                    ty: "address".to_string(),
+                    name: "implementation".to_string(),
+                    indexed: true,
+                    components: Vec::new(),
+                    internal_type: "address".to_string(),
+                }],
+                anonymous: false,
+            }));
+        }
         for (name, input) in [
             (
                 "ERC1967InvalidImplementation",
