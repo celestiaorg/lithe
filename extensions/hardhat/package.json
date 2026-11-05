@@ -3,6 +3,11 @@
   "description": "Builds Lithe contracts as part of Hardhat 3's build, into artifacts Hardhat looks up by name",
   "version": "0.1.2",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/celestiaorg/lithe.git",
+    "directory": "extensions/hardhat"
+  },
   "type": "module",
   "exports": {
     ".": {
