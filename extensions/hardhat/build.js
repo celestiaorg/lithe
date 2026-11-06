@@ -2,8 +2,9 @@ import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
+import { promisify, styleText } from "node:util";
 
+import { createSpinner } from "@nomicfoundation/hardhat-utils/spinner";
 import { HardhatPluginError } from "hardhat/plugins";
 
 const run = promisify(execFile);
@@ -19,25 +20,32 @@ export default async function build(args, hre, runSuper) {
   if (!args.noContracts) {
     const profile = hre.globalOptions.buildProfile ?? args.defaultBuildProfile;
     // Deployments build the production profile, and a checked build must not be deployed.
-    await buildLithe(hre, hre.config.lithe.checkSpecs && profile !== "production");
+    await buildLithe(hre, hre.config.lithe.checkSpecs && profile !== "production", args.quiet);
   }
   return result;
 }
 
-async function buildLithe(hre, checkSpecs) {
+async function buildLithe(hre, checkSpecs, quiet) {
   const artifactsDir = await hre.solidity.getArtifactsDirectory("contracts");
   const facets = {};
   let built = false;
   for (const root of hre.config.paths.sources.solidity) {
     const sources = await findSources(root);
     if (sources.size === 0) continue;
+    const files = `${sources.size} Lithe ${sources.size === 1 ? "file" : "files"}`;
     const tmp = await mkdtemp(path.join(tmpdir(), "hardhat-lithe-"));
+    const spinner = createSpinner({ text: `Compiling ${files}...` });
+    spinner.start();
+    let notes;
     try {
-      await compile(hre.config.lithe.path, checkSpecs, root, tmp);
+      notes = await compile(hre.config.lithe.path, checkSpecs, root, tmp);
       await convert(hre.config.paths.root, root, sources, path.join(tmp, "out"), artifactsDir, facets);
     } finally {
+      spinner.stop();
+      if (notes) process.stderr.write(notes);
       await rm(tmp, { recursive: true, force: true });
     }
+    if (!quiet) console.log(styleText("bold", `Compiled ${files}`));
     built = true;
   }
   if (built) {
@@ -71,11 +79,11 @@ async function findSources(root) {
 }
 
 // `lithe compile dir` writes `out/` under the working directory, so it runs in `cwd`.
+// Returns the compiler's warnings and notes.
 async function compile(compiler, checkSpecs, root, cwd) {
   const args = ["compile", ...(checkSpecs ? ["--check-specs"] : []), root];
   try {
-    const { stderr } = await run(compiler, args, { cwd, maxBuffer: 64 << 20 });
-    if (stderr !== "") process.stderr.write(stderr);
+    return (await run(compiler, args, { cwd, maxBuffer: 64 << 20 })).stderr;
   } catch (error) {
     if (error.code === "ENOENT") {
       throw new HardhatPluginError(

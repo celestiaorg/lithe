@@ -36,5 +36,8 @@
     "forge-std": "github:foundry-rs/forge-std#v1.11.0",
     "hardhat": "^3.18.1",
     "viem": "^2.57.2"
+  },
+  "dependencies": {
+    "@nomicfoundation/hardhat-utils": "^4.4.0"
   }
 }
