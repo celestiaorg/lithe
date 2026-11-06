@@ -1575,6 +1575,7 @@ mod matrix;
 mod precompiles;
 mod prove;
 mod raw;
+mod snapshot;
 mod solady_math;
 mod specs;
 mod split;
