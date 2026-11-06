@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::ast::{
     Exposing, Expr, Func, HookForm, ItemKind, Lit, NameAt, Program, Raises, Stmt, TypeDecl, TypeRef,
@@ -595,13 +595,29 @@ fn facet(
         module.to_string(),
     );
     prog.scopes = scopes;
-    static BUILT: OnceLock<Mutex<HashMap<([u8; 32], String), Facet>>> = OnceLock::new();
-    let memo = BUILT.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(facet) = memo.lock().ok().and_then(|memo| memo.get(&key).cloned()) {
-        return Ok(facet);
-    }
+    // Contracts compiled side by side wait for the one build of a facet they share.
+    type Memo = Mutex<HashMap<([u8; 32], String), Arc<OnceLock<Result<Facet, Error>>>>>;
+    static BUILT: OnceLock<Memo> = OnceLock::new();
+    let cell = BUILT
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(key.clone())
+        .or_default()
+        .clone();
+    cell.get_or_init(|| build_facet(prog, module, crossing, opts, &key.0))
+        .clone()
+}
+
+fn build_facet(
+    prog: Program,
+    module: &str,
+    crossing: &[Crossing],
+    opts: &Options,
+    key: &[u8; 32],
+) -> Result<Facet, Error> {
     // A facet is built from its module alone, so contracts that change around it read it back.
-    let path = cache_entry(&format!("facet\0{}\0{module}", crate::hex(&key.0)));
+    let path = cache_entry(&format!("facet\0{}\0{module}", crate::hex(key)));
     let cached = path
         .as_deref()
         .and_then(|path| std::fs::read(path).ok())
@@ -612,9 +628,6 @@ fn facet(
             (r.0.is_empty() && facets.is_empty()).then_some(facet)
         });
     if let Some(facet) = cached {
-        if let Ok(mut memo) = memo.lock() {
-            memo.insert(key, facet.clone());
-        }
         return Ok(facet);
     }
     let whose = |err: Error| Error {
@@ -751,9 +764,6 @@ fn facet(
         let mut bytes = Vec::new();
         put_facets(&mut bytes, std::slice::from_ref(&facet));
         store(&path, &bytes);
-    }
-    if let Ok(mut memo) = memo.lock() {
-        memo.insert(key, facet.clone());
     }
     Ok(facet)
 }
@@ -904,6 +914,10 @@ pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing
     prog.calls_back = true;
     prog.upgradeable = false;
     prog.guard = None;
+    // What the contract's own code names. The contract's check already held its code to
+    // them, and leaving them in would make each contract's copy of the facet a different build.
+    prog.implied.clear();
+    prog.refs.clear();
     // The router answers ERC-165; a facet never sees the call.
     prog.supports.clear();
     prog.contract_name = Some(module.to_string());

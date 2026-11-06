@@ -2010,7 +2010,7 @@ contract B is {
 
   external function bump(const n : uint) raises Extra is {
     assert(n < 10, Extra(n));
-    Names.add(n);
+    Names.add(Twice.double(n));
   }
 }
 ";
@@ -2029,7 +2029,10 @@ contract C is {
 ";
     let files = [
         ("names.lithe", names),
-        ("extra.lithe", "error Extra of uint;\n"),
+        (
+            "extra.lithe",
+            "error Extra of uint;\nmodule Twice is { pure function double(const n : uint) : uint is n * 2 }\n",
+        ),
         ("a.lithe", a),
         ("b.lithe", b),
         ("c.lithe", c),
@@ -2058,6 +2061,14 @@ contract C is {
     let three = split("c.lithe", "C").expect("C");
     assert_eq!(three.facets[0].address, one.facets[0].address);
     assert_eq!(three.across, across(&[("Names", "Names.longest")]));
+    // The same program, so one build serves every contract and its cache entry is shared.
+    let program = |entry: &str| {
+        let mut prog = crate::split::facet_program(&checked(entry).source, "Names", &[]);
+        prog.scopes = Default::default();
+        format!("{prog:?}")
+    };
+    assert_eq!(program("a.lithe"), program("b.lithe"));
+    assert_eq!(program("a.lithe"), program("c.lithe"));
 }
 
 /// A call to a function that can't cross, and a crossing a body can't make, are errors that
