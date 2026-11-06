@@ -294,7 +294,14 @@ fn exec(
     let previous = DEPLOYED.with(|d| {
         d.borrow_mut().insert(
             at,
-            (if CONSTRUCTING.get() { Vec::new() } else { code.to_vec() }, storage.clone()),
+            (
+                if CONSTRUCTING.get() {
+                    Vec::new()
+                } else {
+                    code.to_vec()
+                },
+                storage.clone(),
+            ),
         )
     });
     let out = exec_state(
@@ -773,7 +780,9 @@ fn exec_state(
                 });
                 CONSTRUCTING.set(was);
                 let born = born?;
-                if let Some(current) = DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone())) {
+                if let Some(current) =
+                    DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone()))
+                {
                     storage = current;
                 }
                 if born.reverted {
@@ -819,9 +828,11 @@ fn exec_state(
                             transient.clone(),
                         )
                     })?;
-                    if let Some(current) = DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone())) {
-                    storage = current;
-                }
+                    if let Some(current) =
+                        DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone()))
+                    {
+                        storage = current;
+                    }
                     trace.push(Ev::Call { to, value: val });
                     returndata = nested.returndata.clone();
                     if nested.reverted {
@@ -917,9 +928,11 @@ fn exec_state(
                             transient.clone(),
                         )
                     })?;
-                    if let Some(current) = DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone())) {
-                    storage = current;
-                }
+                    if let Some(current) =
+                        DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone()))
+                    {
+                        storage = current;
+                    }
                     returndata = nested.returndata;
                     if ret_size > 0 {
                         let n = ret_size.min(returndata.len());
@@ -1147,6 +1160,58 @@ fn exec_state(
         detail,
         self_balance,
     })
+}
+
+#[test]
+fn reentrant_storage_and_rollback() {
+    let zero = Word::from_u64(0);
+    let one = Word::from_u64(1);
+    let b = Word::from_u64(0xb);
+    for (revert_a, revert_b) in [(false, false), (false, true), (true, false)] {
+        // A's callback saves the value it observed, then replaces it.
+        let mut a = vec![0x36, 0x60, 0, 0x57, 0x60, 1, 0x5f, 0x55];
+        a.extend([0x5f, 0x5f, 0x5f, 0x5f, 0x5f, 0x60, 0xb, 0x5a, 0xf1, 0x50]);
+        // Read after returning from B, rather than just inspecting the world map.
+        a.extend([0x5f, 0x54, 0x60, 2, 0x55]);
+        if revert_a {
+            a.extend([0x5f, 0x5f, 0xfd]);
+        } else {
+            a.push(0x00);
+        }
+        a[2] = a.len() as u8;
+        a.extend([0x5b, 0x5f, 0x54, 0x60, 1, 0x55, 0x60, 2, 0x5f, 0x55, 0x00]);
+        let mut child = vec![0x60, 9, 0x5f, 0x55];
+        child.extend([
+            0x5f, 0x5f, 0x60, 1, 0x5f, 0x5f, 0x61, 0x10, 0x00, 0x5a, 0xf1, 0x50,
+        ]);
+        if revert_b {
+            child.extend([0x5f, 0x5f, 0xfd]);
+        }
+        DEPLOYED.with(|d| d.borrow_mut().insert(b, (child, HashMap::new())));
+        let out = exec(&a, &[], HashMap::new(), one, zero, zero).unwrap();
+        assert_eq!(out.reverted, revert_a);
+        let slot = |key| {
+            out.storage
+                .get(&Word::from_u64(key))
+                .copied()
+                .unwrap_or(zero)
+        };
+        if revert_a {
+            assert!(out.storage.is_empty());
+        } else {
+            assert_eq!(slot(0), Word::from_u64(if revert_b { 1 } else { 2 }));
+            assert_eq!(slot(1), if revert_b { zero } else { one });
+            assert_eq!(slot(2), slot(0));
+        }
+        DEPLOYED.with(|d| {
+            let mut d = d.borrow_mut();
+            let (_, storage) = d.remove(&b).unwrap();
+            assert_eq!(
+                storage.get(&zero).copied().unwrap_or(zero),
+                Word::from_u64(if revert_a || revert_b { 0 } else { 9 })
+            );
+        });
+    }
 }
 
 fn need_dest(code: &[u8], dest: usize) -> Result<(), String> {
