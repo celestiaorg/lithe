@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-# simplify: release only until `lithe compile --fast` (task 1.1). The N-thread sample is
-# compile only (`lithe abi` ignores LITHE_THREADS). wall_s is perf_counter because
-# /usr/bin/time %e is centiseconds here; that figure is still stored as time_wall_s.
+# simplify: this report is the release search. The CLI defaults to fast, so compile
+# passes --release. Fast rows are task 1.2. The N-thread sample is compile only
+# (`lithe abi` ignores LITHE_THREADS). wall_s is perf_counter because /usr/bin/time
+# %e is centiseconds here; that figure is still stored as time_wall_s.
 """Time `lithe abi` and `lithe compile`. See scripts/README.md."""
 
 import argparse
@@ -211,7 +212,7 @@ def compile_one(lithe, src, threads, lines):
         stage.mkdir()
         (stage / src.name).symlink_to(src.resolve())
         return timed(
-            [lithe, "compile", "in"],
+            [lithe, "compile", "--release", "in"],
             work,
             threads,
             lines,
