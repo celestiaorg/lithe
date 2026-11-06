@@ -32,6 +32,7 @@ The [build flags](/tooling/cli#build-flags), for every command that builds: `com
 | `evm-version` | `"osaka"` | the fork the code runs on, `"osaka"` or `"prague"`. See [Target fork](/tooling/cli#target-fork) |
 | `size-limit` | `24576` | the most runtime code the contract or any facet should have, a number. Code over it still builds, with a warning |
 | `create2-deployer` | `"0x4e59b44847b379578588920cA78FbF26c0B4956C"` | the `CREATE2` factory facets are deployed through |
+| `opt` | `"fast"` | `"fast"` or `"release"`. See [Build flags](/tooling/cli#build-flags). Commands build fast when this is omitted. The language server always builds fast. Standard JSON and a library `Options::default()` build release unless `opt` is set |
 
 ## `[fmt]`
 

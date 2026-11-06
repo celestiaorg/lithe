@@ -193,11 +193,9 @@ fn prove(mut args: Vec<String>) -> ! {
     if opts.source && opts.code.is_some() {
         usage_exit("--source proves no code; leave out --code or --source");
     }
-    if !flags.is_empty() {
-        match build_options(Path::new(file), &flags) {
-            Ok(build) => opts.build = Some(build),
-            Err(msg) => usage_exit(&msg),
-        }
+    match build_options(Path::new(file), &flags) {
+        Ok(build) => opts.build = Some(build),
+        Err(msg) => usage_exit(&msg),
     }
     match lithe::prove(&Sources::disk(), Path::new(file), &opts) {
         Ok(proof) => {
@@ -269,6 +267,17 @@ fn build_flags(args: &mut Vec<String>) -> Vec<(&'static str, Option<String>)> {
             flags.push(("check-specs", None));
             continue;
         }
+        match arg.as_str() {
+            "--fast" | "-O0" => {
+                flags.push(("opt", Some("fast".to_string())));
+                continue;
+            }
+            "--release" | "-O2" => {
+                flags.push(("opt", Some("release".to_string())));
+                continue;
+            }
+            _ => {}
+        }
         match lithe::BUILD_KEYS
             .iter()
             .find(|key| arg.strip_prefix("--") == Some(key))
@@ -287,6 +296,12 @@ fn build_options(
     flags: &[(&str, Option<String>)],
 ) -> Result<lithe::Options, String> {
     let mut opts = lithe::build_options(source).map_err(|err| err.to_string())?;
+    // Commands build fast unless the file or a flag sets `opt`.
+    if !lithe::build_opt_set(source).map_err(|err| err.to_string())?
+        && !flags.iter().any(|(key, _)| *key == "opt")
+    {
+        opts.opt = lithe::Opt::Fast;
+    }
     for (key, value) in flags {
         if *key == "check-specs" {
             opts.check_specs = true;
@@ -610,6 +625,8 @@ compile, abi, facets, abi-tree, footprint, prove, upgrade, and upgrade-check als
        --create2-deployer <address>  the CREATE2 factory for facets
        --evm-version <prague|osaka>  the fork the code runs on, default osaka; prague
                                      leaves out Osaka's CLZ
+       --fast, -O0                   build the contract once; the default
+       --release, -O2                search for the cheapest plan
 
 prove proves the specs of the bytecode the build emits, and shows the source's verdict
 where it explains one; it also takes
@@ -712,6 +729,27 @@ mod tests {
             [
                 ("size-limit", Some("9000".to_string())),
                 ("evm-version", Some("osaka".to_string()))
+            ]
+        );
+        assert_eq!(args, ["x.lithe"]);
+        assert_eq!(build_options(&dir, &[]).unwrap().opt, lithe::Opt::Fast);
+        std::fs::write(dir.join("lithe.toml"), "[build]\nopt = \"release\"\n").unwrap();
+        assert_eq!(build_options(&dir, &[]).unwrap().opt, lithe::Opt::Release);
+        assert_eq!(
+            build_options(&dir, &[("opt", Some("fast".to_string()))])
+                .unwrap()
+                .opt,
+            lithe::Opt::Fast
+        );
+        let mut args = ["x.lithe", "--fast", "-O2", "--opt", "fast"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(
+            build_flags(&mut args),
+            [
+                ("opt", Some("fast".to_string())),
+                ("opt", Some("release".to_string())),
+                ("opt", Some("fast".to_string())),
             ]
         );
         assert_eq!(args, ["x.lithe"]);

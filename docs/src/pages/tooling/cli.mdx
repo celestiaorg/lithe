@@ -48,6 +48,10 @@ lib/fees.lithe:4:18: unknown name `rate`
 | `--size-limit <bytes>` | `24576` | the most runtime code the contract or any facet should have. Code over it still builds, with a warning that lists what takes the space and what marking each module `delegated` would save |
 | `--create2-deployer <address>` | `0x4e59b44847b379578588920cA78FbF26c0B4956C` | the `CREATE2` factory facets are deployed through |
 | `--evm-version <prague\|osaka>` | `osaka` | the fork the code runs on. See [Target fork](#target-fork) |
+| `--fast`, `-O0` | `--fast` | build the contract once. The usual passes still run |
+| `--release`, `-O2` | | search for the cheapest plan. Gas and size can differ; results, reverts, logs, and storage stay the same |
+
+`opt` in [`lithe.toml`](/tooling/config#build) sets the same choice. The language server always builds fast. Standard JSON defaults to `release`.
 
 What runs from a facet is the source's choice, `use M delegated;`, never a flag's. See [Contract size limit](/tooling/size-limit).
 
@@ -115,6 +119,7 @@ Reads solc's standard JSON on stdin and writes the output to stdout, for verifie
   "settings": {
     "evmVersion": "osaka",
     "sizeLimit": 24576,
+    "opt": "release",
     "create2Deployer": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
     "compilationTarget": { "src/bank.lithe": "Bank" }
   }

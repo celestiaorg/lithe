@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::{Error, EvmVersion, Options};
+use crate::{Error, EvmVersion, Opt, Options};
 
 /// How wide `lithe fmt` lets a line run when `[fmt] width` is not set.
 pub const DEFAULT_WIDTH: usize = 120;
@@ -17,6 +17,8 @@ pub(crate) struct Config {
     pub width: usize,
     /// `[build]`: what builds use unless the command line says otherwise.
     pub build: Options,
+    /// The file sets `[build] opt`. Omitted, the command line builds fast.
+    opt_set: bool,
     /// `[dependencies]`: the packages `import "name/..."` names, in file order.
     pub deps: Vec<(String, Dep)>,
     /// `[package] src`: the directory of this package that imports of it start from.
@@ -63,6 +65,7 @@ impl Default for Config {
             allow: Vec::new(),
             width: DEFAULT_WIDTH,
             build: Options::default(),
+            opt_set: false,
             deps: Vec::new(),
             src: None,
             root: None,
@@ -113,7 +116,12 @@ pub fn build_options(near: &Path) -> Result<Options, Error> {
 }
 
 /// The `[build]` keys, each also a `--key value` flag.
-pub const BUILD_KEYS: [&str; 3] = ["evm-version", "size-limit", "create2-deployer"];
+pub const BUILD_KEYS: [&str; 4] = ["evm-version", "size-limit", "create2-deployer", "opt"];
+
+/// Whether the nearest `lithe.toml` sets `[build] opt`.
+pub fn build_opt_set(near: &Path) -> Result<bool, Error> {
+    Ok(find(near)?.opt_set)
+}
 
 /// Sets the build option `key`, one of [`BUILD_KEYS`], from `value` as the command line spells
 /// it. The error says what `key` takes.
@@ -137,6 +145,13 @@ pub fn set_build_option(opts: &mut Options, key: &str, value: &str) -> Result<()
         "create2-deployer" => {
             opts.deployer =
                 address(value).ok_or_else(|| format!("takes an address, not `{value}`"))?
+        }
+        "opt" => {
+            opts.opt = match value {
+                "fast" => Opt::Fast,
+                "release" => Opt::Release,
+                _ => return Err(format!("takes `fast` or `release`, not `{value}`")),
+            }
         }
         _ => return Err("is not a build option".to_string()),
     }
@@ -229,6 +244,9 @@ pub(crate) fn parse(text: &str) -> Result<Config, (usize, String)> {
                 text.ok_or_else(|| format!("takes a quoted string, not `{value}`"))
                     .and_then(|text| set_build_option(&mut config.build, key, text))
                     .map_err(|msg| (n, format!("`{key}` {msg}")))?;
+                if key == "opt" {
+                    config.opt_set = true;
+                }
             }
             ("package", "src") => {
                 config.src = Some(subdirectory(value).map_err(|msg| (n, format!("`src` {msg}")))?);
@@ -387,6 +405,17 @@ mod tests {
             }
         );
         assert_eq!(parse("[build]\n").unwrap().build, Options::default());
+        assert!(!parse("[build]\n").unwrap().opt_set);
+        assert_eq!(Options::default().opt, Opt::Release);
+        assert_eq!(
+            parse("[build]\nopt = \"fast\"").unwrap().build.opt,
+            Opt::Fast
+        );
+        assert!(parse("[build]\nopt = \"release\"").unwrap().opt_set);
+        assert_eq!(
+            parse("[build]\nopt = \"release\"").unwrap().build.opt,
+            Opt::Release
+        );
         assert_eq!(
             parse("[build]\nevm-version = \"osaka\"").unwrap().build.evm,
             EvmVersion::Osaka
@@ -413,6 +442,14 @@ mod tests {
         );
         assert_eq!(err("[build]\noptimize = true").1, "unknown key `optimize`");
         assert_eq!(
+            err("[build]\nopt = \"none\"").1,
+            "`opt` takes `fast` or `release`, not `none`"
+        );
+        assert_eq!(
+            err("[build]\nopt = fast").1,
+            "`opt` takes a quoted string, not `fast`"
+        );
+        assert_eq!(
             err("evm-version = \"osaka\"").1,
             "unknown key `evm-version`"
         );
@@ -431,6 +468,16 @@ mod tests {
         let file = dir.join("src/a.lithe");
         std::fs::write(&file, "").unwrap();
         assert_eq!(build_options(&file).unwrap().evm, EvmVersion::Prague);
+        assert!(!build_opt_set(&file).unwrap());
+        assert_eq!(build_options(&file).unwrap().opt, Opt::Release);
+        std::fs::write(dir.join("lithe.toml"), "[build]\nopt = \"fast\"\n").unwrap();
+        assert!(build_opt_set(&file).unwrap());
+        assert_eq!(build_options(&file).unwrap().opt, Opt::Fast);
+        std::fs::write(
+            dir.join("lithe.toml"),
+            "[build]\nevm-version = \"prague\"\n",
+        )
+        .unwrap();
         assert_eq!(
             build_options(&dir.join("src")).unwrap().evm,
             EvmVersion::Prague
