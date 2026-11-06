@@ -43,10 +43,12 @@ impl<'a> Gen<'a> {
                 .iter()
                 .position(|(_, label, done)| !done && self.code.contains(&Inst::PushLabel(*label)));
             let Some(i) = next else {
+                self.helper = None;
                 return Ok(());
             };
             self.subs[i].2 = true;
             let (sub, label, _) = self.subs[i];
+            self.helper = Some(i);
             self.jumpdest(label);
             match sub {
                 Sub::JournalLoad => self.sub_journal_load(),

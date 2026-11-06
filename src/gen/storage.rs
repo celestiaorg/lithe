@@ -2681,6 +2681,32 @@ impl<'a> Gen<'a> {
                 _ => None,
             })
             .collect();
+        // Each word's stores go in one pass. Where dropping one joins code that stores a word
+        // too, which words go depends on their order, so each goes in turn instead.
+        let unread: std::collections::HashSet<u32> = self
+            .cache_words
+            .iter()
+            .map(|&at| at as u32)
+            .filter(|at| !read.contains(at))
+            .collect();
+        let mut out: Vec<(Inst, usize)> = Vec::with_capacity(self.code.len());
+        let mut joined = false;
+        for (i, &inst) in self.code.iter().enumerate() {
+            out.push((inst, i));
+            if let [.., (Inst::Op(DUP1), k), (Inst::Mem(at), _), (Inst::Op(MSTORE), _)] = out[..] {
+                if unread.contains(&at) {
+                    if k + 2 != i {
+                        joined = true;
+                        break;
+                    }
+                    out.truncate(out.len() - 3);
+                }
+            }
+        }
+        if !joined {
+            self.code = out.into_iter().map(|(inst, _)| inst).collect();
+            return;
+        }
         for &at in &self.cache_words {
             if read.contains(&(at as u32)) {
                 continue;

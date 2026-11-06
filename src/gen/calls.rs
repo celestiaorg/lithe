@@ -346,10 +346,10 @@ impl<'a> Gen<'a> {
 
     /// A deferred call's value, captured at the `defer`. Zero is no value: the call sends
     /// none either way.
-    fn capture_value(&mut self, value: Option<&Expr>) -> Result<Option<i32>, Error> {
+    fn capture_value(&mut self, value: Option<&Expr>, staged: bool) -> Result<Option<i32>, Error> {
         match value {
             Some(v) if !self.const_word(v).is_some_and(|w| w.is_zero()) => {
-                let at = self.arena_alloc(1);
+                let at = self.defer_word(staged, 2);
                 self.compile_value(v)?;
                 self.mstore_off(at);
                 Ok(Some(at))
@@ -376,8 +376,8 @@ impl<'a> Gen<'a> {
                 ..
             } => {
                 let (marker, len) = self.peer_code(name, *line, *col)?;
-                let value_at = self.capture_value(value)?;
-                let gas = self.arena_word(gas)?;
+                let value_at = self.capture_value(value, false)?;
+                let gas = self.arena_word(gas, false)?;
                 let salt_at = match base {
                     Some(salt) => {
                         let at = self.arena_alloc(1);
@@ -413,6 +413,7 @@ impl<'a> Gen<'a> {
                     captures: self.loop_captures(then),
                     locals: Vec::new(),
                     drain: None,
+                    rebuild: None,
                 })
             }
             Expr::Call {
@@ -424,7 +425,7 @@ impl<'a> Gen<'a> {
                 let code = self.arena_alloc(1);
                 self.compile_value(&args[0])?;
                 self.mstore_off(code);
-                let value_at = self.capture_value(value)?;
+                let value_at = self.capture_value(value, false)?;
                 let salt_at = match base {
                     Some(salt) => {
                         let at = self.arena_alloc(1);
@@ -452,6 +453,7 @@ impl<'a> Gen<'a> {
                     captures: self.loop_captures(then),
                     locals: Vec::new(),
                     drain: None,
+                    rebuild: None,
                 })
             }
             Expr::Call {
@@ -468,7 +470,13 @@ impl<'a> Gen<'a> {
             } => {
                 // The target, then the calldata as a `bytes` value, which stays where it is
                 // until the call runs.
-                let to = self.arena_alloc(2);
+                let staged = self.stages(args.iter().chain(value).chain(gas));
+                let (to, data) = if staged {
+                    (self.stage[1], self.stage[0])
+                } else {
+                    let to = self.arena_alloc(2);
+                    (to, to + 32)
+                };
                 self.compile_value(&args[0])?;
                 self.mstore_off(to);
                 // Checked calldata bytes are copied only when the call runs.
@@ -482,15 +490,15 @@ impl<'a> Gen<'a> {
                         false
                     }
                 };
-                self.mstore_off(to + 32);
-                let value_at = self.capture_value(value)?;
-                let gas = self.arena_word(gas)?;
+                self.mstore_off(data);
+                let value_at = self.capture_value(value, staged)?;
+                let gas = self.arena_word(gas, staged)?;
                 let delegate = *kind == Builtin::DelegateCall;
                 self.push_op(OpSite {
                     to,
                     value: value_at,
                     gas,
-                    data: Some(to + 32),
+                    data: Some(data),
                     size: 0,
                     dynamic: false,
                     create: None,
@@ -506,6 +514,7 @@ impl<'a> Gen<'a> {
                     captures: self.loop_captures(then),
                     locals: Vec::new(),
                     drain: None,
+                    rebuild: None,
                 })
             }
             Expr::Call {
@@ -528,7 +537,7 @@ impl<'a> Gen<'a> {
                 self.mstore_off(to);
                 self.compile_value(&args[1])?;
                 self.mstore_off(to + 32);
-                let gas = self.arena_word(gas)?;
+                let gas = self.arena_word(gas, false)?;
                 self.push_op(OpSite {
                     to,
                     value: Some(to + 32),
@@ -547,6 +556,7 @@ impl<'a> Gen<'a> {
                     captures: self.loop_captures(then),
                     locals: Vec::new(),
                     drain: None,
+                    rebuild: None,
                 })
             }
             Expr::Call {
@@ -558,35 +568,60 @@ impl<'a> Gen<'a> {
             } => {
                 let sig = self.checked.ifaces[iface][*method].sig.clone();
                 let sel = selector(&sig);
+                let staged =
+                    self.stages(args.iter().chain([base.as_ref()]).chain(value).chain(gas));
+                let dynamic = args.iter().any(|a| {
+                    self.is_dynamic(a.ty()) || self.list_value(a.ty()) || self.tree(a.ty())
+                });
+                let tree = args.iter().any(|a| self.tree(a.ty()) || self.cd_tree(a));
+                let record = (self.plan.stage
+                    && !staged
+                    && !self.fires_here()
+                    && !dynamic
+                    && !tree
+                    && value.is_none()
+                    && gas.is_none()
+                    && !self.crossed
+                    && self.body.as_ref().is_some_and(|b| !b.queued))
+                .then(|| {
+                    self.return_sites += 1;
+                    self.region(Region::Defer(self.return_sites), 0)
+                });
+                let start = self.code.len();
                 let to = match self.settled_word(base) {
                     Some(at) => at,
                     None => {
-                        let to = self.arena_alloc(1);
+                        let to = match record {
+                            Some(at) => at,
+                            None => self.defer_word(staged, 1),
+                        };
                         self.compile_value(base)?;
                         self.mstore_off(to);
                         to
                     }
                 };
-                let value_at = self.capture_value(value)?;
-                let gas = self.arena_word(gas)?;
-                let dynamic = args.iter().any(|a| {
-                    self.is_dynamic(a.ty()) || self.list_value(a.ty()) || self.tree(a.ty())
-                });
+                let value_at = self.capture_value(value, staged)?;
+                let gas = self.arena_word(gas, staged)?;
                 let words = self.arg_words(args);
                 let size = 4 + u64::from(words) * 32;
-                let data = if args.iter().any(|a| self.tree(a.ty()) || self.cd_tree(a)) {
-                    let slot = self.arena_alloc(1);
+                let data = if tree {
+                    let slot = self.defer_word(staged, 0);
                     self.tree_calldata(sel, args, slot)?;
                     slot
                 } else if dynamic {
-                    let slot = self.arena_alloc(1);
+                    let slot = self.defer_word(staged, 0);
                     self.encode_dynamic_call(sel, args, slot)?;
                     slot
                 } else {
-                    let data = self.arena_alloc(words + 1);
+                    let data = match record {
+                        _ if staged => self.stage[0],
+                        Some(at) => at + 32,
+                        None => self.arena_alloc(words + 1),
+                    };
                     self.encode_call(sel, args, data)?;
                     data
                 };
+                let rebuild = record.map(|at| (start, self.code.len(), at));
                 self.push_op(OpSite {
                     to,
                     value: value_at,
@@ -605,6 +640,7 @@ impl<'a> Gen<'a> {
                     captures: self.loop_captures(then),
                     locals: Vec::new(),
                     drain: None,
+                    rebuild,
                 })
             }
             Expr::Call {
@@ -743,6 +779,7 @@ impl<'a> Gen<'a> {
             captures: Vec::new(),
             locals: Vec::new(),
             drain: None,
+            rebuild: None,
         };
         let skip = self.fresh();
         self.after_call(&op, skip)?;
@@ -750,10 +787,39 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// Whether the `defer` being compiled runs where it stands, with nothing it computes
+    /// first able to defer too, so that its words can go to `Region::Stage`, which only
+    /// its call reads.
+    fn stages<'e>(&self, mut exprs: impl Iterator<Item = &'e Expr>) -> bool {
+        self.plan.stage && self.fires_here() && !exprs.any(|e| self.defers(e))
+    }
+
+    /// Whether computing `e` may defer a call, which could stage its own words.
+    fn defers(&self, e: &Expr) -> bool {
+        let defers = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Defer { .. }));
+        self.expr_any(e, &defers, &mut Vec::new())
+    }
+
+    /// Whether `push_op` runs the call being compiled where it stands.
+    fn fires_here(&self) -> bool {
+        self.fire_loop
+            || (self.fire_tail && !self.body.as_ref().is_some_and(|b| b.queued) && self.fires_now())
+    }
+
+    /// The `k`th word of `Region::Stage` for a call that runs where it stands, else a word
+    /// of the arena.
+    fn defer_word(&mut self, staged: bool, k: usize) -> i32 {
+        if staged {
+            self.stage[k]
+        } else {
+            self.arena_alloc(1)
+        }
+    }
+
     /// A `with` option's word, kept in the arena until the call runs.
-    fn arena_word(&mut self, e: Option<&Expr>) -> Result<Option<i32>, Error> {
+    fn arena_word(&mut self, e: Option<&Expr>, staged: bool) -> Result<Option<i32>, Error> {
         let Some(e) = e else { return Ok(None) };
-        let at = self.arena_alloc(1);
+        let at = self.defer_word(staged, 3);
         self.compile_value(e)?;
         self.mstore_off(at);
         Ok(Some(at))
@@ -1125,6 +1191,17 @@ impl<'a> Gen<'a> {
     /// its calls, in which case each `defer` appends a node: `[next, site, words...]`,
     /// holding the site's captured arena words and the loop locals its continuation reads.
     pub(super) fn push_op(&mut self, mut site: OpSite) -> Result<(), Error> {
+        let staged = [Some(site.to), site.data, site.value, site.gas]
+            .into_iter()
+            .flatten()
+            .any(|at| self.stage.contains(&at));
+        if staged && !self.fires_here() {
+            return Err(error(
+                0,
+                0,
+                "internal: a staged call no longer runs where it stands",
+            ));
+        }
         let queued = !self.fire_loop && self.body.as_ref().is_some_and(|b| b.queued);
         if let Some(then) = &site.then {
             let mut read = Vec::new();
@@ -1263,9 +1340,10 @@ impl<'a> Gen<'a> {
             && !self.shared
             && !self.crossed
             && !self.any_nonreentrant
-            && self.body.as_ref().is_some_and(|b| {
-                b.ops.is_empty() && !b.nested && b.writes.is_empty() && !b.journal_stores
-            })
+            && self
+                .body
+                .as_ref()
+                .is_some_and(|b| b.ops.is_empty() && b.writes.is_empty() && !b.journal_stores)
     }
 
     /// Whether a loop that ends its body can run its `defer`s where they stand. Between
@@ -1596,6 +1674,89 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Moves the code that wrote a call's target and calldata at its `defer` to here, writing
+    /// `Region::Stage`'s target word and the query buffer, which every query writes just before
+    /// its call too, when running it now gives the same words: it is straight-line,
+    /// reads only the environment, calldata, and locals no code after it writes, and writes
+    /// only its own words. Its place at the `defer` is left with code that does nothing.
+    fn rebuild(&mut self, op: &OpSite) -> Option<OpSite> {
+        let (start, end, record) = op.rebuild?;
+        let region = |a: u32| (a >> REGION_SHIFT) as usize;
+        let own = region(record as u32);
+        let code = &self.code[start..end];
+        let mut read = Vec::new();
+        let mut depth = 0usize;
+        for (i, inst) in code.iter().enumerate() {
+            let io = match *inst {
+                Inst::Mem(a) => {
+                    let local = matches!(self.spaces[region(a) - 1].region, Region::Local(_));
+                    match code.get(i + 1) {
+                        Some(Inst::Op(MLOAD)) if local => read.push(region(a)),
+                        Some(Inst::Op(MSTORE)) if region(a) == own => {}
+                        _ => return None,
+                    }
+                    (0, 1)
+                }
+                Inst::Push(_) | Inst::Imm(..) => (0, 1),
+                Inst::Op(o @ (MLOAD | MSTORE)) if i > 0 && matches!(code[i - 1], Inst::Mem(_)) => {
+                    asm::stack_io(o)?
+                }
+                Inst::Op(
+                    o @ (0x01..=0x0b
+                    | 0x10..=0x1e
+                    | ADDRESS
+                    | ORIGIN
+                    | CALLER
+                    | CALLVALUE
+                    | CALLDATALOAD
+                    | CHAINID
+                    | POP
+                    | PUSH0
+                    | 0x80..=0x9f),
+                ) => asm::stack_io(o)?,
+                _ => return None,
+            };
+            depth = depth.checked_sub(io.0)? + io.1;
+        }
+        if depth != 0 {
+            return None;
+        }
+        let rest = &self.code[end..];
+        let written = rest.iter().enumerate().any(|(i, inst)| {
+            matches!(*inst, Inst::Mem(a) if read.contains(&region(a)))
+                && rest.get(i + 1) != Some(&Inst::Op(MLOAD))
+        });
+        if written {
+            return None;
+        }
+        let zero = Inst::Push(Word::from_u64(0));
+        let mut idle = Vec::with_capacity(end - start);
+        if (end - start) % 2 == 1 {
+            idle.extend([zero, Inst::Op(ISZERO), Inst::Op(POP)]);
+        }
+        while idle.len() < end - start {
+            idle.extend([zero, Inst::Op(POP)]);
+        }
+        let moved: Vec<Inst> = self.code.splice(start..end, idle).collect();
+        for inst in moved {
+            match inst {
+                Inst::Mem(a) if region(a) == own => match a as i32 - record {
+                    0 => self.push_mem(self.stage[1]),
+                    off => self.push_mem(self.query_buf + off - 32),
+                },
+                Inst::Mem(a) => self.push_mem(a as i32),
+                other => self.code.push(other),
+            }
+        }
+        let mut op = op.clone();
+        if op.to == record {
+            op.to = self.stage[1];
+        }
+        op.data = Some(self.query_buf);
+        op.rebuild = None;
+        Some(op)
+    }
+
     /// One captured call: the call itself, then its continuation. `skip` is where the
     /// code after the call continues.
     fn replay_op(&mut self, op: &OpSite, skip: u32) -> Result<(), Error> {
@@ -1612,6 +1773,8 @@ impl<'a> Gen<'a> {
     }
 
     fn replay_call(&mut self, op: &OpSite, skip: u32) -> Result<(), Error> {
+        let rebuilt = self.rebuild(op);
+        let op = rebuilt.as_ref().unwrap_or(op);
         if let Some(callee) = op.drain {
             return self.drain_record(op.to, callee);
         }
@@ -1642,6 +1805,13 @@ impl<'a> Gen<'a> {
         // A result of fixed words is written by the call into the buffer that decodes it.
         match self.fixed_result(op) {
             _ if op.cd_data => {}
+            // The result is decoded before anything else stages, and a staged call reads its
+            // input before it writes its result over it.
+            Some(words) if self.plan.stage => {
+                self.push_u64(u64::from(words) * 32);
+                self.push_mem(self.stage[0]);
+                self.ret_out = Some(self.stage[0]);
+            }
             Some(words) => {
                 self.return_sites += 1;
                 let buf = self.region(Region::Returned(self.return_sites), words * 32);
@@ -2614,7 +2784,7 @@ impl<'a> Gen<'a> {
         let share = self.next_share.take().filter(|_| picks.is_empty());
         self.share = share.map(|(key, label)| (key, label, self.compiling.len()));
         let result = (|| {
-            self.tail = self.share.is_some();
+            self.tail = true;
             self.compile_top(&then.stmts, &mut picks)?;
             self.store_image();
             self.ops_then_records(|g| g.exec_ops())

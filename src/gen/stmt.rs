@@ -2684,7 +2684,7 @@ impl<'a> Gen<'a> {
         let stmts = self.checked.prog.funcs[idx].stmts.clone();
         let tail = self.checked.prog.funcs[idx].tail.clone();
         let ret = self.checked.prog.funcs[idx].ret_ty;
-        stmts.iter().try_for_each(|s| self.compile_stmt(s))?;
+        self.compile_seq(&stmts)?;
         if let Some(tail) = &tail {
             let tret = &self.checked.types[ret];
             if tret.kind == TyKind::Tuple {
@@ -2995,6 +2995,7 @@ impl<'a> Gen<'a> {
             captures: Vec::new(),
             locals: Vec::new(),
             drain: Some(idx),
+            rebuild: None,
         };
         self.push_op(site)?;
         self.leave_branch();

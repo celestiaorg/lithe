@@ -149,11 +149,12 @@ const STOP: u8 = 0x00;
 
 /// How the names of values kept from calldata, which no store changes, begin.
 const CALLDATA_VALUE: &str = "@cd";
-/// Rounds of variant moves, and of one-function outline toggles, against the cheapest build.
-const MAX_VARIANT_ROUNDS: usize = 4;
+/// Rounds of one-function outline toggles against the cheapest build.
 const MAX_TOGGLE_ROUNDS: usize = 16;
 /// How much more than the start a toggle can cost and still be tried in the next round.
 const RETRY_COST: f64 = 500.0;
+/// The most outlined functions whose every pair is also tried toggled together.
+const MAX_PAIRED: usize = 6;
 /// What a build over the size limit adds to its cost, so that any build that fits is cheaper.
 const OVER_LIMIT: f64 = 1e15;
 /// Gas a call to an outlined function adds: pushes, jumps and jumpdests there and back.
@@ -213,7 +214,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             };
         }
     };
-    let emit = |plan: &Plan| -> Result<(Emitted, Vec<Facet>), Error> {
+    let emit = |plan: &Plan| -> Result<(Emitted, Vec<Facet>, Decides), Error> {
         let mut g = Gen::new(checked, plan.clone(), shape)?;
         g.imm_consts = imm_consts.clone();
         g.emit()?;
@@ -230,14 +231,18 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             tail_blobs: std::mem::take(&mut g.tail_blobs),
             heap: g.heap,
         };
-        Ok((emitted, std::mem::take(&mut g.needs)))
+        let decides = Decides {
+            frames: g.frames_decide,
+            raises: g.raises_decide,
+        };
+        Ok((emitted, std::mem::take(&mut g.needs), decides))
     };
     let limit = shape.opts.size_limit;
-    let finish = |e: &Emitted, both: bool| -> Result<Finished, Error> {
+    let finish_with = |e: &Emitted, both: bool, again: bool| -> Result<Finished, Error> {
         let mut code = e.code.clone();
         asm::optimize(&mut code);
         let leaves: HashMap<u32, usize> = e.leaves.iter().copied().collect();
-        asm::outline(&mut code, &e.entries, both, |code| {
+        asm::outline(&mut code, &e.entries, both, again, |code| {
             asm::track::pass(code, |c| asm::tail_calls(c, &leaves));
             asm::track::pass(code, asm::rotate_loops);
             asm::track::pass(code, asm::hoist);
@@ -268,6 +273,16 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             cost,
         })
     };
+    // The search ranks plans by builds that share runs in one round and are not optimized
+    // again after, which cost a fraction as much. One that looks over the limit is finished
+    // in full, so that what fits is judged by real sizes.
+    let finish = |e: &Emitted, both: bool| -> Result<Finished, Error> {
+        let built = finish_with(e, both, both)?;
+        if both || built.bytes <= limit {
+            return Ok(built);
+        }
+        finish_with(e, false, true)
+    };
     // Plans often emit the same program, which is optimized once.
     let done = std::sync::Mutex::new(HashMap::<Arc<Emitted>, Arc<Finished>>::new());
     // The outline sets of builds over the limit. Inlining more only grows code, so later
@@ -276,17 +291,18 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     // Each plan's build, or the error building it hit. Builds over the limit are noted by
     // `note_big`, only once the search uses them.
     let build_raw = |plans: &[Plan]| -> Vec<Result<Candidate, Error>> {
-        let emitted: Vec<Result<(Arc<Emitted>, Vec<Facet>), Error>> = parallel_map(plans, emit)
-            .into_iter()
-            .map(|e| e.map(|(e, needs)| (Arc::new(e), needs)))
-            .collect();
+        let emitted: Vec<Result<(Arc<Emitted>, Vec<Facet>, Decides), Error>> =
+            parallel_map(plans, emit)
+                .into_iter()
+                .map(|e| e.map(|(e, needs, decides)| (Arc::new(e), needs, decides)))
+                .collect();
         let todo: Vec<&Arc<Emitted>> = {
             let done = done.lock().unwrap_or_else(|e| e.into_inner());
             let mut seen = HashSet::new();
             emitted
                 .iter()
                 .flatten()
-                .map(|(e, _)| e)
+                .map(|(e, ..)| e)
                 .filter(|&e| !done.contains_key(e) && seen.insert(e))
                 .collect()
         };
@@ -307,7 +323,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             .iter()
             .zip(emitted)
             .map(|(plan, e)| {
-                let (e, needs) = e?;
+                let (e, needs, decides) = e?;
                 let Some(built) = done.get(&e).cloned() else {
                     return Err(failed[&e].clone());
                 };
@@ -316,6 +332,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                     built,
                     emitted: e,
                     needs,
+                    decides,
                 })
             })
             .collect()
@@ -364,10 +381,9 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     let build_all = |plans: &[Plan]| -> Result<Vec<Candidate>, Error> {
         build_each(plans).into_iter().collect()
     };
-    // Keeping a hashed slot saves gas, but can cost bytes where the optimizer would have
-    // shared the hashing instead, and a tight site can keep the outliner from sharing it.
-    // A shared slice helper can also cost bytes where the outliner would have shared the
-    // inlined copies instead, so slices that could share are built both ways.
+    // A tight site can keep the outliner from sharing it. A shared slice helper can cost
+    // bytes where the outliner would have shared the inlined copies instead, so slices that
+    // could share are built both ways.
     let mut slices = vec![plan.shared_slice];
     if plan.shared_slice.contains(&true) {
         slices.push([false; 2]);
@@ -381,7 +397,8 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     if outlines.last().is_some_and(|o| !o.is_empty()) {
         outlines.push(Default::default());
     }
-    let variant_moves = |p: &Plan| -> Vec<Vec<Move>> {
+    let variant_moves = |c: &Candidate| -> Vec<Vec<Move>> {
+        let p = &c.plan;
         let too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
         let mut dims = vec![
             outlines
@@ -396,14 +413,19 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                 .copied()
                 .map(Move::Slice)
                 .collect(),
-            vec![Move::CacheSlots(!p.cache_slots)],
             vec![Move::Tight(!p.tight)],
-            vec![Move::Frames(!p.frames)],
-            vec![Move::Sink(!p.sink)],
         ];
-        if p.tight {
-            dims.push(vec![Move::HoldDups(!p.hold_dups)]);
-            dims.push(vec![Move::OutlineRaises(!p.outline_raises)]);
+        // A flag that decided nothing builds the same program turned the other way.
+        if c.decides.frames {
+            dims.push(vec![Move::Frames(!p.frames)]);
+        }
+        // Slots stay kept, and sinking and lone raises out of line, once on, stay on: across
+        // the bench, examples and fuzz programs, turning them off never built cheaper.
+        if !p.sink {
+            dims.push(vec![Move::Sink(true)]);
+        }
+        if p.tight && !p.outline_raises && c.decides.raises {
+            dims.push(vec![Move::OutlineRaises(true)]);
         }
         dims
     };
@@ -494,33 +516,28 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     let start = Plan {
         cache_slots: true,
         tight: true,
-        hold_dups: false,
         frames: true,
         sink: false,
         forward_consts: on,
         static_heap: on,
         every_bump: on,
+        stage: on,
         specialize: match forced_specs {
             Some(true) => plan.specializable.clone(),
             _ => Default::default(),
         },
         ..plan.clone()
     };
-    let variant_rounds = |mut best: Candidate| -> Result<Candidate, Error> {
-        for _ in 0..MAX_VARIANT_ROUNDS {
-            let cost = best.cost();
-            let moves = variant_moves(&best.plan);
-            best = round(best, &moves)?.0;
-            if best.cost() >= cost {
-                break;
-            }
-        }
-        Ok(best)
+    // One round of variant moves: across the bench, examples and fuzz programs, a second round
+    // from the moves kept saved a byte in two programs.
+    let variant_round = |best: Candidate| -> Result<Candidate, Error> {
+        let moves = variant_moves(&best);
+        Ok(round(best, &moves)?.0)
     };
     let mut best = build_all(std::slice::from_ref(&start))?
         .pop()
         .expect("a build");
-    best = variant_rounds(best)?;
+    best = variant_round(best)?;
     // Outlined functions some calls pass constants are also tried compiled once per set of
     // constants their calls pass.
     let mut specs: Vec<usize> = match forced_specs {
@@ -562,6 +579,27 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             break;
         }
     }
+    // Two functions can pay inlined only together.
+    let mut outlined: Vec<usize> = best.plan.outline.iter().copied().collect();
+    outlined.sort_unstable();
+    if outlined.len() <= MAX_PAIRED {
+        let pairs: Vec<Plan> = outlined
+            .iter()
+            .enumerate()
+            .flat_map(|(i, &f)| outlined[i + 1..].iter().map(move |&g| (f, g)))
+            .map(|(f, g)| {
+                let mut p = best.plan.clone();
+                Move::Toggle(f).apply(&mut p);
+                Move::Toggle(g).apply(&mut p);
+                p
+            })
+            .collect();
+        for c in build_all(&pairs)? {
+            if c.cost() < best.cost() {
+                best = c;
+            }
+        }
+    }
     // Holding words across blocks that abandon the stack changes the code every other
     // choice sees, and a search that starts with it can end worse than one without it. So
     // it is tried on the plan found, and kept only where cheaper, with the variants tried
@@ -570,7 +608,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         .pop()
         .expect("a build");
     if held.cost() < best.cost() {
-        best = variant_rounds(held)?;
+        best = variant_round(held)?;
     }
     // A build over the limit outlines more. Each function alone is outlined, then the sets
     // that add them in order of bytes saved per gas added, and the cheapest set that fits
@@ -583,7 +621,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             if best.built.bytes <= limit {
                 break;
             }
-            best = variant_rounds(best)?;
+            best = variant_round(best)?;
         }
         while best.built.bytes > limit {
             let mut rest: Vec<usize> = (&plan.outlinable - &best.plan.outline)
@@ -659,9 +697,17 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         let moves: Vec<&Move> = order.into_iter().map(|(_, m)| m).collect();
         best = chain(best, &moves, false)?;
     }
-    // Constants and static allocations are tried on the chosen plan only: across every
-    // move they would double the builds for a few more bytes.
+    // Staging, constants and static allocations are tried on the chosen plan only: across
+    // every move they would double the builds for a few more bytes. Staging also makes a
+    // call's copies alike, which can tip a near tie in the search toward inlining helpers
+    // whose branches facts at the call sites decide, which the model overrates.
     if forced.is_none() {
+        let staged = build_all(&[Move::Stage.applied(&best.plan)])?
+            .pop()
+            .expect("a build");
+        if staged.cost() < best.cost() {
+            best = staged;
+        }
         let tries = [Move::ForwardConsts, Move::StaticHeap].map(|m| m.applied(&best.plan));
         for c in build_all(&tries)? {
             if c.cost() < best.cost() {
@@ -687,7 +733,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         // builds the same bytes, which the certificates must describe.
         let mut certs = certify::Certs::default();
         asm::track::start();
-        let again = emit(&best.plan).and_then(|(e, _)| finish(&e, true));
+        let again = emit(&best.plan).and_then(|(e, ..)| finish(&e, true));
         if let (Some(t), Ok(again)) = (asm::track::take(), again) {
             if std::env::var_os("LITHE_PROVE_DEBUG").is_some() {
                 let inlined = t
@@ -783,6 +829,14 @@ struct Candidate {
     emitted: Arc<Emitted>,
     built: Arc<Finished>,
     needs: Vec<Facet>,
+    decides: Decides,
+}
+
+/// Which of a plan's flags changed what its build emitted.
+#[derive(Clone, Copy)]
+struct Decides {
+    frames: bool,
+    raises: bool,
 }
 
 impl Plan {
@@ -816,9 +870,7 @@ impl Candidate {
 enum Move {
     Outline(std::collections::HashSet<usize>),
     Slice([bool; 2]),
-    CacheSlots(bool),
     Tight(bool),
-    HoldDups(bool),
     Frames(bool),
     Sink(bool),
     Abandon(bool),
@@ -827,6 +879,8 @@ enum Move {
     ForwardConsts,
     /// Forward stored constants, and place allocations at constant addresses.
     StaticHeap,
+    /// Stage calls in `Region::Stage`.
+    Stage,
     /// Inline the function if the plan outlines it, else outline it.
     Toggle(usize),
     /// Specialize an outlined function to the constants its calls pass, or stop.
@@ -838,14 +892,13 @@ impl Move {
         match self {
             Move::Outline(o) => p.outline = o.clone(),
             Move::Slice(s) => p.shared_slice = *s,
-            Move::CacheSlots(b) => p.cache_slots = *b,
             Move::Tight(b) => p.tight = *b,
-            Move::HoldDups(b) => p.hold_dups = *b,
             Move::Frames(b) => p.frames = *b,
             Move::Sink(b) => p.sink = *b,
             Move::Abandon(b) => p.abandon = *b,
             Move::OutlineRaises(b) => p.outline_raises = *b,
             Move::ForwardConsts => p.forward_consts = true,
+            Move::Stage => p.stage = true,
             Move::StaticHeap => {
                 p.forward_consts = true;
                 p.static_heap = true;
@@ -861,8 +914,7 @@ impl Move {
                 }
             }
         }
-        // Only tight builds hold copies or outline lone raises.
-        p.hold_dups &= p.tight;
+        // Only tight builds outline lone raises.
         p.outline_raises &= p.tight;
     }
 
@@ -939,7 +991,7 @@ fn creation(
     if optimize {
         asm::optimize(&mut code);
         let leaves = g.func_leaves_by_label();
-        asm::outline(&mut code, &g.entry_labels, true, |code| {
+        asm::outline(&mut code, &g.entry_labels, true, true, |code| {
             asm::track::pass(code, |c| asm::tail_calls(c, &leaves));
             asm::track::pass(code, asm::rotate_loops);
             asm::track::pass(code, asm::hoist);
@@ -1406,6 +1458,11 @@ enum Region {
     FnRet(usize),
     /// Per-body storage for captured deferred calls.
     Arena(usize),
+    /// One deferred call's target and calldata, unless they are written where it runs.
+    Defer(usize),
+    /// Per-body flags that calls deferred under branches were deferred: every epilogue
+    /// reads them, so they get a region of their own.
+    Fired(usize),
     /// One `emit`'s data words, laid out just before its log.
     Log(usize),
     /// An encoded error's head words, before they join its tails.
@@ -1425,6 +1482,10 @@ enum Region {
     /// is the one a local held then, or one a nested write copied for a local, so the list
     /// and its room are that local's alone.
     Room,
+    /// A call that runs where it is deferred: its input words, then its target, value and
+    /// gas. Only the call reads them, and its result is decoded before anything else stages,
+    /// so every call shares them, results included.
+    Stage(u8),
 }
 
 /// Which bodies touch a region. Two regions can share memory when no body touches both.
@@ -1508,9 +1569,6 @@ struct Plan {
     /// Whether each site takes its smallest form even where that keeps the outliner from
     /// sharing it with other sites.
     tight: bool,
-    /// Whether a value copied by `DUP1` to be stored stays on the stack under the copy.
-    /// That can keep the outliner from sharing a tail, so tight builds try it both ways.
-    hold_dups: bool,
     /// Whether a body's own regions may overlap those of functions compiled once that it
     /// never runs. Bodies then touch less memory, but alike bodies can place their regions
     /// apart, which keeps the outliner from sharing their code, so both are built.
@@ -1524,6 +1582,9 @@ struct Plan {
     /// Whether every allocation where the top is unknown bumps it inline too, not only
     /// those the cost model picks, so tests reach each site.
     every_bump: bool,
+    /// Whether calls that run where they are deferred stage their words in `Region::Stage`,
+    /// and every call decodes its fixed result from there.
+    stage: bool,
     /// Whether a promoted word may sink under an operand an op takes from beneath it, and
     /// a stored value be rotated under the items above it to stay on the stack. That holds
     /// more words, but the swaps can keep the outliner from sharing code.
@@ -1751,6 +1812,7 @@ enum SrcKind {
 }
 
 /// A deferred call whose target, value, and calldata were captured at the `defer`.
+#[derive(Clone)]
 struct OpSite {
     to: i32,
     value: Option<i32>,
@@ -1788,6 +1850,9 @@ struct OpSite {
     /// Not a call but the calls a frame called across into left queued, from the function
     /// called across: `to` holds the transient record they wait in.
     drain: Option<usize>,
+    /// The code that wrote the target and calldata at the `defer`, and the
+    /// `Region::Defer` it wrote them to: `rebuild` may move it to where the call runs.
+    rebuild: Option<(usize, usize, i32)>,
 }
 
 /// What one entry body did, gathered while it compiles.
@@ -1814,6 +1879,9 @@ struct Body {
     op_checks: Vec<(usize, usize)>,
     arena_next: i32,
     arena: i32,
+    /// The last word taken for a flag that a call under a branch was deferred, in the
+    /// body's `Region::Fired`, or zero before any.
+    fired: i32,
     event_count: i32,
     op_count: i32,
     journal_stores: bool,
@@ -1916,6 +1984,8 @@ struct Gen<'a> {
     scratch_c: i32,
     scratch_to: i32,
     scratch_val: i32,
+    /// `Region::Stage`'s words: the input, the target, the value, the gas.
+    stage: [i32; 4],
     /// Where a shared string helper keeps the slot it was given.
     key_scratch: i32,
     base64_tbl: i32,
@@ -1987,6 +2057,11 @@ struct Gen<'a> {
     /// Temporaries of shared code. Each serves one site, so only the code that made it
     /// names it, and it can live on the stack as a body's words do.
     shared_temps: std::collections::HashSet<usize>,
+    /// The bodies' copy, and each function's and helper's, of a scratch word, by the word's
+    /// region and the user, so the word is that code's alone and can live on the stack.
+    scratch_copies: HashMap<(usize, usize), i32>,
+    /// The helper being compiled, by its place in `subs`.
+    helper: Option<usize>,
     /// The slot on the stack is a transient map entry's, for the next load or store.
     transient_slot: bool,
     /// Creation code of contracts this one creates, appended after its own code: each
@@ -2055,6 +2130,10 @@ struct Gen<'a> {
     branch: u32,
     /// Each immutable's value where `deploy` always sets it to one constant.
     imm_consts: Vec<Option<Word>>,
+    /// Whether the plan's `frames` placed any region apart from another, or kept it apart.
+    frames_decide: bool,
+    /// Whether the plan's `outline_raises` put a raise out of line, or kept one inline.
+    raises_decide: bool,
     /// While building creation code: each immutable's value where every store so far
     /// runs whenever `deploy` does and pushes a constant.
     imm_stores: HashMap<u32, Option<Word>>,

@@ -10,7 +10,9 @@ no Solidity layout has. Each pair must also expose the same functions, and answe
 `supportsInterface` the same for every id either side's code pushes, so no side is
 measured with entrypoints the other lacks.
 
-Needs `anvil` and `cast` (Foundry) and solc. `SOLC` overrides the solc binary.
+Needs `anvil` and `cast` (Foundry) and solc. `SOLC` overrides the solc binary. Solar
+(paradigmxyz/solar) builds the same Solidity too when `solar` is on the path or `SOLAR`
+names it.
 `EVM_VERSION` (`osaka` by default, or `prague`) is the fork Lithe and solc build for
 and anvil runs.
 Run from the repository root: `python3 bench/run.py [name ...]`.
@@ -48,6 +50,10 @@ SOLC_BUILDS = {
     "solc ir r10k": ["--optimize", "--optimize-runs", "10000", "--via-ir"],
     "solc ir r1M": ["--optimize", "--optimize-runs", "1000000", "--via-ir"],
     "solc r200": ["--optimize", "--optimize-runs", "200"],
+}
+SOLAR_BUILDS = {
+    "solar gas": ["-Ogas"],
+    "solar size": ["-Osize"],
 }
 LONG = "a string that is well past thirty one bytes long"
 
@@ -2200,6 +2206,16 @@ def solc(path, flags):
     return "0x" + main["bin"], len(main["bin-runtime"]) // 2, signatures(main["abi"])
 
 
+def solar(path, flags):
+    """`solc`'s result from Solar, which appends no metadata."""
+    out = run([SOLAR, *flags, "--evm-version", EVM, *REMAPPINGS, "--emit", "abi,bin,bin-runtime", path]).stdout
+    contracts = json.loads(out)["contracts"]
+    # Interfaces and abstract contracts come without code.
+    mine = [v for k, v in contracts.items() if k.split(":")[0].endswith(os.path.basename(path)) and "bin-runtime" in v]
+    main = max(mine, key=lambda v: len(v["bin-runtime"]))
+    return "0x" + main["bin"], len(main["bin-runtime"]) // 2, signatures(main["abi"])
+
+
 def signatures(abi):
     """Each function's canonical signature, as its selector hashes it."""
     def ty(p):
@@ -2367,39 +2383,43 @@ def suites():
 def main():
     pairs = sorted(n[:-6] for n in os.listdir(BENCH) if n.endswith(".lithe"))
     wanted = sys.argv[1:] or sorted(suites())
-    order = ["lithe", *SOLC_BUILDS]
+    others = {label: (solc, flags) for label, flags in SOLC_BUILDS.items()}
+    if SOLAR:
+        others.update({label: (solar, flags) for label, flags in SOLAR_BUILDS.items()})
+    order = ["lithe", *others]
+    family = families(order)
     code = {}
     cache = tempfile.mkdtemp()
     seconds = lithe_times(pairs, cache)
     builds = lithe_builds(cache)
     shutil.rmtree(cache)
     print("Runtime bytecode (bytes)\n")
-    header = ["contract", "lithe", *SOLC_BUILDS, "lithe vs best solc"]
+    header = ["contract", "lithe", *others, *(f"lithe vs best {f}" for f in family)]
     rows = []
     for name in pairs:
         code[name] = {"lithe": builds[name]}
-        for label, flags in SOLC_BUILDS.items():
+        for label, (compile, flags) in others.items():
             start = time.perf_counter()
-            code[name][label] = solc(os.path.join(BENCH, name + ".sol"), flags)
+            code[name][label] = compile(os.path.join(BENCH, name + ".sol"), flags)
             seconds[name].append(time.perf_counter() - start)
-        sizes = [code[name][b][1] for b in order]
-        best = min(sizes[1:])
-        rows.append([name, *map(str, sizes), f"{(sizes[0] - best) * 100 / best:+.1f}%"])
-    totals = [sum(int(r[i]) for r in rows) for i in range(1, 1 + len(order))]
-    best = min(totals[1:])
-    rows.append(["total", *map(str, totals), f"{(totals[0] - best) * 100 / best:+.1f}%"])
+        sizes = [str(code[name][b][1]) for b in order]
+        rows.append([name, *sizes, *vs_best(sizes, family)])
+    totals = [str(sum(int(r[i]) for r in rows)) for i in range(1, 1 + len(order))]
+    rows.append(["total", *totals, *vs_best(totals, family)])
     table(header, rows)
 
     print("\nCompile time (ms); lithe cached reads its build cache warm\n")
     rows = [[name, *seconds[name]] for name in pairs]
     rows.append(["total", *(sum(col) for col in zip(*(seconds[n] for n in pairs)))])
-    rows = [[r[0], *(f"{t * 1000:.0f}" for t in r[1:]), f"{r[1] / min(r[3:]):.1f}x"] for r in rows]
-    table(["contract", "lithe", "lithe cached", *SOLC_BUILDS, "lithe vs fastest solc"], rows)
+    # Each other build's column sits one further right, past `lithe cached`.
+    rows = [[r[0], *(f"{t * 1000:.0f}" for t in r[1:]), *(f"{r[1] / min(r[i + 1] for i in idx):.1f}x" for idx in family.values())]
+            for r in rows]
+    table(["contract", "lithe", "lithe cached", *others, *(f"lithe vs fastest {f}" for f in family)], rows)
 
     # A pair is only a fair comparison when both sides have the same entrypoints.
     mismatches = 0
     for name in pairs:
-        for label in SOLC_BUILDS:
+        for label in others:
             lithe, sol = code[name]["lithe"][2], code[name][label][2]
             if lithe != sol:
                 mismatches += 1
@@ -2550,17 +2570,26 @@ def replay(name, suite, code, order, chains):
                     if want.get(k, 0) != have.get(k, 0):
                         print(f"    slot {k}: lithe {want.get(k, 0)} {b} {have.get(k, 0)}")
     print(f"{name}")
-    table(["tx", *order, "lithe vs best solc"], [[*row, vs_best(row[1:])] for row in gas_rows])
+    family = families(order)
+    table(["tx", *order, *(f"lithe vs best {f}" for f in family)], [[*row, *vs_best(row[1:], family)] for row in gas_rows])
     print()
     return mismatches
 
 
-def vs_best(cells):
-    """Lithe's cell against the lowest solc cell, as a percentage; `-` without numbers."""
+def families(order):
+    """The positions in `order` of each other compiler's builds, by its name: the label's first word."""
+    out = {}
+    for i, build in enumerate(order[1:], 1):
+        out.setdefault(build.split()[0], []).append(i)
+    return out
+
+
+def vs_best(cells, family):
+    """Lithe's cell against each compiler's lowest cell, as percentages; `-` without numbers."""
     if not all(c.isdigit() for c in cells):
-        return "-"
-    lithe, best = int(cells[0]), min(int(c) for c in cells[1:])
-    return f"{(lithe - best) * 100 / best:+.1f}%"
+        return ["-"] * len(family)
+    bests = (min(int(cells[i]) for i in idx) for idx in family.values())
+    return [f"{(int(cells[0]) - best) * 100 / best:+.1f}%" for best in bests]
 
 
 def table(header, rows):
@@ -2573,6 +2602,7 @@ def table(header, rows):
 
 
 SOLC = solc_binary()
+SOLAR = os.environ.get("SOLAR") or shutil.which("solar")
 LITHE = lithe_binary()
 
 if __name__ == "__main__":

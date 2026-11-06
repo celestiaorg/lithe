@@ -44,9 +44,12 @@ impl<'a> Gen<'a> {
             scratch_c: 0,
             scratch_to: 0,
             scratch_val: 0,
+            stage: [0; 4],
             key_scratch: 0,
             base64_tbl: 0,
             imm_consts: Vec::new(),
+            frames_decide: false,
+            raises_decide: false,
             imm_stores: HashMap::new(),
             init: false,
             code_args: 0,
@@ -79,6 +82,8 @@ impl<'a> Gen<'a> {
             const_params: HashMap::new(),
             const_strs: HashMap::new(),
             shared_temps: std::collections::HashSet::new(),
+            scratch_copies: HashMap::new(),
+            helper: None,
             func_ctx: None,
             func_calls: std::collections::HashSet::new(),
             transient_slot: false,
@@ -230,6 +235,9 @@ impl<'a> Gen<'a> {
         g.blob_ptr = g.region(Region::BlobPtr, 32);
         g.blob_base = g.region(Region::Blob, 0);
         g.base64_tbl = g.region(Region::Base64, 0);
+        for k in 0..4 {
+            g.stage[k] = g.region(Region::Stage(k as u8), 32);
+        }
         g.owners = g.find_owners();
         g.untested_hooks = g.find_untested_hooks();
         Ok(g)
@@ -248,6 +256,7 @@ impl<'a> Gen<'a> {
 
     /// Pushes a memory address. Its region learns who uses it and how far in.
     pub(super) fn push_mem(&mut self, addr: i32) {
+        let addr = self.own_scratch(addr);
         self.note_mem(addr);
         self.code.push(Inst::Mem(addr as u32));
     }
@@ -280,6 +289,43 @@ impl<'a> Gen<'a> {
         }
         self.note_mem(self.local[sym]);
         true
+    }
+
+    /// A scratch word used by bodies, by a function compiled once, or by a helper becomes
+    /// their own copy. Words some other code reads after them, the creation code's arguments
+    /// and the tree decoder's bounds, stay.
+    fn own_scratch(&mut self, addr: i32) -> i32 {
+        let off = addr & ((1 << REGION_SHIFT) - 1);
+        let shared = [
+            self.scratch_a,
+            self.scratch_b,
+            self.scratch_c,
+            self.scratch_to,
+            self.scratch_val,
+            self.key_scratch,
+        ];
+        let helper = self.helper.map(|h| usize::MAX - 1 - h);
+        let (true, Some(user)) = (
+            shared.contains(&(addr - off)),
+            self.region_user().or(helper),
+        ) else {
+            return addr;
+        };
+        let ix = (addr >> REGION_SHIFT) as usize - 1;
+        // Bodies never run together, so they share one copy, at one address, and alike
+        // bodies stay alike for the outliner.
+        let user = if user >= FUNC_CTX { user } else { usize::MAX };
+        if let Some(&copy) = self.scratch_copies.get(&(ix, user)) {
+            return copy + off;
+        }
+        let copy = self.region(self.spaces[ix].region, 32);
+        self.scratch_copies.insert((ix, user), copy);
+        // A helper's copy is its alone, as a temporary of shared code is.
+        if helper.is_some() {
+            self.shared_temps
+                .insert((copy >> REGION_SHIFT) as usize - 1);
+        }
+        copy + off
     }
 
     /// Records a use of `addr` that reaches memory through arithmetic on another address.
@@ -346,7 +392,6 @@ impl<'a> Gen<'a> {
         Plan {
             cache_slots: false,
             tight: false,
-            hold_dups: false,
             frames: false,
             sink: false,
             abandon: false,
@@ -354,6 +399,7 @@ impl<'a> Gen<'a> {
             forward_consts: false,
             static_heap: false,
             every_bump: false,
+            stage: false,
             outline,
             looped,
             specializable: &self.const_sites & &outlinable,
@@ -1299,7 +1345,7 @@ impl<'a> Gen<'a> {
                 &tracked,
                 &calls,
                 plan.tight,
-                plan.hold_dups,
+                false,
                 plan.sink,
                 plan.abandon,
             )
@@ -1478,6 +1524,13 @@ impl<'a> Gen<'a> {
             a == b || anywhere.contains(&a) || anywhere.contains(&b) || runs(a, b) || runs(b, a)
         };
         let frames = self.plan.frames;
+        // Whether the clash of a body's region with a shared one is up to `frames`.
+        let framed = |x: &Users, y: &Users| match (x, y) {
+            (Users::Bodies(a), Users::Shared(b)) | (Users::Shared(a), Users::Bodies(b)) => {
+                !a.iter().any(|&p| b.iter().any(|&q| together(p, q)))
+            }
+            _ => false,
+        };
         let clashes = |x: &Users, y: &Users| match (x, y) {
             (Users::Bodies(a), Users::Bodies(b)) => a.intersection(b).next().is_some(),
             (Users::Bodies(_), Users::Shared(_)) | (Users::Shared(_), Users::Bodies(_))
@@ -1495,7 +1548,9 @@ impl<'a> Gen<'a> {
         let mut clash = vec![false; n * n];
         for &a in &order {
             for &b in &order {
-                clash[a * n + b] = clashes(&self.spaces[a].users, &self.spaces[b].users);
+                let (x, y) = (&self.spaces[a].users, &self.spaces[b].users);
+                clash[a * n + b] = clashes(x, y);
+                self.frames_decide |= framed(x, y);
             }
         }
         let lens: Vec<u64> = self.spaces.iter().map(|s| words(s) * 32).collect();

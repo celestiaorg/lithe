@@ -2647,6 +2647,48 @@ external payable function payout(const tos : list(address)) is {
     );
 }
 
+/// An inlined function that ends its caller's body ends with its last statement, so only
+/// a `defer` there runs where it stands; one before a write waits for the write.
+#[test]
+fn inlined_defers_before_writes_wait_for_them() {
+    let src = "\
+import \"std/evm\";
+storage is record { x : uint; }
+function payThenNote(const to : address) is {
+  defer Evm.transfer(to, 1wei);
+  storage.x := 5;
+}
+function noteThenPay(const to : address) is {
+  const twice : uint := 2;
+  storage.x := twice;
+  defer Evm.transfer(to, 1wei);
+}
+external payable function first(const to : address) is {
+  payThenNote(to);
+}
+external payable function last(const to : address) is {
+  noteThenPay(to);
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    for (sig, kinds) in [
+        ("first(address)", ["sstore", "call"]),
+        ("last(address)", ["sstore", "call"]),
+    ] {
+        let out = exec(
+            &runtime,
+            &word_data(sig, &[Word::from_u64(0xcd)]),
+            HashMap::new(),
+            Word::from_u64(7),
+            Word::from_u64(0),
+            Word::from_u64(10),
+        )
+        .expect("exec");
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        assert_eq!(trace_kinds(&out.trace), kinds, "{sig}");
+    }
+}
+
 /// A queue of one `defer` site writes its nodes without a site number, so the plan has to
 /// name the same queue in every pass. Outlining `pairA`, `pairB` and `pairC` adds and drops
 /// regions before the entrypoints' queues, which moved them: keyed by address, `e1`'s two
@@ -2719,4 +2761,51 @@ external payable function e4(const cfg : Cfg) is {
     let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
     let out = call(&runtime, "e4(address)", &[Word::from_u64(0)]);
     assert!(!out.reverted, "{}", pretty(&out.returndata));
+}
+
+/// A deferred call written where it runs reads its arguments' words then: a function
+/// inlined twice binds its parameters again, and a `var` changes, before either call runs.
+#[test]
+fn deferred_calls_keep_their_arguments_values() {
+    install_mocks();
+    let src = "\
+interface E is { function f(x : uint) : uint; }
+storage is record { log : uint; n : uint; }
+function pay(const e : E; const x : uint) is {
+  defer e.f(x) then (r : uint) { storage.log := storage.log * 1000 + r; };
+}
+external function go(const a : E; const b : E) is {
+  const k : uint := storage.n + 1;
+  pay(a, k);
+  var v : uint := k + 10;
+  pay(b, v);
+  defer a.f(v) then (r : uint) { storage.log := storage.log * 1000 + r; };
+  v := 99;
+  storage.n := v;
+}
+external view function log() : uint is storage.log
+";
+    for force in [None, Some(true), Some(false)] {
+        crate::gen::FORCE_STATIC_HEAP.set(force);
+        let built = compile(src);
+        crate::gen::FORCE_STATIC_HEAP.set(None);
+        let runtime = deploy(&built.expect("compile")).expect("deploy");
+        let echo = Word::from_u64(0xcd);
+        let out = call(&runtime, "go(address,address)", &[echo, echo]);
+        assert!(!out.reverted, "{force:?}: {}", pretty(&out.returndata));
+        let read = exec(
+            &runtime,
+            &word_data("log()", &[]),
+            out.storage,
+            Word::from_u64(7),
+            Word::from_u64(0),
+            Word::from_u64(0),
+        )
+        .expect("log");
+        assert_eq!(
+            Word::from_be_bytes(read.returndata[..32].try_into().expect("a word")),
+            Word::from_u64(1_011_011),
+            "{force:?}"
+        );
+    }
 }

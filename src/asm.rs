@@ -54,12 +54,12 @@ fn entries(table: &[u32; 8]) -> impl Iterator<Item = u32> + '_ {
 
 // The passes hash instructions and labels they made themselves, so a fast hash is safe here.
 // Nothing depends on the order of a map.
-type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
+pub(crate) type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
 type FxHashSet<T> = HashSet<T, BuildHasherDefault<Fx>>;
 
 /// The multiply-rotate hash rustc uses for its own tables.
 #[derive(Default)]
-struct Fx(u64);
+pub(crate) struct Fx(u64);
 
 impl std::hash::Hasher for Fx {
     fn write(&mut self, bytes: &[u8]) {
@@ -134,6 +134,7 @@ const MCOPY: u8 = 0x5e;
 const PUSH0: u8 = 0x5f;
 const DUP1: u8 = 0x80;
 const SWAP1: u8 = 0x90;
+const CALL: u8 = 0xf1;
 const RETURN: u8 = 0xf3;
 const REVERT: u8 = 0xfd;
 const INVALID: u8 = 0xfe;
@@ -147,22 +148,147 @@ const MIN_TAIL_BYTES: usize = 6;
 const TAIL_GAS: f64 = 12.0;
 
 pub(crate) fn optimize(code: &mut Vec<Inst>) {
+    // What the last `merge_tails` changed in code the other passes had left alone. Until one
+    // of them changes something, each runs only where that change could give it work.
+    let mut merged: Option<Merged> = None;
+    // The passes that found nothing to do in the code as it is: they would find nothing again.
+    let mut idle = [false; Pass::LOCAL.len()];
     for _ in 0..MAX_ROUNDS {
         let mut changed = false;
-        changed |= track::pass(code, prune_labels);
-        changed |= track::pass(code, remove_dead);
-        changed |= track::pass(code, thread_jumps);
-        changed |= track::pass(code, peephole);
-        changed |= track::pass(code, |c| dedup_blocks(c));
-        changed |= track::pass(code, |c| dup_constants(c));
+        let since = merged.take().filter(|_| !track::on());
+        for (k, pass) in Pass::LOCAL.into_iter().enumerate() {
+            idle[k] |= !changed && since.as_ref().is_some_and(|m| !m.may_wake(code, pass));
+            assert!(
+                !idle[k] || !verify() || !pass.changes(code),
+                "{pass:?} idle"
+            );
+            if idle[k] && !track::on() {
+                continue;
+            }
+            if track::pass(code, |c| pass.run(c)) {
+                changed = true;
+                idle = [false; Pass::LOCAL.len()];
+            } else {
+                idle[k] = true;
+            }
+        }
         if !changed {
-            changed |= track::pass(code, merge_tails);
+            merged = track::pass(code, merge_tails);
+            changed = merged.is_some();
         }
         if !changed {
             changed |= track::pass(code, schedule);
         }
+        if changed {
+            idle = [false; Pass::LOCAL.len()];
+        }
         if !changed {
             return;
+        }
+    }
+}
+
+/// The passes `optimize` runs every round, in order.
+#[derive(Clone, Copy, Debug)]
+enum Pass {
+    PruneLabels,
+    RemoveDead,
+    ThreadJumps,
+    Peephole,
+    DedupBlocks,
+    DupConstants,
+}
+
+impl Pass {
+    const LOCAL: [Pass; 6] = [
+        Pass::PruneLabels,
+        Pass::RemoveDead,
+        Pass::ThreadJumps,
+        Pass::Peephole,
+        Pass::DedupBlocks,
+        Pass::DupConstants,
+    ];
+
+    fn run(self, code: &mut Vec<Inst>) -> bool {
+        match self {
+            Pass::PruneLabels => prune_labels(code),
+            Pass::RemoveDead => remove_dead(code),
+            Pass::ThreadJumps => thread_jumps(code),
+            Pass::Peephole => peephole(code),
+            Pass::DedupBlocks => dedup_blocks(code),
+            Pass::DupConstants => dup_constants(code),
+        }
+    }
+
+    fn changes(self, code: &[Inst]) -> bool {
+        self.run(&mut code.to_vec())
+    }
+}
+
+/// Where `merge_tails` changed the code: each donor's jump to its shared tail, with whether
+/// it took the whole body behind the donor's labels, and each label it put before a tail.
+struct Merged {
+    jumps: Vec<(usize, bool)>,
+    labels: Vec<usize>,
+}
+
+impl Merged {
+    /// The changed spans.
+    fn spans(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let jumps = self.jumps.iter().map(|&(p, _)| (p, p + 2));
+        jumps.chain(self.labels.iter().map(|&p| (p, p + 1)))
+    }
+
+    /// Whether `pass` may change `code`, which these merges made of code it left as it was.
+    fn may_wake(&self, code: &[Inst], pass: Pass) -> bool {
+        match pass {
+            // No added label follows another, and the copy kept refers to every label the
+            // tail a donor gave up did.
+            Pass::PruneLabels => false,
+            // A donor's jump replaces code that ended in an exit, after code that reached it.
+            Pass::RemoveDead => false,
+            // A shared tail is longer than a jump or a tiny exit, so only the jumps to a
+            // donor whose whole body is now a jump can be threaded.
+            Pass::ThreadJumps => self.jumps.iter().any(|&(_, whole)| whole),
+            Pass::Peephole => self.spans().any(|(lo, hi)| {
+                // A copy run reads on while copies follow; other rewrites read a few
+                // instructions, `dup_pair_stored` the most.
+                let mut from = lo;
+                while from > 0 && matches!(code[from - 1], Push(_) | Op(MLOAD | MSTORE)) {
+                    from -= 1;
+                }
+                let from = from.saturating_sub(4).min(lo.saturating_sub(40));
+                (from..hi).any(|j| rewrite(&code[j..]).is_some())
+            }),
+            // Only a body that changed can now match another.
+            Pass::DedupBlocks => {
+                let segs = segments(code);
+                let bodies: Vec<(&[Inst], bool)> = segs
+                    .iter()
+                    .filter(|s| !s.labels.is_empty() && s.start <= s.end)
+                    .map(|s| {
+                        let touched = self
+                            .spans()
+                            .any(|(lo, hi)| lo <= s.end && hi > s.labels.start);
+                        (&code[s.start..=s.end], touched)
+                    })
+                    .collect();
+                bodies.iter().enumerate().any(|(k, &(body, touched))| {
+                    touched
+                        && bodies
+                            .iter()
+                            .enumerate()
+                            .any(|(o, &(other, _))| o != k && other == body)
+                })
+            }
+            // The stack is known afresh after each point that forgets it.
+            Pass::DupConstants => self.spans().any(|(lo, hi)| {
+                let mut from = lo;
+                while from > 0 && !forgets_stack(code[from - 1]) {
+                    from -= 1;
+                }
+                !dup_sites(code, from, hi, true).is_empty()
+            }),
         }
     }
 }
@@ -466,7 +592,7 @@ fn is_terminal(op: u8) -> bool {
 
 /// Items popped and pushed, for every opcode the stack model understands.
 #[inline]
-fn stack_io(op: u8) -> Option<(usize, usize)> {
+pub(crate) fn stack_io(op: u8) -> Option<(usize, usize)> {
     // Most passes ask for every instruction they walk, so the answers are a table.
     const IO: [Option<(u8, u8)>; 256] = {
         let mut io = [None; 256];
@@ -814,6 +940,13 @@ fn swapped(op: u8) -> Option<u8> {
 
 /// One local rewrite at the head of `w`: how many instructions it replaces, and with what.
 fn rewrite(w: &[Inst]) -> Option<(usize, Vec<Inst>)> {
+    // Every rule for two ops starts with a `DUP` or `SWAP`, ends the pair in `POP` or
+    // `ISZERO`, or is `NOT NOT`; most pairs are none of these.
+    if let [Op(a), Op(b), ..] = w {
+        if !(*b == POP || *b == ISZERO || *a == NOT && *b == NOT || (0x80..=0x9f).contains(a)) {
+            return None;
+        }
+    }
     let zero = Word::from_u64(0);
     let one = Word::from_u64(1);
     match w {
@@ -1147,12 +1280,33 @@ fn dedup_blocks(code: &mut [Inst]) -> bool {
 
 /// Replaces a pushed constant with a `DUP` of the same value already on the stack.
 fn dup_constants(code: &mut [Inst]) -> bool {
+    let sites = dup_sites(code, 0, code.len(), false);
+    for &(i, d) in &sites {
+        code[i] = Op(DUP1 + d);
+    }
+    !sites.is_empty()
+}
+
+/// Whether `dup_sites` knows nothing of the stack after `inst`.
+fn forgets_stack(inst: Inst) -> bool {
+    match inst {
+        Label(_) => true,
+        Op(op) if (0x80..=0x9f).contains(&op) => false,
+        Op(op) => is_terminal(op) || stack_io(op).is_none(),
+        _ => false,
+    }
+}
+
+/// The pushes `dup_constants` replaces with a `DUP`, and the depth of each, scanning from
+/// `from`, where nothing is known of the stack, to the first point from `to` on that forgets
+/// it. Only the first, with `first`.
+fn dup_sites(code: &[Inst], from: usize, to: usize, first: bool) -> Vec<(usize, u8)> {
     #[derive(Clone, Copy, PartialEq)]
     enum V {
         Unknown,
         Known(Inst),
     }
-    let mut changed = false;
+    let mut sites = Vec::new();
     let mut stack: Vec<V> = Vec::new();
     let pad = |stack: &mut Vec<V>, n: usize| {
         if stack.len() < n {
@@ -1160,8 +1314,10 @@ fn dup_constants(code: &mut [Inst]) -> bool {
             stack.splice(0..0, std::iter::repeat_n(V::Unknown, missing));
         }
     };
-    for i in 0..code.len() {
-        let inst = code[i];
+    for (i, &inst) in code.iter().enumerate().skip(from) {
+        if i >= to && forgets_stack(inst) {
+            break;
+        }
         match inst {
             Label(_) => stack.clear(),
             Push(_) | PushLabel(_) | Table(_) | Imm(..) => {
@@ -1176,8 +1332,10 @@ fn dup_constants(code: &mut [Inst]) -> bool {
                         .take(16)
                         .position(|v| *v == V::Known(inst));
                     if let Some(d) = depth {
-                        code[i] = Op(DUP1 + d as u8);
-                        changed = true;
+                        sites.push((i, d as u8));
+                        if first {
+                            return sites;
+                        }
                     }
                 }
                 stack.push(V::Known(inst));
@@ -1212,11 +1370,11 @@ fn dup_constants(code: &mut [Inst]) -> bool {
             stack.drain(..cut);
         }
     }
-    changed
+    sites
 }
 
 /// Two exits that end the same way share the common tail.
-fn merge_tails(code: &mut Vec<Inst>) -> bool {
+fn merge_tails(code: &mut Vec<Inst>) -> Option<Merged> {
     let segs = segments(code);
     // Only tails long enough to share need it.
     let heat = std::cell::OnceCell::new();
@@ -1304,8 +1462,9 @@ fn merge_tails(code: &mut Vec<Inst>) -> bool {
     pairs.sort_unstable_by(|x, y| y.3.cmp(&x.3).then((x.0, x.1).cmp(&(y.0, y.1))));
     let mut used = vec![false; segs.len()];
     let mut next = fresh_label(code);
-    // Each edit replaces a range: a tail with a jump, or nothing with a label.
-    let mut edits: Vec<(std::ops::Range<usize>, Vec<Inst>)> = Vec::new();
+    // Each edit replaces a range: a tail with a jump, with whether that is the donor's
+    // whole labeled body, or nothing with a label.
+    let mut edits: Vec<(std::ops::Range<usize>, Vec<Inst>, Option<bool>)> = Vec::new();
     for &(a, b, n, _) in &pairs {
         let free = !used[a] && !used[b];
         used[a] = true;
@@ -1321,24 +1480,39 @@ fn merge_tails(code: &mut Vec<Inst>) -> bool {
             next += 1;
             next - 1
         };
+        let bare = n == give.end + 1 - give.start && !give.labels.is_empty();
         edits.push((
             give.end + 1 - n..give.end + 1,
             vec![PushLabel(label), Op(JUMP)],
+            Some(bare),
         ));
         if !whole {
             let at = keep.end + 1 - n;
-            edits.push((at..at, vec![Label(label)]));
+            edits.push((at..at, vec![Label(label)], None));
         }
     }
     if edits.is_empty() {
-        return false;
+        return None;
+    }
+    edits.sort_unstable_by_key(|e| e.0.start);
+    let mut merged = Merged {
+        jumps: Vec::new(),
+        labels: Vec::new(),
+    };
+    let mut shift = 0isize;
+    for (range, with, bare) in &edits {
+        let at = range.start.wrapping_add_signed(shift);
+        match bare {
+            Some(bare) => merged.jumps.push((at, *bare)),
+            None => merged.labels.push(at),
+        }
+        shift += with.len() as isize - range.len() as isize;
     }
     // Later edits first, so the earlier indices stay valid.
-    edits.sort_unstable_by_key(|e| std::cmp::Reverse(e.0.start));
-    for (range, with) in edits {
+    for (range, with, _) in edits.into_iter().rev() {
         code.splice(range, with);
     }
-    true
+    Some(merged)
 }
 
 fn fresh_label(code: &[Inst]) -> u32 {
@@ -1365,37 +1539,45 @@ const CALL_GAS: f64 = 24.0;
 /// often `entries`, the labels entrypoints begin at, run it. Sharing exact copies one best
 /// run at a time, and sharing runs that differ in pushed constants several at a time, can
 /// each win, so with `both` both are tried and the cheaper program is kept. Without, only
-/// the second, which is the most often cheaper and by the most.
+/// the second, which is the most often cheaper and by the most. Without `again`, runs are
+/// shared in one round and the code is not optimized again after: a cheaper estimate, for
+/// builds that only rank plans.
 pub(crate) fn outline(
     code: &mut Vec<Inst>,
     entries: &[u32],
     both: bool,
+    again: bool,
     finish: impl Fn(&mut Vec<Inst>) + Sync,
 ) {
-    let run = |code: &mut Vec<Inst>, params: bool| {
+    let run = |code: &mut Vec<Inst>, params: bool, calls: bool| {
         let mut t = Tokens::default();
         t.splice(0..0, code);
         let mut any = false;
-        while track::pass(code, |code| outline_once(code, &mut t, entries, params)) {
+        while track::pass(code, |code| {
+            outline_once(code, &mut t, entries, params, calls)
+        }) {
             any = true;
+            if !again {
+                break;
+            }
         }
-        if any {
+        if any && again {
             optimize(code);
         }
         finish(code);
     };
     if !both {
-        run(code, true);
+        run(code, true, true);
         return;
     }
     let mut exact = code.clone();
     // A tracked build runs both here, each with its own notes.
     if let Some(before) = track::take() {
         track::put(before.clone());
-        run(&mut exact, false);
+        run(&mut exact, false, true);
         let shared = track::take();
         track::put(before);
-        run(code, true);
+        run(code, true, true);
         if cost(&exact) <= cost(code) {
             *code = exact;
             if let Some(t) = shared {
@@ -1404,20 +1586,42 @@ pub(crate) fn outline(
         }
         return;
     }
-    let gas = byte_gas();
-    // Without threads, as in WebAssembly, the two run one after the other.
+    // Calls that run where they are written look alike once staged, and sharing their
+    // tails can cost more in jumps than the bytes save: a third build keeps them inline.
+    let mut apart = code.contains(&Op(CALL)).then(|| code.clone());
+    let gas_weight = byte_gas();
+    // Without threads, as in WebAssembly, they run one after the other.
     let spawned = std::thread::scope(|s| {
         let spawned = std::thread::Builder::new()
-            .spawn_scoped(s, || with_byte_gas(gas, || run(&mut exact, false)))
+            .spawn_scoped(s, || {
+                with_byte_gas(gas_weight, || run(&mut exact, false, true))
+            })
             .is_ok();
-        run(code, true);
-        spawned
+        let apart_spawned = apart.as_mut().is_none_or(|apart| {
+            std::thread::Builder::new()
+                .spawn_scoped(s, || with_byte_gas(gas_weight, || run(apart, false, false)))
+                .is_ok()
+        });
+        run(code, true, true);
+        (spawned, apart_spawned)
     });
-    if !spawned {
-        run(&mut exact, false);
+    if !spawned.0 {
+        run(&mut exact, false, true);
+    }
+    if let Some(apart) = apart.as_mut().filter(|_| !spawned.1) {
+        run(apart, false, false);
     }
     if cost(&exact) <= cost(code) {
         *code = exact;
+    }
+    // Jumps cost each run, so only gas counted by entrypoint tells the two apart.
+    let priced = |code: &[Inst]| {
+        assemble(code).map_or(f64::INFINITY, |b| {
+            b.len() as f64 * gas_weight + gas(code, entries, None)
+        })
+    };
+    if let Some(apart) = apart.filter(|apart| priced(apart) < priced(code)) {
+        *code = apart;
     }
 }
 
@@ -1428,7 +1632,7 @@ const BREAK: u32 = u32::MAX;
 /// instructions, and each instruction's size.
 #[derive(Default)]
 struct Tokens {
-    ids: HashMap<Inst, u32>,
+    ids: FxHashMap<Inst, u32>,
     tok: Vec<u32>,
     bytes: Vec<usize>,
 }
@@ -1579,7 +1783,7 @@ impl Exits {
     fn new(code: &[Inst], usable: &dyn Fn(u32) -> bool, labels: &LabelIndex) -> Self {
         let walks: Vec<ExitWalk> = (0..code.len())
             .filter(|&i| matches!(code[i], Label(_)))
-            .map(|i| exit_walk(code, i, usable, &mut |l| labels.at.get(&l).copied()))
+            .map(|i| exit_walk(code, i, usable, &mut |l| labels.at(l)))
             .collect();
         let set = walks.iter().filter(|w| w.ok).map(|w| w.label).collect();
         Exits { set, walks }
@@ -1606,14 +1810,14 @@ impl Exits {
         };
         let mut moved: FxHashSet<u32> = held(gone);
         moved.extend(held(&code[sp.lo..sp.new_hi]));
-        let find = &mut |l: u32| labels.at.get(&l).copied();
+        let find = &mut |l: u32| labels.at(l);
         let mut changed = false;
         let a = self.walks.partition_point(|w| w.at < sp.lo);
         let b = self.walks.partition_point(|w| w.at < sp.old_hi);
         let (before, after) = self.walks.split_at_mut(b);
         for w in before[..a].iter_mut().chain(after) {
             let stale = w.read.iter().any(|&(s, e)| s < sp.old_hi && e > sp.lo)
-                || w.looked.iter().any(|l| moved.contains(l));
+                || !moved.is_empty() && w.looked.iter().any(|l| moved.contains(l));
             let at = if w.at >= sp.old_hi {
                 sp.moved(w.at)
             } else {
@@ -1825,11 +2029,20 @@ fn repeats(
 
 /// Shares the best run. With `params`, also shares runs that differ in pushed constants,
 /// and every other run that stays clear of the ones already taken.
-fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, entries: &[u32], params: bool) -> bool {
+fn outline_once(
+    code: &mut Vec<Inst>,
+    t: &mut Tokens,
+    entries: &[u32],
+    params: bool,
+    calls: bool,
+) -> bool {
     let exits = safe_exits(code);
     let jumpi = t.of(&Op(JUMPI));
     let any_push = t.of(&Push(Word::from_u64(0)));
     for i in 0..code.len() {
+        if !calls && code[i] == Op(CALL) {
+            t.tok[i] = BREAK;
+        }
         if code[i] == Op(JUMPI) {
             let ok = matches!(i.checked_sub(1).map(|p| code[p]), Some(PushLabel(l)) if exits.contains(&l));
             t.tok[i] = if ok { jumpi } else { BREAK };
@@ -2002,17 +2215,37 @@ fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, entries: &[u32], params: b
         .enumerate()
         .flat_map(|(c, o)| o.picked.iter().map(move |&s| (s, c)))
         .collect();
-    // Edit the later sites first so the earlier indices stay valid.
+    // Each site's call, from the last site back, as its labels and tokens are numbered, then
+    // the code and tokens rebuilt once from the first site on.
     sites.sort_unstable_by(|a, b| b.cmp(a));
-    for (s, c) in sites {
-        let o = &chosen[c];
-        let ret = label;
-        label += 1;
-        let mut call: Vec<Inst> = o.params.iter().rev().map(|&j| code[s + j]).collect();
-        call.insert(if o.takes > 0 { call.len() } else { 0 }, PushLabel(ret));
-        call.extend([PushLabel(helpers[c]), Op(JUMP), Label(ret)]);
-        code.splice(s..s + o.len, call.iter().copied());
-        t.splice(s..s + o.len, &call);
+    let calls: Vec<(usize, usize, Vec<Inst>, Vec<u32>)> = sites
+        .into_iter()
+        .map(|(s, c)| {
+            let o = &chosen[c];
+            let ret = label;
+            label += 1;
+            let mut call: Vec<Inst> = o.params.iter().rev().map(|&j| code[s + j]).collect();
+            call.insert(if o.takes > 0 { call.len() } else { 0 }, PushLabel(ret));
+            call.extend([PushLabel(helpers[c]), Op(JUMP), Label(ret)]);
+            let tok = call.iter().map(|inst| t.of(inst)).collect();
+            (s, o.len, call, tok)
+        })
+        .collect();
+    if let Some(lo) = calls.last().map(|c| c.0) {
+        let (mut insts, mut tok, mut bytes) = (Vec::new(), Vec::new(), Vec::new());
+        let mut next = lo;
+        for (s, len, call, call_tok) in calls.into_iter().rev() {
+            insts.extend_from_slice(&code[next..s]);
+            tok.extend_from_slice(&t.tok[next..s]);
+            bytes.extend_from_slice(&t.bytes[next..s]);
+            bytes.extend(call.iter().map(inst_len));
+            insts.extend(call);
+            tok.extend(call_tok);
+            next = s + len;
+        }
+        code.splice(lo..next, insts);
+        t.tok.splice(lo..next, tok);
+        t.bytes.splice(lo..next, bytes);
     }
     let from = code.len();
     if !matches!(code.last(), Some(Op(op)) if is_terminal(*op)) {
@@ -2040,7 +2273,7 @@ fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, entries: &[u32], params: b
 }
 
 /// Stack effect of a call to a shared helper: items taken, items left.
-pub(crate) type Calls = HashMap<u32, (usize, usize)>;
+pub(crate) type Calls = FxHashMap<u32, (usize, usize)>;
 
 /// `PUSH ret PUSH helper JUMP ret:` at `i`, with the helper's effect.
 #[inline]
@@ -2301,14 +2534,23 @@ impl Uses {
             }
             v.splice(a..b, with.iter().copied());
         };
+        let mut emptied = false;
         for (w, (loads, stores)) in &mut self.words {
-            let (l, s) = found.words.remove(w).unwrap_or_default();
+            let new = found.words.remove(w);
+            let before = |v: &[usize]| v.last().is_none_or(|&p| p < from);
+            if new.is_none() && before(loads) && before(stores) {
+                continue;
+            }
+            let (l, s) = new.unwrap_or_default();
             fix(loads, &l);
             fix(stores, &s);
+            emptied |= loads.is_empty() && stores.is_empty();
         }
         self.words.extend(found.words);
-        self.words
-            .retain(|_, (loads, stores)| !loads.is_empty() || !stores.is_empty());
+        if emptied {
+            self.words
+                .retain(|_, (loads, stores)| !loads.is_empty() || !stores.is_empty());
+        }
         let a = self.all.partition_point(|u| u.0 < from);
         let b = self.all.partition_point(|u| u.0 < sp.old_hi);
         for u in &mut self.all[b..] {
@@ -2334,13 +2576,8 @@ impl Loops {
 
     /// Label `l`'s loop, if it begins one.
     fn head(labels: &LabelIndex, uses: &Uses, l: u32) -> Option<(usize, usize, u32, Vec<u32>)> {
-        let s = *labels.at.get(&l)?;
-        let back = labels
-            .pushes
-            .get(&l)
-            .and_then(|v| v.last())
-            .copied()
-            .filter(|&q| q > s)?;
+        let s = labels.at(l)?;
+        let back = labels.pushes(l).last().copied().filter(|&q| q > s)?;
         Some((s, back, l, Self::words(uses, s, back)))
     }
 
@@ -2876,7 +3113,7 @@ impl Live {
             }
         }
         let block = |i: usize| starts.partition_point(|&s| s <= i) - 1;
-        let at = |l: u32| labels.at.get(&l).map(|&p| block(p));
+        let at = |l: u32| labels.at(l).map(block);
         // The new blocks' successors are found again. The others' are where they were, but
         // for those in the change, found again by their labels: the change took none.
         let (mut new_succ, mut new_via) = (Vec::new(), Vec::new());
@@ -2896,30 +3133,53 @@ impl Live {
             ));
         }
         let (x0, x1) = (first[bl], first[bh + 1]);
-        let more = new_succ.len() as isize - (x1 - x0) as isize;
-        let remap = |t: usize, l: u32| -> usize {
-            if t < bl {
-                t
-            } else if t > bh {
-                t.checked_add_signed(grown).expect("a block")
-            } else if l == FALLS {
-                // Only the block right before the change falls into it.
-                bl
-            } else {
-                at(l).expect("kept")
+        // Most changes keep every block and edge, and the graph stays as it was.
+        let same = grown == 0
+            && new_succ[..] == succ[x0..x1]
+            && new_via[..] == via[x0..x1]
+            && new_open[..] == self.open[bl..=bh]
+            && new_first
+                .iter()
+                .zip(&first[bl..=bh])
+                .all(|(&f, &g)| f + x0 == g)
+            && (bl..=bh).all(|w| {
+                pred[pred_first[w]..pred_first[w + 1]].iter().all(|&p| {
+                    (first[p]..first[p + 1]).all(|x| {
+                        succ[x] != w
+                            || if via[x] == FALLS {
+                                w == bl
+                            } else {
+                                at(via[x]) == Some(w)
+                            }
+                    })
+                })
+            });
+        if !same {
+            let more = new_succ.len() as isize - (x1 - x0) as isize;
+            let remap = |t: usize, l: u32| -> usize {
+                if t < bl {
+                    t
+                } else if t > bh {
+                    t.checked_add_signed(grown).expect("a block")
+                } else if l == FALLS {
+                    // Only the block right before the change falls into it.
+                    bl
+                } else {
+                    at(l).expect("kept")
+                }
+            };
+            for x in (0..x0).chain(x1..succ.len()) {
+                succ[x] = remap(succ[x], via[x]);
             }
-        };
-        for x in (0..x0).chain(x1..succ.len()) {
-            succ[x] = remap(succ[x], via[x]);
+            succ.splice(x0..x1, new_succ);
+            via.splice(x0..x1, new_via);
+            first.splice(bl..=bh, new_first.into_iter().map(|f| f + x0));
+            for f in &mut first[bl + k..] {
+                *f = f.checked_add_signed(more).expect("an edge");
+            }
+            self.open.splice(bl..=bh, new_open);
+            predecessors(nb, succ, first, pred_first, pred);
         }
-        succ.splice(x0..x1, new_succ);
-        via.splice(x0..x1, new_via);
-        first.splice(bl..=bh, new_first.into_iter().map(|f| f + x0));
-        for f in &mut first[bl + k..] {
-            *f = f.checked_add_signed(more).expect("an edge");
-        }
-        self.open.splice(bl..=bh, new_open);
-        predecessors(nb, succ, first, pred_first, pred);
         // The new blocks, from the rest.
         let inside = bl..bl + k;
         queued.clear();
@@ -3158,12 +3418,12 @@ fn predecessors(
 /// the ones before it left.
 fn apply_edits(code: &mut Vec<Inst>, mut edits: Vec<(usize, usize, Vec<Inst>)>) {
     edits.sort_by_key(|e| e.0);
-    // The rounds that call this each rebuild the code; reusing the buffer spares the
-    // allocator a large block per round.
-    thread_local!(static SPARE: std::cell::Cell<Vec<Inst>> = const { std::cell::Cell::new(Vec::new()) });
-    let mut out = SPARE.take();
-    out.clear();
-    let mut next = 0;
+    let Some(lo) = edits.first().map(|e| e.0) else {
+        return;
+    };
+    // Only the code from the first edit to the end of the last is rebuilt, and spliced in.
+    let mut out = Vec::new();
+    let mut next = lo;
     let mut g = 0;
     while g < edits.len() {
         let at = edits[g].0;
@@ -3183,8 +3443,7 @@ fn apply_edits(code: &mut Vec<Inst>, mut edits: Vec<(usize, usize, Vec<Inst>)>) 
         out.extend(front);
         next = at + taken;
     }
-    out.extend_from_slice(&code[next..]);
-    SPARE.set(std::mem::replace(code, out));
+    code.splice(lo..next, out);
 }
 
 /// Loads of a tracked word that a small constant or an address was stored to earlier in the
@@ -3797,12 +4056,7 @@ pub(crate) fn promote(
                 .enumerate()
                 .filter_map(|(s, inst)| {
                     let Label(l) = inst else { return None };
-                    let back = labels
-                        .pushes
-                        .get(l)
-                        .and_then(|v| v.last())
-                        .copied()
-                        .filter(|&q| q > s)?;
+                    let back = labels.pushes(*l).last().copied().filter(|&q| q > s)?;
                     let mut words: Vec<u32> = code[s..back]
                         .iter()
                         .filter_map(|inst| match inst {
@@ -3869,7 +4123,6 @@ pub(crate) fn promote(
             let promoted = track::pass(code, |code| {
                 promote_region(
                     code,
-                    tracked,
                     calls,
                     exits,
                     &live,
@@ -3897,7 +4150,7 @@ pub(crate) fn promote(
             continue;
         }
         any = true;
-        plans.clear();
+        plans.applied(&edits, &words);
         let sp = Splice::of(&edits, code.len());
         let gone = code[sp.lo..sp.old_hi].to_vec();
         track::pass(code, |c| apply_edits(c, edits));
@@ -4072,7 +4325,6 @@ fn plan_promotion(
 #[allow(clippy::too_many_arguments)]
 fn promote_region(
     code: &mut Vec<Inst>,
-    tracked: &dyn Fn(u32) -> bool,
     calls: &Calls,
     exits: &FxHashSet<u32>,
     live: &Live,
@@ -4090,14 +4342,14 @@ fn promote_region(
     }
     // A copy read where it came from costs nothing to hold, where a region holding it
     // would keep a second item in step each time the store runs.
-    if let Some((sp, a, gone)) = alias_copies(code, tracked, calls, exits, labels) {
-        plans.clear();
+    if let Some((sp, a, gone)) = alias_copies(code, uses, calls, exits, labels, plans) {
         return Promoted::Region(sp, a, gone);
     }
     if plans.ids.is_empty() {
         plans.ids.extend(0..code.len() as u32);
         plans.next = code.len() as u32;
     }
+    let all = &uses.all;
     // Where each tracked word is loaded and stored bounds what a region can save.
     let uses = &uses.words;
     let mut best: Option<(Entry, u32, i64)> = None;
@@ -4196,11 +4448,8 @@ fn promote_region(
             *best = Some((entry, a, saved));
         }
     };
-    for i in 0..code.len().saturating_sub(1) {
-        let (Mem(a), Op(MSTORE)) = (code[i], code[i + 1]) else {
-            continue;
-        };
-        if tracked(a) {
+    for &(i, a) in all {
+        if code[i + 1] == Op(MSTORE) {
             // Below the values computed over it, when those are what stays in the way. A
             // function's prologue stores its arguments one by one from under its return
             // address, so each may go under the arguments stored after it.
@@ -4284,7 +4533,7 @@ fn promote_region(
     });
     let sp = Splice::of(&region.edits, code.len());
     let gone = code[sp.lo..sp.old_hi].to_vec();
-    plans.applied(&region.edits, a);
+    plans.applied(&region.edits, &[a]);
     apply_edits(code, region.edits);
     Promoted::Region(sp, a, gone)
 }
@@ -4319,6 +4568,8 @@ struct RegionPlans {
     /// By the id of the entry's instruction: the entry's kind, from `key`, the word, and
     /// the plan.
     plans: Vec<Vec<(u8, u32, RegionPlan)>>,
+    /// The ids that may have plans.
+    held: Vec<u32>,
     /// Each instruction's id, kept while it stays.
     ids: Vec<u32>,
     next: u32,
@@ -4329,6 +4580,7 @@ impl RegionPlans {
     /// Forgets every plan, for edits made elsewhere.
     fn clear(&mut self) {
         self.plans.clear();
+        self.held.clear();
         self.ids.clear();
     }
 
@@ -4357,14 +4609,20 @@ impl RegionPlans {
         if self.plans.len() <= id {
             self.plans.resize_with(self.next as usize, Vec::new);
         }
+        if self.plans[id].is_empty() {
+            self.held.push(id as u32);
+        }
         match slot {
             Ok(k) => self.plans[id][k].2 = plan,
             Err(k) => self.plans[id].insert(k, (kind, a, plan)),
         }
     }
 
-    /// Updates the plans for `edits`, the region applied for word `a`.
-    fn applied(&mut self, edits: &[(usize, usize, Vec<Inst>)], a: u32) {
+    /// Updates the plans for `edits`, which change the loads and stores of `words` only.
+    fn applied(&mut self, edits: &[(usize, usize, Vec<Inst>)], words: &[u32]) {
+        if self.ids.is_empty() {
+            return;
+        }
         // In `apply_edits` order: each edit's position, the furthest any edit up to it
         // reaches, and how far code after it moves.
         let mut order: Vec<&(usize, usize, Vec<Inst>)> = edits.iter().collect();
@@ -4386,7 +4644,9 @@ impl RegionPlans {
             }
             Some(before.checked_sub(1).map_or(0, |k| reach[k].2))
         };
-        for list in &mut self.plans {
+        let plans = &mut self.plans;
+        self.held.retain(|&id| {
+            let list = &mut plans[id as usize];
             list.retain_mut(|(_, w, plan)| {
                 let Some(shift) = span_shift(plan.from, plan.to) else {
                     return false;
@@ -4406,15 +4666,16 @@ impl RegionPlans {
                 for read in &mut plan.reads {
                     read.0 = moved(read.0);
                 }
-                plan.recheck |= *w == a;
+                plan.recheck |= words.contains(w);
                 true
             });
-        }
-        let mut ids = Vec::with_capacity(self.ids.len() + 16);
-        let (mut next, mut g) = (0, 0);
+            !list.is_empty()
+        });
+        // Each place the edits replace instructions, and how many new ones go there.
+        let mut places = Vec::new();
+        let mut g = 0;
         while g < order.len() {
             let at = order[g].0;
-            ids.extend_from_slice(&self.ids[next..at]);
             let (mut front, mut taken) = (0, 0);
             while g < order.len() && order[g].0 == at {
                 let (_, len, with) = order[g];
@@ -4423,12 +4684,12 @@ impl RegionPlans {
                 taken += len - own;
                 g += 1;
             }
-            ids.extend(self.next..self.next + front as u32);
+            places.push((at, taken, self.next, front as u32));
             self.next += front as u32;
-            next = at + taken;
         }
-        ids.extend_from_slice(&self.ids[next..]);
-        self.ids = ids;
+        for &(at, taken, first, count) in places.iter().rev() {
+            self.ids.splice(at..at + taken, first..first + count);
+        }
     }
 }
 
@@ -4438,16 +4699,14 @@ impl RegionPlans {
 /// is left. Applies the first that converts a load.
 fn alias_copies(
     code: &mut Vec<Inst>,
-    tracked: &dyn Fn(u32) -> bool,
+    uses: &Uses,
     calls: &Calls,
     exits: &FxHashSet<u32>,
     labels: &LabelIndex,
+    plans: &mut RegionPlans,
 ) -> Option<(Splice, u32, Vec<Inst>)> {
-    for i in 1..code.len().saturating_sub(1) {
-        let (Op(DUP1), Mem(a), Op(MSTORE)) = (code[i - 1], code[i], code[i + 1]) else {
-            continue;
-        };
-        if !tracked(a) {
+    for &(i, a) in &uses.all {
+        if i == 0 || code[i - 1] != Op(DUP1) || code[i + 1] != Op(MSTORE) {
             continue;
         }
         if let Some((edits, seen)) = plan_alias(code, i + 2, a, calls, exits, labels) {
@@ -4458,6 +4717,7 @@ fn alias_copies(
             });
             let sp = Splice::of(&edits, code.len());
             let gone = code[sp.lo..sp.old_hi].to_vec();
+            plans.applied(&edits, &[a]);
             apply_edits(code, edits);
             return Some((sp, a, gone));
         }
@@ -4477,8 +4737,7 @@ fn plan_alias(
     let n = code.len();
     let mut limit = n;
     loop {
-        let (loads, passed, stop, seen) =
-            walk_alias(code, start, limit, a, calls, exits, &labels.at);
+        let (loads, passed, stop, seen) = walk_alias(code, start, limit, a, calls, exits, labels);
         // A label that code outside the walk reaches may find the item elsewhere.
         let entered = passed.iter().copied().filter(|&p| {
             let Label(l) = code[p] else { return false };
@@ -4514,7 +4773,7 @@ fn walk_alias(
     a: u32,
     calls: &Calls,
     exits: &FxHashSet<u32>,
-    at: &FxHashMap<u32, usize>,
+    labels: &LabelIndex,
 ) -> (
     Vec<(usize, usize, Vec<Inst>)>,
     Vec<usize>,
@@ -4583,8 +4842,8 @@ fn walk_alias(
                     break;
                 }
                 if !exits.contains(&t) {
-                    match at.get(&t) {
-                        Some(&pos) if pos <= k => {
+                    match labels.at(t) {
+                        Some(pos) if pos <= k => {
                             if seen.get(&t) != Some(&after) {
                                 break;
                             }
@@ -4635,42 +4894,103 @@ struct Region {
     held: Vec<(u32, i64)>,
 }
 
-/// Where each label is, and where the code refers to it, for the promotion passes.
-#[derive(PartialEq, Debug)]
+/// Where each label is, and where the code refers to it, for the promotion passes. Labels
+/// are numbered from zero as they are made, so each indexes `at` and `slot`.
+#[derive(Debug)]
 struct LabelIndex {
-    /// The position of each label.
-    at: FxHashMap<u32, usize>,
-    /// Every position that pushes a label or lists it in a table, in order.
-    refs: FxHashMap<u32, Vec<usize>>,
-    /// Every position that pushes a label, in order.
-    pushes: FxHashMap<u32, Vec<usize>>,
+    /// The position of each label, `usize::MAX` where there is none.
+    at: Vec<usize>,
+    /// Each label's entry in `lists`, `u32::MAX` for one never referred to.
+    slot: Vec<u32>,
+    /// Every position that pushes a label or lists it in a table, then every position that
+    /// pushes it, each in order.
+    lists: Vec<(Vec<usize>, Vec<usize>)>,
     fresh: u32,
+}
+
+impl PartialEq for LabelIndex {
+    fn eq(&self, other: &Self) -> bool {
+        let n = self
+            .at
+            .len()
+            .max(self.slot.len())
+            .max(other.at.len())
+            .max(other.slot.len());
+        self.fresh == other.fresh
+            && (0..n as u32).all(|l| {
+                self.at(l) == other.at(l)
+                    && self.refs(l) == other.refs(l)
+                    && self.pushes(l) == other.pushes(l)
+            })
+    }
 }
 
 impl LabelIndex {
     fn new(code: &[Inst]) -> Self {
         let mut labels = Self {
-            at: FxHashMap::default(),
-            refs: FxHashMap::default(),
-            pushes: FxHashMap::default(),
+            at: Vec::new(),
+            slot: Vec::new(),
+            lists: Vec::new(),
             fresh: fresh_label(code),
         };
         labels.add(code, 0, code.len());
         labels
     }
 
-    /// Adds what `code[from..to]` holds, after everything already here.
+    /// Where label `l` is.
+    fn at(&self, l: u32) -> Option<usize> {
+        self.at
+            .get(l as usize)
+            .copied()
+            .filter(|&p| p != usize::MAX)
+    }
+
+    fn list(&self, l: u32) -> Option<&(Vec<usize>, Vec<usize>)> {
+        let k = *self.slot.get(l as usize)?;
+        self.lists.get(k as usize)
+    }
+
+    /// The positions that refer to label `l`.
+    fn refs(&self, l: u32) -> &[usize] {
+        self.list(l).map_or(&[], |v| &v.0[..])
+    }
+
+    /// The positions that push label `l`.
+    fn pushes(&self, l: u32) -> &[usize] {
+        self.list(l).map_or(&[], |v| &v.1[..])
+    }
+
+    fn list_mut(&mut self, l: u32) -> &mut (Vec<usize>, Vec<usize>) {
+        let l = l as usize;
+        if self.slot.len() <= l {
+            self.slot.resize(l + 1, u32::MAX);
+        }
+        if self.slot[l] == u32::MAX {
+            self.slot[l] = self.lists.len() as u32;
+            self.lists.push(Default::default());
+        }
+        &mut self.lists[self.slot[l] as usize]
+    }
+
+    fn set_at(&mut self, l: u32, p: usize) {
+        let l = l as usize;
+        if self.at.len() <= l {
+            self.at.resize(l + 1, usize::MAX);
+        }
+        self.at[l] = p;
+    }
+
+    /// Adds what `code[from..to]` holds, after what is already here at each label.
     fn add(&mut self, code: &[Inst], from: usize, to: usize) {
         for (p, inst) in code.iter().enumerate().take(to).skip(from) {
             match inst {
-                Label(l) => {
-                    self.at.insert(*l, p);
-                }
+                Label(l) => self.set_at(*l, p),
                 PushLabel(l) => {
-                    self.refs.entry(*l).or_default().push(p);
-                    self.pushes.entry(*l).or_default().push(p);
+                    let (refs, pushes) = self.list_mut(*l);
+                    refs.push(p);
+                    pushes.push(p);
                 }
-                Table(t) => entries(t).for_each(|l| self.refs.entry(l).or_default().push(p)),
+                Table(t) => entries(t).for_each(|l| self.list_mut(l).0.push(p)),
                 _ => {}
             }
         }
@@ -4685,40 +5005,51 @@ impl LabelIndex {
             Table(t) => entries(t).any(|l| l == top),
             _ => false,
         });
-        self.at.retain(|_, p| !(sp.lo..sp.old_hi).contains(p));
-        for p in self.at.values_mut() {
-            if *p >= sp.old_hi {
-                *p = sp.moved(*p);
+        for p in &mut self.at {
+            if *p == usize::MAX || *p < sp.lo {
+                continue;
+            }
+            *p = if *p < sp.old_hi {
+                usize::MAX
+            } else {
+                sp.moved(*p)
+            };
+        }
+        for (refs, pushes) in &mut self.lists {
+            for v in [refs, pushes] {
+                if v.last().is_none_or(|&p| p < sp.lo) {
+                    continue;
+                }
+                let a = v.partition_point(|&p| p < sp.lo);
+                let b = v.partition_point(|&p| p < sp.old_hi);
+                for p in &mut v[b..] {
+                    *p = sp.moved(*p);
+                }
+                v.drain(a..b);
             }
         }
-        let mut found = LabelIndex {
-            at: FxHashMap::default(),
-            refs: FxHashMap::default(),
-            pushes: FxHashMap::default(),
-            fresh: 0,
-        };
-        found.add(code, sp.lo, sp.new_hi);
-        let fix = |v: &mut Vec<usize>, with: Option<Vec<usize>>| {
-            let a = v.partition_point(|&p| p < sp.lo);
-            let b = v.partition_point(|&p| p < sp.old_hi);
-            for p in &mut v[b..] {
-                *p = sp.moved(*p);
+        // The window's own, in order, each after those before the window and before those
+        // after it.
+        for p in sp.lo..sp.new_hi {
+            let put = |v: &mut Vec<usize>| {
+                let k = v.partition_point(|&q| q < p);
+                v.insert(k, p);
+            };
+            match code[p] {
+                Label(l) => self.set_at(l, p),
+                PushLabel(l) => {
+                    let (refs, pushes) = self.list_mut(l);
+                    put(refs);
+                    put(pushes);
+                }
+                Table(t) => entries(&t).for_each(|l| put(&mut self.list_mut(l).0)),
+                _ => {}
             }
-            v.splice(a..b, with.unwrap_or_default());
-        };
-        for (map, mut new) in [
-            (&mut self.refs, found.refs),
-            (&mut self.pushes, found.pushes),
-        ] {
-            for (l, v) in map.iter_mut() {
-                fix(v, new.remove(l));
-            }
-            map.extend(new);
-            map.retain(|_, v| !v.is_empty());
         }
-        self.at.extend(found.at);
         self.fresh = if fresh_gone {
-            fresh_label(code)
+            let n = self.at.len().max(self.slot.len()) as u32;
+            let present = |l: u32| self.at(l).is_some() || !self.refs(l).is_empty();
+            (0..n).rev().find(|&l| present(l)).map_or(1, |l| l + 1)
         } else {
             self.fresh.max(fresh_label(&code[sp.lo..sp.new_hi]))
         };
@@ -4726,8 +5057,8 @@ impl LabelIndex {
 
     /// The first and last positions that refer to label `l`.
     fn span(&self, l: u32) -> Option<(usize, usize)> {
-        let refs = self.refs.get(&l)?;
-        Some((refs[0], refs[refs.len() - 1]))
+        let refs = self.refs(l);
+        Some((*refs.first()?, *refs.last()?))
     }
 
     /// Whether code before `start` or from `end` on refers to label `l`.
@@ -4744,6 +5075,8 @@ struct RegionEnd {
     edits: usize,
     landing: Option<u32>,
     reached: bool,
+    /// One item above the value, which a `SWAP1` brings it out from under.
+    under: bool,
 }
 
 /// Where a region takes its value: from a store it removes, rotating the value under that
@@ -4785,7 +5118,7 @@ fn abandon_walk(
     loop {
         let inst = *code.get(k)?;
         if let (PushLabel(t), Some(Op(JUMP))) = (inst, code.get(k + 1)) {
-            let to = *labels.at.get(&t)?;
+            let to = labels.at(t)?;
             hops += 1;
             if hops > 4 {
                 return None;
@@ -4864,7 +5197,6 @@ fn plan_region(
         Entry::Load(s) => (s, -3, 0),
     };
     let n = code.len();
-    let at = &labels.at;
     let mut edits = Edits {
         keep,
         list: Vec::new(),
@@ -4887,6 +5219,27 @@ fn plan_region(
     let mut k = start;
     loop {
         trace.reach = k;
+        // Also an end, one item above the value, with no jump waiting to land past here,
+        // not between an address and what uses it.
+        if k > start
+            && depth == Some(1)
+            && !matches!(code.get(k), Some(Label(_)))
+            && !matches!(code[k - 1], Mem(_) | PushLabel(_))
+        {
+            while waiting.peek().is_some_and(|w| w.0 .0 < k) {
+                waiting.pop();
+            }
+            if waiting.is_empty() {
+                ends.push(RegionEnd {
+                    at: k,
+                    saved,
+                    edits: edits.len(),
+                    landing: None,
+                    reached: true,
+                    under: true,
+                });
+            }
+        }
         // An end: nothing above the value, and no jump waiting to land past here.
         if k > start && depth.is_none_or(|d| d == 0) {
             let label_here = match code.get(k) {
@@ -4911,6 +5264,7 @@ fn plan_region(
                     edits: edits.len(),
                     landing: label_here.filter(|_| !waiting.is_empty()),
                     reached: depth.is_some(),
+                    under: false,
                 });
             }
         }
@@ -5000,7 +5354,7 @@ fn plan_region(
                         Some((want, _)) if want == after => true,
                         Some((_, Some(_))) => break,
                         prior => {
-                            let pos = *at.get(&t)?;
+                            let pos = labels.at(t)?;
                             match abandon_walk(code, pos, a, after, labels) {
                                 Some((block, _, read)) if block.is_empty() => {
                                     trace.also.extend(read);
@@ -5030,7 +5384,7 @@ fn plan_region(
                         }
                     };
                 if !exits.contains(&t) && !abandons {
-                    let pos = *at.get(&t)?;
+                    let pos = labels.at(t)?;
                     if pos < start {
                         break;
                     }
@@ -5104,7 +5458,7 @@ fn plan_region(
     for end in &ends {
         for p in scanned..end.at {
             let Label(l) = code[p] else { continue };
-            if exits.contains(&l) || abandoned.contains_key(&l) || at[&l] != p {
+            if exits.contains(&l) || abandoned.contains_key(&l) || labels.at(l) != Some(p) {
                 continue;
             }
             if let Some((lo, hi)) = labels.span(l) {
@@ -5134,7 +5488,7 @@ fn plan_region(
                 read_later = live.after(code, at, a);
                 trace.reads.push((at, read_later));
             }
-            saved -= if read_later { 3 } else { 1 };
+            saved -= if read_later { 3 } else { 1 } + i64::from(end.under);
             if end.landing.is_some() {
                 saved -= 1;
             }
@@ -5158,6 +5512,9 @@ fn plan_region(
         } else {
             vec![Op(POP)]
         };
+        if end.under {
+            exit.insert(0, Op(SWAP1));
+        }
         if let Some(l) = end.landing {
             // Jumps from inside land on the exit code; others still land after it.
             let fresh = labels.fresh;
@@ -5209,6 +5566,9 @@ impl Edits {
     }
 }
 
+/// The most items a dead held value may lie under where `hold` drops it.
+const MAX_UNDER: i64 = 2;
+
 /// Keeps the value stored at `i` on the stack at position `p` until it is on top again,
 /// and turns each two-instruction load in `loads` into a `DUP` of it. The point where it
 /// is popped is searched for before `limit`; if there is none, the value may stay only
@@ -5239,19 +5599,35 @@ fn hold(
     // Every instruction the value lives under must leave it alone, up to where it becomes
     // the top of the stack again after its last use.
     let mut pop_at: Option<usize> = None;
+    // Past the last load, the place with the fewest items above the value, up to
+    // `MAX_UNDER`, the first of those, where swaps and a `POP` drop it, the edits made by
+    // then, and how many: the value may never be the top again, or be reached from above.
+    let mut under: Option<(usize, usize, i64)> = None;
+    let mut failed = false;
     let mut k = i + 2;
-    while k < limit {
+    'walk: while k < limit {
         if consumed && k >= last + 2 {
             break;
         }
-        if k > last && runs.depth[k] == p && !matches!(code[k], Label(_)) {
-            pop_at = Some(k);
-            break;
+        if k > last && !matches!(code[k], Label(_)) {
+            if runs.depth[k] == p {
+                pop_at = Some(k);
+                break;
+            }
+            let above = runs.depth[k] - p;
+            if (1..=MAX_UNDER).contains(&above)
+                && under.is_none_or(|(_, _, a)| above < a)
+                && !consumed
+                && !matches!(code[k - 1], Mem(_) | PushLabel(_))
+            {
+                under = Some((k, edits.len(), above));
+            }
         }
         if loads.contains(&k) {
             let above = runs.depth[k] - p;
             if !(0..16).contains(&above) {
-                return None;
+                failed = true;
+                break 'walk;
             }
             if k == last
                 && consume
@@ -5270,7 +5646,8 @@ fn hold(
         }
         if let Some((takes, _)) = call_at(code, k, calls) {
             if runs.depth[k] - (takes as i64) < p {
-                return None;
+                failed = true;
+                break 'walk;
             }
             // Never split a call from its return label.
             k += 4;
@@ -5283,7 +5660,8 @@ fn hold(
                 let reach = (op - 0x7f) as i64;
                 if d - reach < p {
                     if op == 0x8f {
-                        return None;
+                        failed = true;
+                        break 'walk;
                     }
                     edits.push((k, 1, vec![Op(op + 1)]));
                 }
@@ -5291,20 +5669,26 @@ fn hold(
             Op(op) if (0x90..=0x9f).contains(&op) => {
                 let reach = (op - 0x8f) as i64;
                 if d - 1 < p {
-                    return None;
+                    failed = true;
+                    break 'walk;
                 }
                 if d - 1 - reach < p {
                     if op == 0x9f {
-                        return None;
+                        failed = true;
+                        break 'walk;
                     }
                     edits.push((k, 1, vec![Op(op + 1)]));
                 }
             }
             Op(op) => {
-                let (pops, _) = stack_io(op)?;
+                let Some((pops, _)) = stack_io(op) else {
+                    failed = true;
+                    break 'walk;
+                };
                 if d - (pops as i64) < p {
                     if !sink || d - (pops as i64) != p - 1 {
-                        return None;
+                        failed = true;
+                        break 'walk;
                     }
                     let mut q = k;
                     while runs.depth[q] != p {
@@ -5312,7 +5696,8 @@ fn hold(
                         if q < i + 2
                             || !matches!(code[q], Push(_) | PushLabel(_) | Mem(_) | Imm(..))
                         {
-                            return None;
+                            failed = true;
+                            break 'walk;
                         }
                     }
                     edits.push((q, 0, vec![Op(SWAP1)]));
@@ -5322,11 +5707,17 @@ fn hold(
         }
         k += 1;
     }
-    if pop_at.is_none() && !consumed {
-        // Left in place only if the run abandons the stack.
-        if limit != run_end || !runs.ends_in_exit[run] {
-            return None;
-        }
+    let abandoned = limit == run_end && runs.ends_in_exit[run];
+    if failed || (pop_at.is_none() && !consumed && !abandoned) {
+        let (q, made, above) = under?;
+        edits.truncate(made);
+        // Each item above moves down a place, then the value, on top, goes.
+        let drop = (0..above as u8)
+            .map(|k| Op(SWAP1 + k))
+            .chain([Op(POP)])
+            .collect();
+        edits.push((q, 0, drop));
+        return Some(edits);
     }
     if let Some(q) = pop_at {
         edits.push((q, 0, vec![Op(POP)]));
@@ -5491,6 +5882,17 @@ fn plan_storage(
 /// same order, so any straight run `T` can move.
 pub(crate) fn rotate_loops(code: &mut Vec<Inst>) {
     let mut next = fresh_label(code);
+    // The last jump to each label.
+    let backs = |code: &[Inst]| {
+        let mut at: FxHashMap<u32, usize> = FxHashMap::default();
+        for (e, w) in code.windows(2).enumerate() {
+            if let [PushLabel(l), Op(JUMP)] = w {
+                at.insert(*l, e);
+            }
+        }
+        at
+    };
+    let mut last = backs(code);
     let mut i = 0;
     while i < code.len() {
         if !matches!(code[i], Label(_)) || (i > 0 && matches!(code[i - 1], Label(_))) {
@@ -5516,9 +5918,11 @@ pub(crate) fn rotate_loops(code: &mut Vec<Inst>) {
             continue;
         };
         let done = *done;
-        let back = (jumpi + 1..code.len().saturating_sub(1)).rev().find(|&e| {
-            matches!(code[e], PushLabel(l) if tops.contains(&l)) && code[e + 1] == Op(JUMP)
-        });
+        let back = tops
+            .iter()
+            .filter_map(|l| last.get(l).copied())
+            .max()
+            .filter(|&e| e > jumpi);
         let Some(e) = back else {
             i = heads;
             continue;
@@ -5571,6 +5975,7 @@ pub(crate) fn rotate_loops(code: &mut Vec<Inst>) {
         }
         // An iteration starts at the body now, with the stack the test left.
         track::note(|t| t.renamed.extend(tops.iter().map(|&l| (l, body))));
+        last = backs(code);
         i += 2;
     }
 }
@@ -5721,7 +6126,9 @@ pub(crate) fn rotate_exits(code: &mut Vec<Inst>) {
 
 /// Moves the most-jumped-to standalone blocks to just after the first exit, where their
 /// labels fit in one byte. A standalone block starts after an exit and ends in one, so
-/// nothing falls into it or out of it.
+/// nothing falls into it or out of it. A block code falls into is copied there instead,
+/// with its labels, when its jumps save more bytes than the copy takes; the code before it
+/// still falls into the original, and every jump goes to the copy.
 pub(crate) fn hoist(code: &mut Vec<Inst>) {
     let Some(first_exit) = code
         .iter()
@@ -5740,16 +6147,15 @@ pub(crate) fn hoist(code: &mut Vec<Inst>) {
             *refs.entry(*l).or_default() += 1;
         }
     }
-    // (start, end inclusive, references to its labels, bytes)
-    let mut blocks: Vec<(usize, usize, usize, usize)> = Vec::new();
+    // (start, end inclusive, references to its labels, bytes, copied)
+    let mut blocks: Vec<(usize, usize, usize, usize, bool)> = Vec::new();
     let mut i = insert;
     while i < code.len() {
-        let detached =
-            matches!(code[i], Label(_)) && matches!(code[i - 1], Op(op) if is_terminal(op));
-        if !detached {
+        if !matches!(code[i], Label(_)) {
             i += 1;
             continue;
         }
+        let copied = !matches!(code[i - 1], Op(op) if is_terminal(op));
         let Some(len) = code[i..]
             .iter()
             .position(|inst| matches!(inst, Op(op) if is_terminal(*op)))
@@ -5759,39 +6165,76 @@ pub(crate) fn hoist(code: &mut Vec<Inst>) {
         let end = i + len;
         let mut hits = 0;
         let mut bytes = 0;
+        let mut labels = 0;
         for inst in &code[i..=end] {
             if let Label(l) = inst {
                 hits += refs.get(l).copied().unwrap_or(0);
+                labels += 1;
             }
             bytes += inst_len_wide(inst);
         }
-        blocks.push((i, end, hits, bytes));
-        i = end + 1;
+        // A copy grows the code by its bytes but for the jumpdests the original drops.
+        if !copied || hits > bytes - labels {
+            blocks.push((i, end, hits, bytes, copied));
+        }
+        i += 1;
     }
     blocks.sort_by(|a, b| (b.2 * a.3).cmp(&(a.2 * b.3)).then(a.0.cmp(&b.0)));
-    let mut at = before;
-    let mut picked: Vec<(usize, usize)> = Vec::new();
-    for &(start, end, hits, bytes) in &blocks {
-        // Its first label must land below 256 for the move to pay.
-        if hits < 2 || at >= 0xff {
-            continue;
+    let pick = |copies: bool| {
+        let mut at = before;
+        let mut picked: Vec<(usize, usize, bool)> = Vec::new();
+        for &(start, end, hits, bytes, copied) in &blocks {
+            // Its first label must land below 256 for the move to pay.
+            if hits < 2 || at >= 0xff || copied && !copies {
+                continue;
+            }
+            // A block's tail can be a candidate of its own; one of the two is enough.
+            if picked.iter().any(|&(s, e, _)| start <= e && s <= end) {
+                continue;
+            }
+            picked.push((start, end, copied));
+            at += bytes;
         }
-        picked.push((start, end));
-        at += bytes;
-    }
+        picked
+    };
+    let apply = |picked: &[(usize, usize, bool)]| {
+        let mut out = code.clone();
+        let mut moved: Vec<Inst> = Vec::new();
+        for &(start, end, _) in picked {
+            moved.extend_from_slice(&code[start..=end]);
+        }
+        let mut drop = picked.to_vec();
+        drop.sort_by_key(|e| std::cmp::Reverse(e.0));
+        for (start, end, copied) in drop {
+            if copied {
+                out.splice(
+                    start..=end,
+                    code[start..=end]
+                        .iter()
+                        .copied()
+                        .filter(|inst| !matches!(inst, Label(_))),
+                );
+            } else {
+                out.drain(start..=end);
+            }
+        }
+        out.splice(insert..insert, moved);
+        out
+    };
+    let picked = pick(true);
     if picked.is_empty() {
         return;
     }
-    let mut moved: Vec<Inst> = Vec::new();
-    for &(start, end) in &picked {
-        moved.extend_from_slice(&code[start..=end]);
+    let mut out = apply(&picked);
+    // Copies grow the code and push what follows up, so they are kept only if they pay.
+    if picked.iter().any(|p| p.2) {
+        let moves = apply(&pick(false));
+        let len = |c: &[Inst]| assemble(c).map_or(usize::MAX, |c| c.len());
+        if len(&out) >= len(&moves) {
+            out = moves;
+        }
     }
-    let mut drop: Vec<(usize, usize)> = picked.clone();
-    drop.sort_by_key(|e| std::cmp::Reverse(e.0));
-    for (start, end) in drop {
-        code.drain(start..=end);
-    }
-    code.splice(insert..insert, moved);
+    *code = out;
 }
 
 /// Bytes an instruction takes when labels need two bytes.
@@ -6411,17 +6854,36 @@ fn flow_(
         }
     }
     succ.first.push(succ.items.len());
-    loop {
-        let mut changed = false;
-        for b in 0..blocks {
-            let mut normal = succ[b].iter().filter(|s| !s.1).peekable();
-            if !cold[b] && !open[b] && normal.peek().is_some() && normal.all(|s| cold[s.0]) {
-                cold[b] = true;
-                changed = true;
+    // Each block's plain predecessors, in order.
+    let mut preds = Adj {
+        first: vec![0; blocks + 1],
+        items: Vec::new(),
+    };
+    for &(t, call) in &succ.items {
+        if !call {
+            preds.first[t + 1] += 1;
+        }
+    }
+    for b in 0..blocks {
+        preds.first[b + 1] += preds.first[b];
+    }
+    preds.items = vec![0; preds.first[blocks]];
+    let mut fill = preds.first.clone();
+    for b in 0..blocks {
+        for &(t, call) in &succ[b] {
+            if !call {
+                preds.items[fill[t]] = b;
+                fill[t] += 1;
             }
         }
-        if !changed {
-            break;
+    }
+    // A block whose plain successors all only revert only reverts too.
+    let mut work: Vec<usize> = (0..blocks).rev().collect();
+    while let Some(b) = work.pop() {
+        let mut normal = succ[b].iter().filter(|s| !s.1).peekable();
+        if !cold[b] && !open[b] && normal.peek().is_some() && normal.all(|s| cold[s.0]) {
+            cold[b] = true;
+            work.extend(preds[b].iter().copied());
         }
     }
     // Edges back to a block still being walked close loops.
@@ -6451,29 +6913,6 @@ fn flow_(
             }
         }
     }
-    // Each block's plain predecessors, in order.
-    let mut preds = Adj {
-        first: vec![0; blocks + 1],
-        items: Vec::new(),
-    };
-    for &(t, call) in &succ.items {
-        if !call {
-            preds.first[t + 1] += 1;
-        }
-    }
-    for b in 0..blocks {
-        preds.first[b + 1] += preds.first[b];
-    }
-    preds.items = vec![0; preds.first[blocks]];
-    let mut fill = preds.first.clone();
-    for b in 0..blocks {
-        for &(t, call) in &succ[b] {
-            if !call {
-                preds.items[fill[t]] = b;
-                fill[t] += 1;
-            }
-        }
-    }
     // A helper's blocks run only as often as the call sites whose constants reach them.
     let reach = if sum {
         site_reach(code, &starts, &succ, &back, &preds, &at, &block_of)
@@ -6483,11 +6922,19 @@ fn flow_(
     let mut share: Vec<Option<Vec<f64>>> = vec![None; blocks];
     let mut depth = vec![0i32; blocks];
     let mut seen = vec![usize::MAX; blocks];
-    let headers: FxHashSet<usize> = back.iter().flatten().copied().collect();
-    for &h in &headers {
+    let mut tails: FxHashMap<usize, Vec<usize>> = FxHashMap::default();
+    for (b, heads) in back.iter().enumerate() {
+        for &h in heads {
+            let from = tails.entry(h).or_default();
+            if from.last() != Some(&b) {
+                from.push(b);
+            }
+        }
+    }
+    for (&h, from) in &tails {
         seen[h] = h;
         depth[h] += 1;
-        let mut work: Vec<usize> = (0..blocks).filter(|&b| back[b].contains(&h)).collect();
+        let mut work = from.clone();
         while let Some(b) = work.pop() {
             if seen[b] != h {
                 seen[b] = h;

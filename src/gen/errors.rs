@@ -47,8 +47,11 @@ impl<'a> Gen<'a> {
         }
         // The first build counts the sites; one site keeps its raise inline.
         *self.raise_sites.entry(key.clone()).or_default() += 1;
-        if !self.plan.outline_raises && !self.plan.shared_raises.contains(&key) {
-            return None;
+        if !self.plan.shared_raises.contains(&key) {
+            self.raises_decide = true;
+            if !self.plan.outline_raises {
+                return None;
+            }
         }
         if let Some(&(_, label, _)) = self.raises.iter().find(|(have, ..)| *have == key) {
             return Some(label);
@@ -992,7 +995,12 @@ impl<'a> Gen<'a> {
         if self.branch == 0 {
             return None;
         }
-        let flag = self.arena_alloc(1);
+        let body = self.body.as_ref().expect("body");
+        let flag = match body.fired {
+            0 => self.region(Region::Fired(body.id), 0),
+            at => at + 32,
+        };
+        self.body_mut().expect("body").fired = flag;
         self.push_u64(1);
         self.mstore_off(flag);
         Some(flag)
