@@ -148,17 +148,29 @@ Tests: `cargo test --offline --bin lithe -- lsp::` (20 tests). Open of a storage
 
 ## 1.3 Cheaper Release search
 
-The search still chooses the same plan. Four cuts, release bytecode unchanged:
+The search still chooses the same plan. Release creation bytes on the five headline contracts match `baseline.json`.
 
 - Identical plans are emitted once. Later rounds reuse that emit.
-- `finish` reuses optimized code when the post-promote code, entry labels, and leaf sizes match, then prices gas and runtime for that candidate's heap and data. A build with tracking on, and the final `both` outline, still run the passes.
-- `chain` and `round` skip a plan whose outline is a subset of an over-limit build with the same other knobs. Inlining more only grows code, so that plan cannot beat a fitting incumbent, and its delta is past the retry threshold.
-- `flow` keeps the last eight `(code, entries, sum)` results. `gas` and `heat` share them. The match is the code itself, not only its hash.
+- `finish` reuses optimized code when the post-promote code, entry labels, and leaf sizes match, then prices gas and runtime for that candidate's heap and data. The `flow` result for that optimized code is stored with it, so a hit does not run `flow` again. A build with tracking on, and the final `both` outline, still run the passes.
+- `round` skips a plan only when that exact plan was already finished and its measured cost is at or above the retry bar. The delta of that plan is past the threshold, so dropping it does not change which toggles are retried. A plan that only inlines more is still built: inlining can shrink the placed runtime, so a subset of an over-limit outline is not a lower bound. `chain` does not cut a suffix on that guess.
+- `heat` during `optimize` does not consult a process-wide cache. Those passes rewrite the stream, so a memo of the last few copies misses and serializes parallel finishes.
 
-Tests: `cargo test --offline --lib` (547 passed, including both release snapshot tests), `cargo clippy --offline --all-targets -- -D warnings`, `cargo fmt --all --check`.
+`target/fast/lithe` (release opts, no fat LTO), `LITHE_CACHE_DIR` empty, `LITHE_THREADS=1`. Baseline is fat-LTO `target/release`. Creation bytes match. Emits fall by the duplicate plans. Finishes do not: on these contracts distinct plans do not share post-promote code, so the finish cache does not fire. Wall time stays within about 5% of the fat-LTO baseline; that gap is the binary.
+
+| target | baseline wall | wall | baseline emits / finishes | emits / finishes | creation |
+|---|---:|---:|---:|---:|---:|
+| `bench/counter.lithe` | 7.3 ms | 8.7 ms | 16 / 4 | 14 / 4 | 235 |
+| `bench/solady_erc20.lithe` | 40.2 ms | 40.5 ms | 28 / 22 | 25 / 22 | 1405 |
+| `bench/uniswap_v2_pair.lithe` | 338.6 ms | 357.3 ms | 37 / 33 | 35 / 33 | 5267 |
+| `bench/erc1155.lithe` | 590.0 ms | 604.5 ms | 63 / 51 | 57 / 51 | 5774 |
+| `bench/erc20_full.lithe` | 1731.9 ms | 1816.1 ms | 99 / 91 | 97 / 91 | 9335 |
+
+Tests: `cargo test --offline --lib evm::snapshot::release_bytecode_matches_snapshot -- --exact`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo fmt --all`.
 
 ## 2.2 Module cache
 
-`ModuleCache` stores parsed files by canonical path, content hash, and EVM fork. The LSP holds one per session and uses it for open, change, and save. `std/` is parsed once per process. A second analysis of the same text reuses the checked program. An edit still runs the whole-program check: checking is not split by file, and `src/check` is outside this step. The edited file is parsed again; `std/` is not.
+`ModuleCache` stores parsed files and checked programs by canonical path, content hash, and EVM fork. The LSP holds one per session. `std/` is parsed once per process; the test compares the `Arc` for the files that load touched, not the size of the process-wide map. A second analysis of the same text reuses the checked program, and so does an undo back to it. A new edit still runs the whole-program check: checking is not split by file, and `src/check` is outside this step. The edited file is parsed again; `std/` is not.
 
-Tests: `cargo test --offline --lib -- std_is_parsed_once second_analysis` and `cargo test --offline --bin lithe -- lsp::` (20 passed), covered by the 1.3 library run.
+The checked map keeps eight programs per path and drops the least recently used. A deeper undo checks again.
+
+Tests: `cargo test --offline --lib -- std_is_parsed_once session_cache::` (3 passed).

@@ -2084,4 +2084,19 @@ mod session_cache {
         assert!(cache.analyze_frontend(path, &text).error.is_none());
         assert_eq!(cache.check_count(), n);
     }
+
+    #[test]
+    fn undo_reuses_the_checked_program() {
+        let cache = ModuleCache::new();
+        let path = Path::new("bench/counter.lithe");
+        let text = std::fs::read_to_string(path).expect("counter");
+        let edited = format!("{text}\n");
+        assert!(cache.analyze_frontend(path, &text).error.is_none());
+        assert!(cache.analyze_frontend(path, &edited).error.is_none());
+        let n = cache.check_count();
+        assert!(cache.analyze_frontend(path, &text).error.is_none());
+        assert_eq!(cache.check_count(), n);
+        assert!(cache.analyze_frontend(path, &edited).error.is_none());
+        assert_eq!(cache.check_count(), n);
+    }
 }

@@ -91,19 +91,23 @@ impl Sources {
     }
 }
 
-/// Parsed programs and the latest successful check of one entry file.
+/// Parsed programs and successful checks for one session.
 ///
-/// The key is the canonical path, a hash of the file's text, and the EVM fork. `std/` is
-/// parsed once per process, because its text is fixed. A session holds one cache so an edit
-/// reuses every import whose text did not change.
+/// Parsed files and checked programs are keyed by the canonical path, a hash of the text,
+/// and the EVM fork. `std/` is parsed once per process, because its text is fixed. A session
+/// holds one cache so an edit reuses every import whose text did not change, and an undo
+/// reuses the check.
 ///
-/// simplify: one checked program per path, the latest text. Undo checks again.
+/// simplify: eight checked programs per path, least recently used. A deeper undo checks
+/// again; drop the cap to remember every buffer.
 pub struct ModuleCache {
     parsed: Mutex<HashMap<(PathBuf, u64, u8), Arc<Program>>>,
-    checked: Mutex<HashMap<PathBuf, CheckedMemo>>,
+    checked: Mutex<HashMap<PathBuf, Vec<CheckedMemo>>>,
     #[cfg(test)]
     checks: std::sync::atomic::AtomicUsize,
 }
+
+const CHECKED_KEPT: usize = 8;
 
 struct CheckedMemo {
     fp: u64,
@@ -162,23 +166,37 @@ impl ModuleCache {
         evm: EvmVersion,
         f: impl FnOnce(&[Checked]) -> R,
     ) -> Option<R> {
-        let guard = self.checked.lock().unwrap_or_else(|err| err.into_inner());
-        let saved = guard.get(path)?;
-        (saved.fp == fp && saved.evm == evm_tag(evm)).then(|| f(&saved.units))
+        let mut guard = self.checked.lock().unwrap_or_else(|err| err.into_inner());
+        let saved = guard.get_mut(path)?;
+        let tag = evm_tag(evm);
+        let pos = saved
+            .iter()
+            .position(|memo| memo.fp == fp && memo.evm == tag)?;
+        let out = f(&saved[pos].units);
+        let hit = saved.remove(pos);
+        saved.push(hit);
+        Some(out)
     }
 
     pub(crate) fn store_checked(&self, path: &Path, fp: u64, evm: EvmVersion, units: Vec<Checked>) {
-        self.checked
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .insert(
-                path.to_path_buf(),
-                CheckedMemo {
-                    fp,
-                    evm: evm_tag(evm),
-                    units,
-                },
-            );
+        let mut guard = self.checked.lock().unwrap_or_else(|err| err.into_inner());
+        let saved = guard.entry(path.to_path_buf()).or_default();
+        let tag = evm_tag(evm);
+        if let Some(memo) = saved
+            .iter_mut()
+            .find(|memo| memo.fp == fp && memo.evm == tag)
+        {
+            memo.units = units;
+            return;
+        }
+        if saved.len() == CHECKED_KEPT {
+            saved.remove(0);
+        }
+        saved.push(CheckedMemo {
+            fp,
+            evm: tag,
+            units,
+        });
     }
 
     #[cfg(test)]
@@ -224,11 +242,9 @@ fn std_program(canon: &Path, src: &str) -> Result<Program, Error> {
 }
 
 #[cfg(test)]
-fn std_cached() -> usize {
-    std_programs()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .len()
+pub(crate) fn std_ptr(path: &Path) -> Option<usize> {
+    let cache = std_programs().lock().unwrap_or_else(|err| err.into_inner());
+    cache.get(path).map(|prog| Arc::as_ptr(prog) as usize)
 }
 
 fn parse_cached(canon: &Path, src: &str, env: &mut LoadEnv) -> Result<Program, Error> {
@@ -1295,9 +1311,20 @@ pub(crate) fn file_label(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use super::*;
+
+    fn std_ids(touched: &[(PathBuf, u64)]) -> Vec<(PathBuf, usize)> {
+        let mut ids: Vec<_> = touched
+            .iter()
+            .filter(|(path, _)| path.starts_with(STD_ROOT))
+            .map(|(path, _)| (path.clone(), std_ptr(path).expect("parsed std")))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
 
     #[test]
     fn std_is_parsed_once_and_an_edit_parses_only_the_file() {
@@ -1315,35 +1342,35 @@ mod tests {
             &mut touched,
         )
         .unwrap();
-        let std_n = std_cached();
+        let std_n = std_ids(&touched);
         let parsed_n = cache.parsed_count();
-        assert!(std_n > 0);
+        assert!(!std_n.is_empty());
         assert!(parsed_n > 0);
-        let mut touched = Vec::new();
+        let mut again = Vec::new();
         load_in(
             &sources,
             Path::new("a.lithe"),
             None,
             Some(&cache),
             evm,
-            &mut touched,
+            &mut again,
         )
         .unwrap();
-        assert_eq!(std_cached(), std_n);
+        assert_eq!(std_ids(&again), std_n);
         assert_eq!(cache.parsed_count(), parsed_n);
         let src2 = "import \"std/evm\";\n\nexternal function g() is { }\n";
-        let sources2 = Sources::memory([("b.lithe", src2)]);
-        let mut touched = Vec::new();
+        let sources2 = Sources::memory([("a.lithe", src2)]);
+        let mut edited = Vec::new();
         load_in(
             &sources2,
-            Path::new("b.lithe"),
+            Path::new("a.lithe"),
             None,
             Some(&cache),
             evm,
-            &mut touched,
+            &mut edited,
         )
         .unwrap();
-        assert_eq!(std_cached(), std_n);
+        assert_eq!(std_ids(&edited), std_n);
         assert_eq!(cache.parsed_count(), parsed_n + 1);
     }
 }

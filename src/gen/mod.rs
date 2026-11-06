@@ -233,8 +233,16 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-fn priced(e: &Emitted, code: &[Inst], limit: usize) -> Result<Finished, Error> {
-    let gas = asm::gas(code, &e.entries, e.heap);
+fn priced(
+    e: &Emitted,
+    code: &[Inst],
+    flow: Option<&asm::GasFlow>,
+    limit: usize,
+) -> Result<Finished, Error> {
+    let gas = match flow {
+        Some(flow) => asm::gas_from(code, flow, e.heap),
+        None => asm::gas(code, &e.entries, e.heap),
+    };
     let (runtime, marks) = match immutable::place_runtime(code, &e.data, &e.tail_blobs) {
         Ok(placed) => placed,
         Err(err) if err.line == 0 && err.message == "contract too large" => {
@@ -264,6 +272,7 @@ struct OptSaved {
     entries: Vec<u32>,
     leaves: Vec<(u32, usize)>,
     optimized: Arc<Vec<Inst>>,
+    flow: Arc<asm::GasFlow>,
 }
 
 fn opt_hash(code: &[Inst], entries: &[u32], leaves: &[(u32, usize)]) -> u64 {
@@ -328,7 +337,8 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     let opt_cache: std::sync::Mutex<HashMap<u64, Vec<OptSaved>>> =
         std::sync::Mutex::new(HashMap::new());
     let finish = |e: &Emitted, both: bool| -> Result<Finished, Error> {
-        if !both && !asm::track::on() {
+        let cacheable = !both && !asm::track::on();
+        if cacheable {
             let hash = opt_hash(&e.code, &e.entries, &e.leaves);
             let hit = opt_cache
                 .lock()
@@ -342,10 +352,10 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                                 && saved.entries == e.entries
                                 && saved.leaves == e.leaves
                         })
-                        .map(|saved| Arc::clone(&saved.optimized))
+                        .map(|saved| (Arc::clone(&saved.optimized), Arc::clone(&saved.flow)))
                 });
-            if let Some(code) = hit {
-                return priced(e, &code, limit);
+            if let Some((code, flow)) = hit {
+                return priced(e, &code, Some(&flow), limit);
             }
         }
         let _t = time(Some(&FINISHES), &FINISH_NS);
@@ -363,12 +373,14 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             asm::track::pass(code, asm::rotate_exits);
         });
         drop(outline);
-        if !both && !asm::track::on() {
+        let flow = cacheable.then(|| Arc::new(asm::gas_flow(&code, &e.entries)));
+        if let Some(flow) = &flow {
             let saved = OptSaved {
                 code: e.code.clone(),
                 entries: e.entries.clone(),
                 leaves: e.leaves.clone(),
                 optimized: Arc::new(code.clone()),
+                flow: Arc::clone(flow),
             };
             let hash = opt_hash(&saved.code, &saved.entries, &saved.leaves);
             opt_cache
@@ -378,14 +390,12 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                 .or_default()
                 .push(saved);
         }
-        priced(e, &code, limit)
+        priced(e, &code, flow.as_deref(), limit)
     };
     // Plans often emit the same program, which is optimized once.
     let done = std::sync::Mutex::new(HashMap::<Arc<Emitted>, Arc<Finished>>::new());
     let emitted_cache: std::sync::Mutex<HashMap<Plan, EmitHit>> =
         std::sync::Mutex::new(HashMap::new());
-    // Byte size of builds over the limit, so a plan that inlines at least as much is not built.
-    let floors: std::sync::Mutex<Vec<(Plan, usize)>> = std::sync::Mutex::new(Vec::new());
     // The outline sets of builds over the limit. Inlining more only grows code, so later
     // rounds skip the sets that inline at least as much, whose builds are also the slowest.
     let too_big = std::sync::Mutex::new(Vec::<Big>::new());
@@ -478,14 +488,6 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                 })
             })
             .collect();
-        {
-            let mut floors = floors.lock().unwrap_or_else(|err| err.into_inner());
-            for candidate in built.iter().flatten() {
-                if candidate.built.bytes > limit && candidate.built.bytes != usize::MAX {
-                    floors.push((candidate.plan.clone(), candidate.built.bytes));
-                }
-            }
-        }
         built
     };
     let note_big = |c: &Candidate| {
@@ -499,29 +501,20 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         built.iter().flatten().for_each(note_big);
         built
     };
-    // A plan that inlines at least as much as an over-limit build with the same other knobs
-    // is over the limit too. Its cost cannot beat `bar` when that floor says so.
-    let cannot = |plan: &Plan, bar: f64| -> bool {
-        let floors = floors.lock().unwrap_or_else(|err| err.into_inner());
-        let floor = floors
-            .iter()
-            .filter(|(known, bytes)| {
-                *bytes > limit && {
-                    let (mut left, mut right) = (plan.clone(), known.clone());
-                    left.outline.clear();
-                    right.outline.clear();
-                    left == right && plan.outline.is_subset(&known.outline)
-                }
-            })
-            .map(|(_, bytes)| *bytes)
-            .max();
-        let Some(floor) = floor else {
-            return false;
-        };
-        floor as f64 * asm::byte_gas() + OVER_LIMIT >= bar
+    // The cost of this exact plan, when an earlier build finished it.
+    let known_cost = |plan: &Plan| -> Option<f64> {
+        let emitted = {
+            let cache = emitted_cache.lock().unwrap_or_else(|err| err.into_inner());
+            match cache.get(plan) {
+                Some(Ok((emitted, _))) => Some(Arc::clone(emitted)),
+                _ => None,
+            }
+        }?;
+        let done = done.lock().unwrap_or_else(|err| err.into_inner());
+        done.get(&emitted).map(|built| built.cost)
     };
-    // Each move in turn, kept when the build costs less. Moves a byte floor already rules
-    // out are not built. A failed build is not kept where `fatal` is false.
+    // Each move in turn, kept when the build costs less. A failed build is not kept
+    // where `fatal` is false.
     let chain = |mut best: Candidate, moves: &[&Move], fatal: bool| -> Result<Candidate, Error> {
         let mut i = 0;
         while i < moves.len() {
@@ -529,9 +522,6 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             let mut plans = Vec::new();
             for m in &moves[i..] {
                 m.apply(&mut cursor);
-                if cannot(&cursor, best.cost()) {
-                    break;
-                }
                 plans.push(cursor.clone());
             }
             if plans.is_empty() {
@@ -615,6 +605,13 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             .flat_map(|(d, moves)| moves.iter().map(move |m| (d, m)))
             .collect();
         let plans: Vec<Plan> = tried.iter().map(|(_, m)| m.applied(&from.plan)).collect();
+        // An exact plan already finished at or above the retry bar cannot win, and its
+        // delta is past the threshold. A plan that merely inlines more is still built:
+        // inlining can shrink the placed runtime.
+        let measured_out: Vec<bool> = plans
+            .iter()
+            .map(|plan| known_cost(plan).is_some_and(|cost| cost >= retry_bar))
+            .collect();
         // When inlining everything takes more instructions than the limit has bytes, an
         // outline set inside another tried with it, which inlines more, is built after that
         // one, and not at all if that one is over the limit. Elsewhere waiting would cost
@@ -642,7 +639,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                 (0..plans.len())
                     .filter(|&i| later[i] == wave)
                     .filter(|&i| !wave || !too_big.iter().any(|b| plans[i].no_smaller(b)))
-                    .filter(|&i| !cannot(&plans[i], retry_bar))
+                    .filter(|&i| !measured_out[i])
                     .collect()
             };
             if picked.is_empty() {
