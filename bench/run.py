@@ -2235,7 +2235,7 @@ def lithe_times(pairs, cache):
     env = {**os.environ, "LITHE_CACHE_DIR": cache}
     times = {}
     for name in pairs:
-        cmd = [LITHE, "compile", os.path.join(BENCH, name + ".lithe"), "--evm-version", EVM]
+        cmd = [LITHE, "compile", os.path.join(BENCH, name + ".lithe"), "--release", "--evm-version", EVM]
         times[name] = []
         for _ in range(2):
             start = time.perf_counter()
@@ -2251,7 +2251,7 @@ def lithe_builds(cache):
     Foundry-style artifacts."""
     out = tempfile.mkdtemp()
     env = {**os.environ, "LITHE_CACHE_DIR": cache}
-    result = subprocess.run([LITHE, "compile", BENCH, "--evm-version", EVM], cwd=out, capture_output=True, text=True, env=env)
+    result = subprocess.run([LITHE, "compile", BENCH, "--release", "--evm-version", EVM], cwd=out, capture_output=True, text=True, env=env)
     if result.returncode:
         sys.exit(result.stderr)
     builds = {}

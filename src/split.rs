@@ -52,6 +52,15 @@ impl Default for EvmVersion {
     }
 }
 
+/// How hard codegen searches. `Fast` builds the starting plan, then outlines if that
+/// build is over the size limit. `Release` searches for a cheaper plan. Gas and size
+/// may differ; results do not. The library default is `Release`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opt {
+    Fast,
+    Release,
+}
+
 /// How contracts are built, and the fork they target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Options {
@@ -65,6 +74,7 @@ pub struct Options {
     /// `SpecViolation(string)` when a call breaks one. It reads the contract's spec file,
     /// and runs every module in the contract, facets included.
     pub check_specs: bool,
+    pub opt: Opt,
 }
 
 impl Default for Options {
@@ -74,6 +84,7 @@ impl Default for Options {
             deployer: DEPLOYER,
             evm: EvmVersion::default(),
             check_specs: false,
+            opt: Opt::Release,
         }
     }
 }
@@ -1391,9 +1402,13 @@ pub(crate) fn address_word(address: [u8; 20]) -> Word {
     Word::from_be_bytes(word)
 }
 
+fn cache_key(checked: &Checked, name: &str, opts: &Options) -> String {
+    format!("{:?}\0{name}\0{opts:?}", checked.source)
+}
+
 /// Where a contract's build is cached, keyed by its program and the options.
 fn cache_path(checked: &Checked, name: &str, opts: &Options) -> Option<PathBuf> {
-    cache_entry(&format!("{:?}\0{name}\0{opts:?}", checked.source))
+    cache_entry(&cache_key(checked, name, opts))
 }
 
 /// Where the build `key` names is cached: `$LITHE_CACHE_DIR`, else `$XDG_CACHE_HOME/lithe`, else
@@ -1776,5 +1791,79 @@ impl Reader<'_> {
                 })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    fn checked(src: &str) -> Checked {
+        let sources = crate::Sources::memory([("fit.lithe", src)]);
+        let prog = crate::modules::load(&sources, Path::new("fit.lithe")).expect("load");
+        crate::check::check(prog, EvmVersion::default()).expect("check")
+    }
+
+    #[test]
+    fn fast_and_release_do_not_share_a_cache_key() {
+        let checked = checked(
+            "storage is record { n : uint; }\nexternal function f() is { storage.n := 1; }\n",
+        );
+        let release = Options::default();
+        let fast = Options {
+            opt: Opt::Fast,
+            ..release.clone()
+        };
+        assert_eq!(release.opt, Opt::Release);
+        assert_ne!(
+            cache_key(&checked, "C", &fast),
+            cache_key(&checked, "C", &release)
+        );
+    }
+
+    #[test]
+    fn fast_outlines_until_the_build_fits() {
+        // Nested loops keep `step` inlined in the starting plan: the gas of a call
+        // outweighs the bytes. The size-limit loop outlines it anyway, and the build fits.
+        let checked = checked(
+            "storage is record { a : uint; }\n\
+             pure function step(const a : uint; const i : uint) : uint is\n\
+               (a * 31 + i) % 1000003 + (a / 7) % 13 + (a / 11) % 17 + (a / 19) % 23 + (a / 29) % 31 + (a / 37) % 41 + (a / 43) % 47\n\
+             external pure function f(const x : uint; const y : uint) : uint is {\n\
+               var a : uint := x;\n\
+               for i : uint in 0 .. y do { for j : uint in 0 .. y do { for k : uint in 0 .. y do {\n\
+                 a := step(a, i * j + k);\n\
+               } } }\n\
+             } with a\n\
+             external pure function g(const x : uint; const y : uint) : uint is {\n\
+               var a : uint := x + 5;\n\
+               for i : uint in 0 .. y do { for j : uint in 0 .. y do { for k : uint in 0 .. i do {\n\
+                 a := step(a, i + j + k) + 1;\n\
+               } } }\n\
+             } with a\n",
+        );
+        let open = Options {
+            opt: Opt::Fast,
+            size_limit: 1_000_000,
+            ..Options::default()
+        };
+        let wide = build(&checked, "Fit", &open).expect("wide");
+        assert!(wide.warnings.is_empty(), "{:?}", wide.warnings);
+        let limit = wide.runtime.len() - 1;
+        let fit = build(
+            &checked,
+            "Fit",
+            &Options {
+                opt: Opt::Fast,
+                size_limit: limit,
+                ..Options::default()
+            },
+        )
+        .expect("outlined");
+        assert!(fit.warnings.is_empty(), "{:?}", fit.warnings);
+        assert!(fit.runtime.len() <= limit);
+        assert!(fit.runtime.len() < wide.runtime.len());
     }
 }

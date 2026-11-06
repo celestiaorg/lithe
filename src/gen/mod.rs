@@ -19,7 +19,7 @@ use crate::check::{
 };
 use crate::error;
 use crate::keccak::selector;
-use crate::split::{Cross, Facet, Shape};
+use crate::split::{Cross, Facet, Opt, Shape};
 use crate::word::Word;
 use crate::Error;
 pub(crate) use immutable::ImmutableRefs;
@@ -574,7 +574,11 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     let mut best = build_all(std::slice::from_ref(&start))?
         .pop()
         .expect("a build");
-    best = variant_rounds(best)?;
+    // Fast is this plan. The size-limit loop below still outlines when the build does not fit.
+    let fast = shape.opts.opt == Opt::Fast;
+    if !fast {
+        best = variant_rounds(best)?;
+    }
     // Outlined functions some calls pass constants are also tried compiled once per set of
     // constants their calls pass.
     let mut specs: Vec<usize> = match forced_specs {
@@ -584,7 +588,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     specs.sort_unstable();
     // Later rounds try again the functions a round left as they were and whose toggle cost
     // little more than the start, as the moves kept since can make it pay.
-    for _ in 0..MAX_TOGGLE_ROUNDS {
+    for _ in 0..(if fast { 0 } else { MAX_TOGGLE_ROUNDS }) {
         let cost = best.cost();
         let was = (best.plan.outline.clone(), best.plan.specialize.clone());
         specs.retain(|f| best.plan.outline.contains(f));
@@ -620,11 +624,13 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     // choice sees, and a search that starts with it can end worse than one without it. So
     // it is tried on the plan found, and kept only where cheaper, with the variants tried
     // again from there.
-    let held = build_all(&[Move::Abandon(true).applied(&best.plan)])?
-        .pop()
-        .expect("a build");
-    if held.cost() < best.cost() {
-        best = variant_rounds(held)?;
+    if !fast {
+        let held = build_all(&[Move::Abandon(true).applied(&best.plan)])?
+            .pop()
+            .expect("a build");
+        if held.cost() < best.cost() {
+            best = variant_rounds(held)?;
+        }
     }
     // A build over the limit outlines more. Each function alone is outlined, then the sets
     // that add them in order of bytes saved per gas added, and the cheapest set that fits
@@ -634,7 +640,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         // The variants were chosen while every build was over the limit, so once outlining has
         // shrunk it, a build still over tries them again, then outlines more.
         if pass > 0 {
-            if best.built.bytes <= limit {
+            if fast || best.built.bytes <= limit {
                 break;
             }
             best = variant_rounds(best)?;
@@ -686,7 +692,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     // Once one fits, each function it outlines is built inlined again, skipping the sets
     // known to be over the limit. Those that cost less are brought back one at a time, the
     // most gas saved per byte added first, each kept while the build still costs less.
-    if fell_back && best.built.bytes <= limit {
+    if !fast && fell_back && best.built.bytes <= limit {
         let mut outlined: Vec<usize> = best.plan.outline.iter().copied().collect();
         outlined.sort_unstable();
         let (moves, alone): (Vec<Move>, Vec<Plan>) = {
@@ -715,7 +721,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     }
     // Constants and static allocations are tried on the chosen plan only: across every
     // move they would double the builds for a few more bytes.
-    if forced.is_none() {
+    if !fast && forced.is_none() {
         let tries = [Move::ForwardConsts, Move::StaticHeap].map(|m| m.applied(&best.plan));
         for c in build_all(&tries)? {
             if c.cost() < best.cost() {

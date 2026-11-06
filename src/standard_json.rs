@@ -369,6 +369,12 @@ mod tests {
             "unknown setting `optimize`"
         );
         assert_eq!(
+            failed(&input(r#""opt":"none""#)),
+            "`opt` takes `fast` or `release`, not `none`"
+        );
+        let fast = compile(&input(r#""opt":"fast""#));
+        assert!(parse(&fast).unwrap().get("errors").is_none(), "{fast}");
+        assert_eq!(
             failed("{\"language\":\"Solidity\"}"),
             "`language` must be \"Lithe\""
         );

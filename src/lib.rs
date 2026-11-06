@@ -64,7 +64,9 @@ mod word;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-pub use config::{build_options, format_width, set_build_option, BUILD_KEYS, DEFAULT_WIDTH};
+pub use config::{
+    build_opt_set, build_options, format_width, set_build_option, BUILD_KEYS, DEFAULT_WIDTH,
+};
 pub use format::{add_use, format_source};
 pub use index::{Completion, Def, File, Index, Kind, Ref, Signature, Span};
 pub use lint::{lint_paths, lithe_files, Lint};
@@ -75,7 +77,7 @@ pub use route::{
     Abi, AbiError, AbiItem, Constructor, Event, EventParam, Fallback, Function, Param, Receive,
     StateMutability,
 };
-pub use split::{EvmVersion, Options, DEPLOYER, SIZE_LIMIT};
+pub use split::{EvmVersion, Opt, Options, DEPLOYER, SIZE_LIMIT};
 
 /// Whether `path` is an import path: `std/`, `./`, `../`, or a package, and lowercase names.
 pub fn is_module_path(path: &str) -> bool {
@@ -463,12 +465,13 @@ pub struct Analysis {
 }
 
 /// Checks every contract `src` defines, as `lithe compile directory` does, with the build
-/// options the nearest `lithe.toml` sets.
+/// options the nearest `lithe.toml` sets. `opt` is always [`Opt::Fast`].
 pub fn analyze(path: &Path, src: &str) -> Analysis {
-    let (opts, mut failed) = match build_options(path) {
+    let (mut opts, mut failed) = match build_options(path) {
         Ok(opts) => (opts, None),
         Err(err) => (Options::default(), Some(err)),
     };
+    opts.opt = Opt::Fast;
     let sources = Sources::disk();
     let prog = match modules::load_source(&sources, path, src) {
         Ok(prog) => prog,
