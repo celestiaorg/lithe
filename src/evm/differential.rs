@@ -211,13 +211,15 @@ pub(super) fn compare_modes(
     compare_builds_from(rel, &methods, (&a.0, &a.1), (&b.0, &b.1), steps, true);
 }
 
-/// Two build modes of one program must behave alike.
+/// Fast and Release builds of one program behave alike.
 #[test]
 fn fast_matches_release() {
     let steps = steps_from_env("LITHE_FUZZ_STEPS", 200);
-    let opts = crate::Options::default();
+    let release = crate::Options::default();
+    let mut fast = release.clone();
+    fast.opt = crate::Opt::Fast;
     for (path, rel) in differential_targets() {
-        compare_modes(&path, &rel, &opts, &opts, steps);
+        compare_modes(&path, &rel, &release, &fast, steps);
     }
 }
 

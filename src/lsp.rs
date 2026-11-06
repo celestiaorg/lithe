@@ -1,16 +1,19 @@
-//! `lithe lsp`: a language server on stdin and stdout. It reports errors and `lithe lint`'s
-//! findings as you type, with their fixes as quick fixes, formats as `lithe fmt` does, and
-//! answers hover, go to definition, references, highlights, outline, completion, and
-//! signature help from the last version of each file that checked.
+//! `lithe lsp`: a language server on stdin and stdout. It reports check errors and `lithe lint`'s
+//! findings as you type, and errors only a build finds when the file is saved. It formats as
+//! `lithe fmt` does, and answers hover, go to definition, references, highlights, outline,
+//! completion, and signature help from the last version of each file that checked.
 
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Mutex};
+use std::thread;
 
 use lithe::{Index, Kind, Span};
 
 pub fn run() -> ! {
-    let code = serve(&mut std::io::stdin().lock(), &mut std::io::stdout().lock());
+    let (code, _) = serve(&mut std::io::stdin().lock(), std::io::stdout());
     std::process::exit(code)
 }
 
@@ -22,13 +25,44 @@ struct Doc {
     index: Option<Index>,
     /// The findings for `text` as it is.
     lints: Vec<lithe::Lint>,
-    /// Why `text` does not compile, if it does not.
+    /// Why `text` does not check, if it does not.
     error: Option<lithe::Error>,
+    /// A build error from the last save that a newer edit has not cancelled.
+    codegen: Option<lithe::Error>,
 }
 
+#[cfg(test)]
+static SAVE_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
 /// Answers messages until `exit` or the end of input, and returns the exit status.
-fn serve(input: &mut impl BufRead, output: &mut impl Write) -> i32 {
-    let mut docs: HashMap<String, Doc> = HashMap::new();
+fn serve<W: Write + Send + 'static>(input: &mut impl BufRead, output: W) -> (i32, W) {
+    let docs = std::sync::Arc::new(Mutex::new(HashMap::<String, Doc>::new()));
+    let generation = std::sync::Arc::new(AtomicU64::new(0));
+    let output = std::sync::Arc::new(Mutex::new(output));
+    let (tx, rx) = mpsc::channel();
+    let worker = thread::spawn({
+        let docs = std::sync::Arc::clone(&docs);
+        let generation = std::sync::Arc::clone(&generation);
+        let output = std::sync::Arc::clone(&output);
+        move || save_worker(rx, &docs, &generation, &output)
+    });
+    let code = serve_loop(input, &docs, &generation, &output, &tx);
+    drop(tx);
+    worker.join().unwrap();
+    let Ok(output) = std::sync::Arc::try_unwrap(output) else {
+        panic!("save worker dropped its output");
+    };
+    let output = output.into_inner().unwrap();
+    (code, output)
+}
+
+fn serve_loop<W: Write + Send>(
+    input: &mut impl BufRead,
+    docs: &Mutex<HashMap<String, Doc>>,
+    generation: &AtomicU64,
+    output: &Mutex<W>,
+    saved: &mpsc::Sender<u64>,
+) -> i32 {
     let mut shutdown = false;
     while let Some(msg) = read(input) {
         let method = msg.get("method").and_then(Json::str).unwrap_or("");
@@ -45,34 +79,50 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write) -> i32 {
         }
         .and_then(Json::str);
         match method {
-            "initialize" => reply(output, &msg, CAPABILITIES),
+            "initialize" => reply(&mut *output.lock().unwrap(), &msg, CAPABILITIES),
             "shutdown" => {
                 shutdown = true;
-                reply(output, &msg, "null");
+                reply(&mut *output.lock().unwrap(), &msg, "null");
             }
             "exit" => return if shutdown { 0 } else { 1 },
             "textDocument/didOpen" | "textDocument/didChange" => {
                 if let (Some(uri), Some(text)) = (uri, text) {
+                    generation.fetch_add(1, Ordering::AcqRel);
+                    let mut docs = docs.lock().unwrap();
                     let doc = docs.entry(uri.to_string()).or_insert(Doc {
                         text: String::new(),
                         index: None,
                         lints: Vec::new(),
                         error: None,
+                        codegen: None,
                     });
                     doc.text = text.to_string();
-                    update(output, uri, doc);
+                    doc.codegen = None;
+                    apply_frontend(uri, doc);
+                    publish(output, uri, doc);
                 }
             }
-            // A saved file can change what the open files that import it report.
+            // A saved file can change what the open files that import it report. The build
+            // runs on the worker; a newer edit bumps `generation` and that result is dropped.
             "textDocument/didSave" => {
-                for (uri, doc) in &mut docs {
-                    update(output, uri, doc);
+                let job = generation.fetch_add(1, Ordering::AcqRel) + 1;
+                {
+                    let mut docs = docs.lock().unwrap();
+                    let uris: Vec<String> = docs.keys().cloned().collect();
+                    for uri in uris {
+                        let Some(doc) = docs.get_mut(&uri) else {
+                            continue;
+                        };
+                        apply_frontend(&uri, doc);
+                        publish(output, &uri, doc);
+                    }
                 }
+                let _ = saved.send(job);
             }
             "textDocument/didClose" => {
                 if let Some(uri) = uri {
-                    docs.remove(uri);
-                    notify_diagnostics(output, uri, &[]);
+                    docs.lock().unwrap().remove(uri);
+                    notify_diagnostics(&mut *output.lock().unwrap(), uri, &[]);
                 }
             }
             "textDocument/hover"
@@ -82,25 +132,45 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write) -> i32 {
             | "textDocument/documentSymbol"
             | "textDocument/completion"
             | "textDocument/signatureHelp" => {
-                let found = uri.zip(params).and_then(|(uri, params)| {
-                    let doc = docs.get(uri)?;
-                    answer(method, uri, doc, doc.index.as_ref()?, params)
-                });
-                reply(output, &msg, found.as_deref().unwrap_or("null"));
+                let found = {
+                    let docs = docs.lock().unwrap();
+                    uri.zip(params).and_then(|(uri, params)| {
+                        let doc = docs.get(uri)?;
+                        answer(method, uri, doc, doc.index.as_ref()?, params)
+                    })
+                };
+                reply(
+                    &mut *output.lock().unwrap(),
+                    &msg,
+                    found.as_deref().unwrap_or("null"),
+                );
             }
             "textDocument/formatting" => {
-                let found = uri.and_then(|uri| format(uri, &docs.get(uri)?.text));
-                reply(output, &msg, found.as_deref().unwrap_or("null"));
+                let found = {
+                    let docs = docs.lock().unwrap();
+                    uri.and_then(|uri| format(uri, &docs.get(uri)?.text))
+                };
+                reply(
+                    &mut *output.lock().unwrap(),
+                    &msg,
+                    found.as_deref().unwrap_or("null"),
+                );
             }
             "textDocument/codeAction" => {
-                let found = uri
-                    .zip(params)
-                    .and_then(|(uri, params)| fixes(uri, docs.get(uri)?, params));
-                reply(output, &msg, found.as_deref().unwrap_or("[]"));
+                let found = {
+                    let docs = docs.lock().unwrap();
+                    uri.zip(params)
+                        .and_then(|(uri, params)| fixes(uri, docs.get(uri)?, params))
+                };
+                reply(
+                    &mut *output.lock().unwrap(),
+                    &msg,
+                    found.as_deref().unwrap_or("[]"),
+                );
             }
             "" => {}
             _ if msg.get("id").is_some() => send(
-                output,
+                &mut *output.lock().unwrap(),
                 &format!(
                     r#"{{"jsonrpc":"2.0","id":{},"error":{{"code":-32601,"message":{}}}}}"#,
                     id(&msg),
@@ -113,8 +183,8 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write) -> i32 {
     1
 }
 
-fn update(output: &mut impl Write, uri: &str, doc: &mut Doc) {
-    let analysis = lithe::analyze(&file_path(uri), &doc.text);
+fn apply_frontend(uri: &str, doc: &mut Doc) {
+    let analysis = lithe::analyze_frontend(&file_path(uri), &doc.text);
     if analysis.index.is_some() {
         doc.index = analysis.index;
     }
@@ -122,7 +192,69 @@ fn update(output: &mut impl Write, uri: &str, doc: &mut Doc) {
     doc.error = analysis
         .error
         .map(|err| in_document(&file_path(uri), &doc.text, err));
-    publish(output, uri, doc);
+}
+
+/// One Fast build per save. A newer edit or save makes `generation` move, and this result
+/// is not published.
+///
+/// simplify: cancellation drops the result; the build runs to completion. Abort it
+/// mid-compile if a discarded save is slow enough to matter.
+fn save_worker<W: Write + Send>(
+    rx: mpsc::Receiver<u64>,
+    docs: &Mutex<HashMap<String, Doc>>,
+    generation: &AtomicU64,
+    output: &Mutex<W>,
+) {
+    while let Ok(job) = rx.recv() {
+        #[cfg(test)]
+        {
+            let ms = SAVE_DELAY_MS.load(Ordering::Relaxed);
+            if ms > 0 {
+                thread::sleep(std::time::Duration::from_millis(ms));
+            }
+        }
+        let snap: Vec<(String, String, bool)> = {
+            let docs = docs.lock().unwrap();
+            if generation.load(Ordering::Acquire) != job {
+                continue;
+            }
+            docs.iter()
+                .map(|(uri, doc)| (uri.clone(), doc.text.clone(), doc.error.is_none()))
+                .collect()
+        };
+        let mut found = Vec::new();
+        for (uri, text, frontend_ok) in &snap {
+            if generation.load(Ordering::Acquire) != job {
+                found.clear();
+                break;
+            }
+            let codegen = if *frontend_ok {
+                lithe::analyze_full(&file_path(uri), text)
+                    .error
+                    .map(|err| in_document(&file_path(uri), text, err))
+            } else {
+                None
+            };
+            found.push((uri.clone(), codegen));
+        }
+        if found.len() != snap.len() || generation.load(Ordering::Acquire) != job {
+            continue;
+        }
+        let mut docs = docs.lock().unwrap();
+        if generation.load(Ordering::Acquire) != job {
+            continue;
+        }
+        for (uri, codegen) in &found {
+            if let Some(doc) = docs.get_mut(uri) {
+                doc.codegen = codegen.clone();
+            }
+        }
+        for (uri, _) in &found {
+            if let Some(doc) = docs.get(uri) {
+                publish(output, uri, doc);
+            }
+        }
+    }
 }
 
 /// `err` as the document `path` shows it. One in another file is shown at the `import` that
@@ -202,15 +334,14 @@ fn fixes(uri: &str, doc: &Doc, params: &Json) -> Option<String> {
         })
         .collect();
     let mut actions = actions;
+    let error = doc.error.as_ref().or(doc.codegen.as_ref());
     actions.extend(
-        doc.error
-            .as_ref()
+        error
             .filter(|err| (first..=last).contains(&err.line))
             .and_then(|err| import_fix(uri, &doc.text, err)),
     );
     actions.extend(
-        doc.error
-            .as_ref()
+        error
             .filter(|err| (first..=last).contains(&err.line))
             .and_then(|err| use_fix(uri, &doc.text, err)),
     );
@@ -647,7 +778,7 @@ fn range(text: &str, at: Span) -> String {
     )
 }
 
-fn publish(output: &mut impl Write, uri: &str, doc: &Doc) {
+fn publish<W: Write + Send>(output: &Mutex<W>, uri: &str, doc: &Doc) {
     let mut items: Vec<String> = doc
         .lints
         .iter()
@@ -656,9 +787,10 @@ fn publish(output: &mut impl Write, uri: &str, doc: &Doc) {
     items.extend(
         doc.error
             .as_ref()
+            .or(doc.codegen.as_ref())
             .map(|err| error_diagnostic(&doc.text, err)),
     );
-    notify_diagnostics(output, uri, &items);
+    notify_diagnostics(&mut *output.lock().unwrap(), uri, &items);
 }
 
 fn error_diagnostic(text: &str, err: &lithe::Error) -> String {
@@ -967,8 +1099,7 @@ mod tests {
 
     fn session(messages: &[String]) -> (i32, Vec<String>) {
         let input = messages.concat();
-        let mut output = Vec::new();
-        let code = serve(&mut input.as_bytes(), &mut output);
+        let (code, output) = serve(&mut input.as_bytes(), Vec::new());
         let output = String::from_utf8(output).unwrap();
         let bodies = output
             .split("Content-Length: ")
@@ -1012,6 +1143,86 @@ mod tests {
         );
         assert!(bodies[3].contains(r#""id":7,"error":{"code":-32601"#));
         assert_eq!(bodies[4], r#"{"jsonrpc":"2.0","id":8,"result":null}"#);
+    }
+
+    fn saved(uri: &str) -> String {
+        frame(&format!(
+            r#"{{"jsonrpc":"2.0","method":"textDocument/didSave","params":{{"textDocument":{{"uri":{}}}}}}}"#,
+            quote(uri)
+        ))
+    }
+
+    #[test]
+    fn codegen_error_is_reported_on_save() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.lithe");
+        let text = "storage is record { count : uint; }\n";
+        std::fs::write(&path, text).unwrap();
+        let uri = format!("file://{}", path.display());
+        let (_, open_only) = session(&[
+            open(&uri, text),
+            frame(r#"{"jsonrpc":"2.0","method":"exit"}"#),
+        ]);
+        assert!(
+            open_only.iter().all(|b| !b.contains("no entrypoints")),
+            "{open_only:?}"
+        );
+        let (_, bodies) = session(&[
+            open(&uri, text),
+            saved(&uri),
+            frame(r#"{"jsonrpc":"2.0","method":"exit"}"#),
+        ]);
+        assert!(
+            bodies
+                .iter()
+                .any(|b| b.contains("contract has no entrypoints")),
+            "{bodies:?}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_newer_edit_drops_the_save_build() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.lithe");
+        let text = "storage is record { count : uint; }\n";
+        std::fs::write(&path, text).unwrap();
+        let uri = format!("file://{}", path.display());
+        let broken =
+            "storage is record { count : uint; }\nexternal view function get() : uint is\n  nope\n";
+        let change = frame(&format!(
+            r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":{},"version":2}},"contentChanges":[{{"text":{}}}]}}}}"#,
+            quote(&uri),
+            quote(broken)
+        ));
+        SAVE_DELAY_MS.store(200, Ordering::Relaxed);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                SAVE_DELAY_MS.store(0, Ordering::Relaxed);
+            }
+        }
+        let _reset = Reset;
+        let (_, bodies) = session(&[
+            open(&uri, text),
+            saved(&uri),
+            change,
+            frame(r#"{"jsonrpc":"2.0","method":"exit"}"#),
+        ]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let diags: Vec<_> = bodies
+            .iter()
+            .filter(|b| b.contains("publishDiagnostics"))
+            .collect();
+        let last = diags.last().expect("a diagnostic");
+        assert!(last.contains("unknown name `nope`"), "{last}");
+        assert!(!last.contains("no entrypoints"), "{last}");
+        assert!(
+            bodies.iter().all(|b| !b.contains("no entrypoints")),
+            "{bodies:?}"
+        );
     }
 
     #[test]
@@ -1178,9 +1389,17 @@ mod tests {
         assert!(analysis.index.is_some());
         let text = "storage is record { count : uint; }\n";
         std::fs::write(&path, text).unwrap();
-        let analysis = lithe::analyze(&path, text);
+        assert!(lithe::analyze_frontend(&path, text).error.is_none());
+        let analysis = lithe::analyze_full(&path, text);
         assert_eq!(
             analysis.error.map(|e| e.message).as_deref(),
+            Some("contract has no entrypoints")
+        );
+        assert_eq!(
+            lithe::analyze(&path, text)
+                .error
+                .map(|e| e.message)
+                .as_deref(),
             Some("contract has no entrypoints")
         );
         std::fs::remove_dir_all(&dir).unwrap();
