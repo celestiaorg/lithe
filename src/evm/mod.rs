@@ -290,7 +290,14 @@ fn exec(
     value: Word,
     balance: Word,
 ) -> Result<Outcome, String> {
-    exec_state(
+    let at = SELF.get();
+    let previous = DEPLOYED.with(|d| {
+        d.borrow_mut().insert(
+            at,
+            (if CONSTRUCTING.get() { Vec::new() } else { code.to_vec() }, storage.clone()),
+        )
+    });
+    let out = exec_state(
         code,
         calldata,
         storage,
@@ -298,9 +305,21 @@ fn exec(
         value,
         balance,
         HashMap::new(),
-    )
+    );
+    DEPLOYED.with(|d| {
+        let mut d = d.borrow_mut();
+        if let Some(previous) = previous {
+            d.insert(at, previous);
+        } else {
+            d.remove(&at);
+        }
+    });
+    out
 }
 
+// Transient storage is frame-local here: self/delegate calls share it, but calls to
+// other accounts copy it without merging it back. This does not model EIP-1153
+// per-address transaction storage; reentrant transient locks need a shared world map.
 fn exec_state(
     code: &[u8],
     calldata: &[u8],
@@ -352,8 +371,15 @@ fn exec_state(
             continue;
         }
         pc += 1;
-        if matches!(op, 0xf0 | 0xf1 | 0xf2 | 0xf4 | 0xf5 | 0xfa) && snap_world.is_none() {
-            snap_world = Some((DEPLOYED.with(|d| d.borrow().clone()), NONCE.get()));
+        if matches!(op, 0xf0 | 0xf1 | 0xf2 | 0xf4 | 0xf5 | 0xfa) {
+            if snap_world.is_none() {
+                snap_world = Some((DEPLOYED.with(|d| d.borrow().clone()), NONCE.get()));
+            }
+            DEPLOYED.with(|d| {
+                if let Some(entry) = d.borrow_mut().get_mut(&self_addr) {
+                    entry.1 = storage.clone();
+                }
+            });
         }
         let pop = |stack: &mut Vec<Word>| stack.pop().ok_or_else(|| "stack underflow".to_string());
         match op {
@@ -734,7 +760,7 @@ fn exec_state(
                 }
                 let at = created_address(self_addr, salt, &init);
                 let was = CONSTRUCTING.replace(true);
-                let born = elsewhere(self_addr, || {
+                let born = elsewhere(at, || {
                     exec_state(
                         &init,
                         &[],
@@ -747,6 +773,9 @@ fn exec_state(
                 });
                 CONSTRUCTING.set(was);
                 let born = born?;
+                if let Some(current) = DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone())) {
+                    storage = current;
+                }
                 if born.reverted {
                     returndata = born.returndata;
                     stack.push(Word::from_u64(0));
@@ -790,6 +819,9 @@ fn exec_state(
                             transient.clone(),
                         )
                     })?;
+                    if let Some(current) = DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone())) {
+                    storage = current;
+                }
                     trace.push(Ev::Call { to, value: val });
                     returndata = nested.returndata.clone();
                     if nested.reverted {
@@ -885,6 +917,9 @@ fn exec_state(
                             transient.clone(),
                         )
                     })?;
+                    if let Some(current) = DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone())) {
+                    storage = current;
+                }
                     returndata = nested.returndata;
                     if ret_size > 0 {
                         let n = ret_size.min(returndata.len());
