@@ -328,6 +328,7 @@ fn exec_state(
     let self_addr = SELF.get();
     let mut self_balance = balance;
     let mut storage = storage;
+    let metered = bench_gas::metering();
     for _ in 0..200_000 {
         // Running off the end of the code stops, as `STOP` does, with no output.
         if pc >= code.len() {
@@ -336,6 +337,9 @@ fn exec_state(
             break;
         }
         let op = code[pc];
+        if metered {
+            bench_gas::charge(op, &stack, &storage, self_addr);
+        }
         if (0x60..=0x7f).contains(&op) {
             let n = (op - 0x5f) as usize;
             if pc + 1 + n > code.len() {
@@ -1085,6 +1089,9 @@ fn exec_state(
     if !stopped {
         return Err("step limit".into());
     }
+    if metered {
+        bench_gas::charge_memory(mem.len());
+    }
     if reverted {
         storage = snap_storage;
         transient = snap_transient;
@@ -1553,6 +1560,7 @@ fn abi_string(sig: &str, data: &[u8]) -> Vec<u8> {
 mod abi;
 mod abi_tree;
 mod basics;
+mod bench_gas;
 mod calls;
 mod differential;
 mod dispatch;
