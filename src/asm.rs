@@ -8,7 +8,7 @@
 //! every label push. A label costs a `JUMPDEST` only when a jump refers to it.
 
 use std::collections::{HashMap, HashSet};
-use std::hash::BuildHasherDefault;
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 
 use crate::error;
 use crate::word::Word;
@@ -6348,7 +6348,70 @@ fn flow(
     starts_at: &[u32],
     sum: bool,
 ) -> (Vec<f64>, Vec<u32>, Vec<(usize, Vec<f64>)>) {
-    flow_(code, starts_at, sum)
+    if let Some(hit) = flow_memo_get(code, starts_at, sum) {
+        return hit;
+    }
+    let out = flow_(code, starts_at, sum);
+    flow_memo_put(code, starts_at, sum, &out);
+    out
+}
+
+struct FlowMemo {
+    hash: u64,
+    code: Vec<Inst>,
+    entries: Vec<u32>,
+    sum: bool,
+    heat: Vec<f64>,
+    owner: Vec<u32>,
+    cols: Vec<(usize, Vec<f64>)>,
+}
+
+fn flow_hash(code: &[Inst]) -> u64 {
+    let mut hasher = Fx::default();
+    code.len().hash(&mut hasher);
+    for inst in code {
+        inst.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn flow_memos() -> &'static std::sync::Mutex<Vec<FlowMemo>> {
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<Vec<FlowMemo>>> = std::sync::OnceLock::new();
+    MEMO.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+fn flow_memo_get(
+    code: &[Inst],
+    entries: &[u32],
+    sum: bool,
+) -> Option<(Vec<f64>, Vec<u32>, Vec<(usize, Vec<f64>)>)> {
+    let hash = flow_hash(code);
+    let memos = flow_memos().lock().unwrap_or_else(|e| e.into_inner());
+    memos
+        .iter()
+        .find(|m| m.hash == hash && m.sum == sum && m.entries == entries && m.code == code)
+        .map(|m| (m.heat.clone(), m.owner.clone(), m.cols.clone()))
+}
+
+fn flow_memo_put(
+    code: &[Inst],
+    entries: &[u32],
+    sum: bool,
+    out: &(Vec<f64>, Vec<u32>, Vec<(usize, Vec<f64>)>),
+) {
+    let mut memos = flow_memos().lock().unwrap_or_else(|e| e.into_inner());
+    if memos.len() == 8 {
+        memos.remove(0);
+    }
+    memos.push(FlowMemo {
+        hash: flow_hash(code),
+        code: code.to_vec(),
+        entries: entries.to_vec(),
+        sum,
+        heat: out.0.clone(),
+        owner: out.1.clone(),
+        cols: out.2.clone(),
+    });
 }
 fn flow_(
     code: &[Inst],

@@ -1,14 +1,18 @@
 //! Resolve `import` by loading each file once and merging exported declarations.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::ast::*;
+use crate::check::Checked;
 use crate::error;
 use crate::parse;
 use crate::resolve::{link, Import, Unit};
 use crate::Error;
+use crate::EvmVersion;
 
 include!(concat!(env!("OUT_DIR"), "/std.rs"));
 
@@ -85,6 +89,172 @@ impl Sources {
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such file")),
         }
     }
+}
+
+/// Parsed programs and the latest successful check of one entry file.
+///
+/// The key is the canonical path, a hash of the file's text, and the EVM fork. `std/` is
+/// parsed once per process, because its text is fixed. A session holds one cache so an edit
+/// reuses every import whose text did not change.
+///
+/// simplify: one checked program per path, the latest text. Undo checks again.
+pub struct ModuleCache {
+    parsed: Mutex<HashMap<(PathBuf, u64, u8), Arc<Program>>>,
+    checked: Mutex<HashMap<PathBuf, CheckedMemo>>,
+    #[cfg(test)]
+    checks: std::sync::atomic::AtomicUsize,
+}
+
+struct CheckedMemo {
+    fp: u64,
+    evm: u8,
+    units: Vec<Checked>,
+}
+
+fn evm_tag(evm: EvmVersion) -> u8 {
+    match evm {
+        EvmVersion::Prague => 0,
+        EvmVersion::Osaka => 1,
+    }
+}
+
+fn content_hash(src: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    src.hash(&mut hasher);
+    hasher.finish()
+}
+
+impl Default for ModuleCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ModuleCache {
+    pub fn new() -> Self {
+        Self {
+            parsed: Mutex::new(HashMap::new()),
+            checked: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            checks: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn parsed(&self, path: &Path, hash: u64, evm: EvmVersion) -> Option<Arc<Program>> {
+        self.parsed
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(&(path.to_path_buf(), hash, evm_tag(evm)))
+            .cloned()
+    }
+
+    fn store_parsed(&self, path: PathBuf, hash: u64, evm: EvmVersion, prog: Program) {
+        self.parsed
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert((path, hash, evm_tag(evm)), Arc::new(prog));
+    }
+
+    pub(crate) fn with_checked<R>(
+        &self,
+        path: &Path,
+        fp: u64,
+        evm: EvmVersion,
+        f: impl FnOnce(&[Checked]) -> R,
+    ) -> Option<R> {
+        let guard = self.checked.lock().unwrap_or_else(|err| err.into_inner());
+        let saved = guard.get(path)?;
+        (saved.fp == fp && saved.evm == evm_tag(evm)).then(|| f(&saved.units))
+    }
+
+    pub(crate) fn store_checked(&self, path: &Path, fp: u64, evm: EvmVersion, units: Vec<Checked>) {
+        self.checked
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(
+                path.to_path_buf(),
+                CheckedMemo {
+                    fp,
+                    evm: evm_tag(evm),
+                    units,
+                },
+            );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn note_check(&self) {
+        self.checks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn check_count(&self) -> usize {
+        self.checks.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn parsed_count(&self) -> usize {
+        self.parsed
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .len()
+    }
+}
+
+struct LoadEnv<'a> {
+    cache: Option<&'a ModuleCache>,
+    evm: EvmVersion,
+    touched: &'a mut Vec<(PathBuf, u64)>,
+}
+
+fn std_programs() -> &'static Mutex<HashMap<PathBuf, Arc<Program>>> {
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, Arc<Program>>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn std_program(canon: &Path, src: &str) -> Result<Program, Error> {
+    let mut cache = std_programs().lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(prog) = cache.get(canon) {
+        return Ok((**prog).clone());
+    }
+    let prog = parse::parse(src)?;
+    cache.insert(canon.to_path_buf(), Arc::new(prog.clone()));
+    Ok(prog)
+}
+
+#[cfg(test)]
+fn std_cached() -> usize {
+    std_programs()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .len()
+}
+
+fn parse_cached(canon: &Path, src: &str, env: &mut LoadEnv) -> Result<Program, Error> {
+    let hash = content_hash(src);
+    env.touched.push((canon.to_path_buf(), hash));
+    if canon.starts_with(STD_ROOT) {
+        return std_program(canon, src);
+    }
+    if let Some(cache) = env.cache {
+        if let Some(hit) = cache.parsed(canon, hash, env.evm) {
+            return Ok((*hit).clone());
+        }
+    }
+    let prog = parse::parse(src)?;
+    if let Some(cache) = env.cache {
+        cache.store_parsed(canon.to_path_buf(), hash, env.evm, prog.clone());
+    }
+    Ok(prog)
+}
+
+pub(crate) fn fingerprint(files: &[(PathBuf, u64)]) -> u64 {
+    let mut files = files.to_vec();
+    files.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    files.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Resolves `.` and `..` without the file system, for paths inside the standard library
@@ -283,12 +453,32 @@ fn load_entry_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Resu
 }
 
 pub(crate) fn load(sources: &Sources, path: &Path) -> Result<Program, Error> {
-    load_inner(sources, path, None, &mut Vec::new())
+    let mut touched = Vec::new();
+    load_in(
+        sources,
+        path,
+        None,
+        None,
+        EvmVersion::default(),
+        &mut touched,
+    )
 }
 
-/// Loads `path` with `src` in place of its saved contents, as an editor sees it.
-pub(crate) fn load_source(sources: &Sources, path: &Path, src: &str) -> Result<Program, Error> {
-    load_inner(sources, path, Some(src), &mut Vec::new())
+/// Loads `path`, using `text` for that file when it is set, through `cache` when one is held.
+pub(crate) fn load_in(
+    sources: &Sources,
+    path: &Path,
+    text: Option<&str>,
+    cache: Option<&ModuleCache>,
+    evm: EvmVersion,
+    touched: &mut Vec<(PathBuf, u64)>,
+) -> Result<Program, Error> {
+    let mut env = LoadEnv {
+        cache,
+        evm,
+        touched,
+    };
+    load_inner(sources, path, text, &mut Vec::new(), &mut env)
 }
 
 struct Frame {
@@ -319,10 +509,20 @@ fn load_inner(
     path: &Path,
     text: Option<&str>,
     stack: &mut Vec<Frame>,
+    env: &mut LoadEnv,
 ) -> Result<Program, Error> {
     let mut files: Vec<Source> = Vec::new();
     let mut contracts: HashMap<PathBuf, Vec<Program>> = HashMap::new();
-    gather(sources, path, text, stack, &mut files, &mut contracts, true)?;
+    gather(
+        sources,
+        path,
+        text,
+        stack,
+        &mut files,
+        &mut contracts,
+        true,
+        env,
+    )?;
     let mut root = files.pop().expect("the file being built");
     let siblings = std::mem::take(&mut root.prog.siblings);
     let own_contracts: Vec<String> = std::iter::once(&root.prog.contract_name)
@@ -394,6 +594,7 @@ fn load_inner(
 
 /// Loads `path` and, first, every file of declarations it imports, each once. A file of
 /// contracts it imports is built on its own, for its contracts.
+#[allow(clippy::too_many_arguments)]
 fn gather(
     sources: &Sources,
     path: &Path,
@@ -402,6 +603,7 @@ fn gather(
     files: &mut Vec<Source>,
     contracts: &mut HashMap<PathBuf, Vec<Program>>,
     root: bool,
+    env: &mut LoadEnv,
 ) -> Result<Loaded, Error> {
     let canon = match sources.canonicalize(path) {
         Ok(path) => path,
@@ -432,7 +634,7 @@ fn gather(
     }
     let origin = canon.display().to_string();
     gather_file(
-        sources, path, canon, label, text, stack, files, contracts, root,
+        sources, path, canon, label, text, stack, files, contracts, root, env,
     )
     .map_err(|err| err.in_file(&origin))
 }
@@ -448,6 +650,7 @@ fn gather_file(
     files: &mut Vec<Source>,
     contracts: &mut HashMap<PathBuf, Vec<Program>>,
     root: bool,
+    env: &mut LoadEnv,
 ) -> Result<Loaded, Error> {
     let src = match text.or(std_source(&canon)) {
         Some(src) => src.to_string(),
@@ -466,9 +669,9 @@ fn gather_file(
             .read(&canon)
             .map_err(|err| error(1, 1, format!("cannot read `{}`: {err}", path.display())))?,
     };
-    let mut own = parse::parse(&src)?;
+    let mut own = parse_cached(&canon, &src, env)?;
     if !root && own.contract_name.is_some() {
-        let units = split_units(load_inner(sources, path, None, stack)?);
+        let units = split_units(load_inner(sources, path, None, stack, env)?);
         contracts.insert(canon, units.clone());
         return Ok(Loaded::Contracts(units));
     }
@@ -503,14 +706,23 @@ fn gather_file(
             msg.push_str(&label);
             return Err(error(decl.line, decl.col, msg));
         }
-        let child =
-            gather(sources, &child_path, None, stack, files, contracts, false).map_err(|err| {
-                if err.line == 1 && err.message.starts_with("cannot read") {
-                    error(decl.line, decl.col, err.message.clone())
-                } else {
-                    err
-                }
-            })?;
+        let child = gather(
+            sources,
+            &child_path,
+            None,
+            stack,
+            files,
+            contracts,
+            false,
+            env,
+        )
+        .map_err(|err| {
+            if err.line == 1 && err.message.starts_with("cannot read") {
+                error(decl.line, decl.col, err.message.clone())
+            } else {
+                err
+            }
+        })?;
         match child {
             Loaded::Contracts(units) => {
                 if decl.alias.is_some() {
@@ -1079,4 +1291,59 @@ pub(crate) fn file_label(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn std_is_parsed_once_and_an_edit_parses_only_the_file() {
+        let cache = ModuleCache::new();
+        let evm = EvmVersion::Osaka;
+        let src = "import \"std/evm\";\n\nexternal function f() is { }\n";
+        let sources = Sources::memory([("a.lithe", src)]);
+        let mut touched = Vec::new();
+        load_in(
+            &sources,
+            Path::new("a.lithe"),
+            None,
+            Some(&cache),
+            evm,
+            &mut touched,
+        )
+        .unwrap();
+        let std_n = std_cached();
+        let parsed_n = cache.parsed_count();
+        assert!(std_n > 0);
+        assert!(parsed_n > 0);
+        let mut touched = Vec::new();
+        load_in(
+            &sources,
+            Path::new("a.lithe"),
+            None,
+            Some(&cache),
+            evm,
+            &mut touched,
+        )
+        .unwrap();
+        assert_eq!(std_cached(), std_n);
+        assert_eq!(cache.parsed_count(), parsed_n);
+        let src2 = "import \"std/evm\";\n\nexternal function g() is { }\n";
+        let sources2 = Sources::memory([("b.lithe", src2)]);
+        let mut touched = Vec::new();
+        load_in(
+            &sources2,
+            Path::new("b.lithe"),
+            None,
+            Some(&cache),
+            evm,
+            &mut touched,
+        )
+        .unwrap();
+        assert_eq!(std_cached(), std_n);
+        assert_eq!(cache.parsed_count(), parsed_n + 1);
+    }
 }

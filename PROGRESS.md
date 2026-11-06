@@ -26,13 +26,13 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 
 - [x] **1.1** `Opt { Fast, Release }` (`Default` = Release). Fast is one build of the `start` plan, plus the size-limit outline-more loop. CLI, `lithe.toml`, Standard JSON, and `analyze` wired as in decision 1. See the measurements below.
 - [x] **1.2** Differential Fast vs Release over every target; Fast snapshot. Record erc20_full Fast time and the Fast-vs-Release size and gas table. Target ≤ 60 ms. See the measurements below.
-- [ ] **1.3** Cheaper Release search, byte-identical: dedupe plans, post-promote finish cache, lower-bound short-circuit, share `flow`/`heat` in `asm::gas`.
+- [x] **1.3** Cheaper Release search, byte-identical: dedupe plans, post-promote finish cache, lower-bound short-circuit, share `flow`/`heat` in `asm::gas`. See the measurements below.
 - [ ] **1.4** Per-function body memo in `Gen`. Release byte-identical.
 
 ### Phase 2 — the language server never runs codegen on a keystroke
 
 - [x] **2.1** `analyze_frontend` / `analyze_full`. LSP uses the frontend on open and change. Codegen errors on save, on a worker, cancelled when a newer edit arrives. See the measurements below.
-- [ ] **2.2** Per-session module cache keyed by path, content hash, and EVM version. `std/` parsed once per process.
+- [x] **2.2** Per-session module cache keyed by path, content hash, and EVM version. `std/` parsed once per process. See the measurements below.
 - [ ] **2.3** Debounce `didChange` (~50 ms), reader thread plus worker, rename, workspace symbol. Diagnostics on `bench/erc20_full.lithe` ≤ 20 ms (relaxed under `debug_assertions`).
 - [ ] **2.4** VS Code extension and TextMate smoke test.
 
@@ -145,3 +145,20 @@ Tests: `cargo test --offline --lib evm::snapshot` (both snapshot tests, includin
 The language server runs the frontend on open and change. On save it refreshes the frontend for every open file, then runs `analyze_full` on one worker. Each edit or save bumps a generation counter. The worker publishes only when the counter still matches. A build already running goes to completion, and a stale result is dropped. A check error wins over a codegen error. The worker shares `Stdout` (`StdoutLock` cannot move to another thread).
 
 Tests: `cargo test --offline --bin lithe -- lsp::` (20 tests). Open of a storage-only file does not report "contract has no entrypoints"; save does. A save followed by an edit, with the worker held for 200 ms, publishes the edit's check error and not the stale codegen error. `config::tests::build_settings_come_from_the_nearest_file` still sees the `lithe.toml` error through `analyze`.
+
+## 1.3 Cheaper Release search
+
+The search still chooses the same plan. Four cuts, release bytecode unchanged:
+
+- Identical plans are emitted once. Later rounds reuse that emit.
+- `finish` reuses optimized code when the post-promote code, entry labels, and leaf sizes match, then prices gas and runtime for that candidate's heap and data. A build with tracking on, and the final `both` outline, still run the passes.
+- `chain` and `round` skip a plan whose outline is a subset of an over-limit build with the same other knobs. Inlining more only grows code, so that plan cannot beat a fitting incumbent, and its delta is past the retry threshold.
+- `flow` keeps the last eight `(code, entries, sum)` results. `gas` and `heat` share them. The match is the code itself, not only its hash.
+
+Tests: `cargo test --offline --lib` (547 passed, including both release snapshot tests), `cargo clippy --offline --all-targets -- -D warnings`, `cargo fmt --all --check`.
+
+## 2.2 Module cache
+
+`ModuleCache` stores parsed files by canonical path, content hash, and EVM fork. The LSP holds one per session and uses it for open, change, and save. `std/` is parsed once per process. A second analysis of the same text reuses the checked program. An edit still runs the whole-program check: checking is not split by file, and `src/check` is outside this step. The edited file is parsed again; `std/` is not.
+
+Tests: `cargo test --offline --lib -- std_is_parsed_once second_analysis` and `cargo test --offline --bin lithe -- lsp::` (20 passed), covered by the 1.3 library run.
