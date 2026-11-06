@@ -42,7 +42,22 @@ IVault vault = IVault(deployCode("Vault"));
 
 A contract's `deploy` arguments go where a constructor's would: `viem.deployContract("Fees", [owner, 250n])`, or `deployCode("Fees", abi.encode(owner, 250))`.
 
-A contract with `delegated` modules routes to facets at the addresses `lithe` pins for them. Each connection to a simulated network starts with every built facet's code at its address, so these contracts deploy by name too. On a live network, deploy the facets through the deterministic CREATE2 deployer first.
+A contract with `delegated` modules routes to facets at the addresses `lithe` pins for them. Each connection to a simulated network starts with every built facet's code at its address, and the default CREATE2 deployer, so these contracts deploy by name in tests too. Such a contract's artifact keeps the compiler's `facets` field, each facet's module, address, and the selectors the router forwards to it, and its `plan`, the facets to deploy first, those of contracts it creates included.
+
+## Deploy
+
+On any other network, the facets deploy first, through the CREATE2 deployer. Each network connection has a `lithe` helper that does it:
+
+```ts
+import { network } from "hardhat";
+
+const { lithe } = await network.create();
+const token = await lithe.deploy("Token", [owner]);
+```
+
+`lithe.deploy` deploys each facet the network doesn't have yet, then the contract with hardhat-viem's `deployContract`, and returns the typed contract. `lithe.deployFacets("Token")` deploys only the facets, to deploy the contract after with Ignition or ethers. To use a CREATE2 deployer at another address, set `create2-deployer` in the project's `lithe.toml`.
+
+See [Deploying](https://github.com/celestiaorg/lithe/blob/main/docs/src/pages/tooling/deploying.mdx) and [Hardhat](https://github.com/celestiaorg/lithe/blob/main/docs/src/pages/tooling/hardhat.mdx) in the docs.
 
 ## Options
 

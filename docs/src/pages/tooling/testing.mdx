@@ -97,6 +97,15 @@ lithe compile src && forge test
 - An [error](/language/errors) is a Solidity custom error of the same name, so `FeeTooHigh` is `IFees.FeeTooHigh.selector` in a test.
 - Fuzzing, cheatcodes, gas reports, and `--fork-url` all work as they do for Solidity.
 
+A contract with [`delegated` modules](/tooling/size-limit) needs its facets on the chain before `deployCode` can create it. Forge's test chain has the CREATE2 deployer, so `setUp` deploys them as a real deployment does, with the `deployFacets` helper from [Deploying](/tooling/deploying#with-foundry):
+
+```solidity
+function setUp() public {
+    deployFacets("out/token.lithe/Token.json");
+    token = IToken(deployCode("out/token.lithe/Token.json"));
+}
+```
+
 ### Checking specs while fuzzing
 
 A contract with a [spec file](/language/verification) can be built to check its specs on every call:
@@ -172,31 +181,7 @@ If `withdraw` forgot to lower `storage.total`, the run would fail with the spec'
 
 ## Hardhat
 
-The `@lithe-lang/hardhat` plugin compiles Lithe contracts as part of Hardhat 3's build. It runs the `lithe` compiler, so that has to be [installed](/guide/getting-started) too. Install the plugin:
-
-```bash
-npm install --save-dev @lithe-lang/hardhat
-```
-
-Add it to `hardhat.config.ts`:
-
-```ts
-import { defineConfig } from "hardhat/config";
-import hardhatToolboxViem from "@nomicfoundation/hardhat-toolbox-viem";
-import hardhatLithe from "@lithe-lang/hardhat";
-
-export default defineConfig({
-  plugins: [hardhatToolboxViem, hardhatLithe],
-  solidity: "0.8.30",
-});
-```
-
-Put `.lithe` files in `contracts/`, or anywhere under Hardhat's source paths. Each `hardhat build`, and the build that `hardhat test` starts with, runs `lithe compile` on them once the Solidity contracts are built. It writes the artifacts where Hardhat writes its own, so Hardhat finds a Lithe contract by its name, `Vault`, or by its full name, `contracts/vault.lithe:Vault`. A compile error fails the build. Hardhat 3's simulated chain already runs Osaka.
-
-| Option | Is |
-| --- | --- |
-| `lithe.path` | the compiler to run, `lithe` on the `PATH` unless set |
-| `lithe.checkSpecs` | `true` to build with [`--check-specs`](#checking-specs-while-fuzzing), `false` unless set. A build with the `production` profile, which is what deployments build, ignores it |
+The [`@lithe-lang/hardhat` plugin](/tooling/hardhat) compiles Lithe contracts as part of Hardhat 3's build, into Hardhat's own artifacts, so Hardhat finds a Lithe contract by its name, `Vault`, or by its full name, `contracts/vault.lithe:Vault`. Install it and add it to `hardhat.config.ts` as [Hardhat](/tooling/hardhat#install) shows, then put `.lithe` files in `contracts/`. A contract with `delegated` modules deploys by name in tests too: each connection to the simulated chain starts with its facets in place.
 
 ### TypeScript tests
 
@@ -263,4 +248,4 @@ contract VaultTest is Test {
 
 A `deploy`'s arguments are ABI-encoded after the name: `deployCode("Fees", abi.encode(owner, 250))`.
 
-With `checkSpecs` set, a call that breaks a spec fails the test that made it, as ``SpecViolation("withdraw: `ensures` at 10:3 does not hold")``.
+With the plugin's [`checkSpecs`](/tooling/hardhat#install) option set, a call that breaks a spec fails the test that made it, as ``SpecViolation("withdraw: `ensures` at 10:3 does not hold")``.

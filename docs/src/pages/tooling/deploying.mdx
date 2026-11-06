@@ -1,0 +1,135 @@
+---
+title: "Deploying"
+description: "Deploying a Lithe contract with cast, Foundry, or Hardhat, and a contract with delegated modules: its facets first, through the CREATE2 deployer, in the order its plan gives."
+---
+
+# Deploying
+
+A Lithe contract deploys as a Solidity one does, from its creation code. `lithe compile file.lithe` prints it, and a directory build writes it to each artifact's `bytecode`. A contract with `delegated` modules needs its facets on the chain first, and its plan lists them.
+
+## A contract
+
+Deploy the creation code with any tool. A contract's [`deploy`](/language/deploy) arguments are ABI-encoded after the code, as a Solidity constructor's are. With `cast`, give them as a constructor's:
+
+```bash
+cast send --private-key $KEY --create $(lithe compile fees.lithe) "constructor(address,uint256)" $OWNER 250
+```
+
+A tool that reads Foundry-style artifacts deploys from the one `lithe compile src` writes, such as `out/fees.lithe/Fees.json`. A Foundry script deploys it with `deployCode`:
+
+```solidity
+vm.startBroadcast();
+IFees fees = IFees(deployCode("out/fees.lithe/Fees.json", abi.encode(owner, 250)));
+vm.stopBroadcast();
+```
+
+With Hardhat, the plugin builds Lithe contracts into Hardhat's artifacts, so `viem.deployContract("Fees", [owner, 250n])` and Ignition's `m.contract("Fees", [owner, 250n])` deploy them by name. See [Hardhat](/tooling/hardhat#deploying).
+
+## A contract with facets
+
+A contract with [`delegated` modules](/tooling/size-limit) is a router that runs those modules from facets, at addresses fixed when it compiles. Its creation code checks that every facet has code, and reverts if one is missing, so the facets deploy first. Its plan lists them:
+
+```bash
+lithe compile token.lithe
+```
+
+```json
+{
+  "facets": [
+    {
+      "name": "ERC20",
+      "address": "0x13F9822a430D5E4E70Af364A11350407Be3bBD81",
+      "to": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+      "data": "0x0000…"
+    }
+  ],
+  "router": {
+    "bytecode": "0x34…"
+  }
+}
+```
+
+A directory build writes the same plan to the contract's artifact, as its `plan` field. To deploy:
+
+1. For each facet whose `address` has no code yet, send a transaction to its `to`, the [CREATE2 deployer](#the-create2-deployer), with its `data`. Skip a facet that is already there: another contract deployed the same code, and `CREATE2` can't deploy to an address twice.
+2. Deploy the router's `bytecode`, with its `deploy` arguments appended, as you would any contract.
+
+A contract that creates contracts with facets lists their facets in its plan too, since they must exist before it creates one. The steps are the same.
+
+### With cast
+
+```bash
+plan=$(lithe compile token.lithe)
+echo "$plan" | jq -r '.facets[] | "\(.address) \(.to) \(.data)"' |
+  while read -r address to data; do
+    if [ "$(cast code "$address")" = "0x" ]; then
+      cast send --private-key "$KEY" "$to" "$data"
+    fi
+  done
+cast send --private-key "$KEY" --create "$(echo "$plan" | jq -r .router.bytecode)"
+```
+
+### With Foundry
+
+A Foundry script or test reads the plan from the artifact. Put this helper beside them:
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {Vm} from "forge-std/Vm.sol";
+
+// A JSON object decodes into a struct by its keys in alphabetical order.
+struct Facet {
+    address addr;
+    bytes data;
+    string name;
+    address to;
+}
+
+Vm constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
+
+// Deploys each facet the artifact's plan lists that isn't deployed yet.
+function deployFacets(string memory artifact) {
+    string memory json = vm.readFile(artifact);
+    if (!vm.keyExistsJson(json, ".plan")) return;
+    Facet[] memory facets = abi.decode(vm.parseJson(json, ".plan.facets"), (Facet[]));
+    for (uint256 i = 0; i < facets.length; i++) {
+        if (facets[i].addr.code.length > 0) continue;
+        (bool ok,) = facets[i].to.call(facets[i].data);
+        require(ok && facets[i].addr.code.length > 0, facets[i].name);
+    }
+}
+```
+
+Then deploy the facets before the contract:
+
+```solidity
+vm.startBroadcast();
+deployFacets("out/token.lithe/Token.json");
+IToken token = IToken(deployCode("out/token.lithe/Token.json"));
+vm.stopBroadcast();
+```
+
+Forge's test chain has the CREATE2 deployer, so a test's `setUp` deploys a contract with facets the same way.
+
+### With Hardhat
+
+The plugin's `lithe.deploy("Token")` deploys the facets and then the contract, and `lithe.deployFacets("Token")` deploys only the facets, for Ignition or ethers to deploy the contract after. See [Hardhat](/tooling/hardhat#deploying).
+
+## The CREATE2 deployer
+
+Facets deploy through the deterministic deployment proxy at `0x4e59b44847b379578588920cA78FbF26c0B4956C`, the factory Foundry uses, with a zero salt. It is on most chains, on `anvil`, and on Forge's test chain, and the Hardhat plugin puts it on Hardhat's simulated chain and `hardhat node`. A facet's address depends only on the deployer and the facet's code, so a facet another contract already deployed is reused.
+
+On a chain where the deployer lives elsewhere, set its address in the project's [`lithe.toml`](/tooling/config#build):
+
+```toml
+[build]
+create2-deployer = "0x…"
+```
+
+or build with `--create2-deployer <address>`. The address is built into the router, along with its facets' addresses, so a build deploys only to chains that have that deployer. A chain with another one needs a build of its own.
+
+## Upgradeable contracts
+
+An [upgradeable](/language/upgrades#deploying) contract deploys its implementation, then an ERC-1967 proxy that points at it, with a call to its `deploy` as the proxy's data. With facets, the implementation is the router, and its facets deploy first, as above. Its plan also lists the router's own `address`, `to`, and `data`, to deploy it through the CREATE2 deployer at an address known in advance. `lithe upgrade` prints the plan for an upgrade, with the proxy's `upgradeToAndCall` added. See [Upgrades](/tooling/size-limit#upgrades).

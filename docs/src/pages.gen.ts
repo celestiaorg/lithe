@@ -26,6 +26,7 @@ type Page =
   | { path: '/by-example/hashing'; render: 'static' }
   | { path: '/by-example/hello-world'; render: 'static' }
   | { path: '/by-example/if-else'; render: 'static' }
+  | { path: '/by-example/immutables'; render: 'static' }
   | { path: '/by-example/imports'; render: 'static' }
   | { path: '/by-example'; render: 'static' }
   | { path: '/by-example/initialization'; render: 'static' }
@@ -101,7 +102,9 @@ type Page =
   | { path: '/stdlib/utils'; render: 'static' }
   | { path: '/tooling/cli'; render: 'static' }
   | { path: '/tooling/config'; render: 'static' }
+  | { path: '/tooling/deploying'; render: 'static' }
   | { path: '/tooling/editors'; render: 'static' }
+  | { path: '/tooling/hardhat'; render: 'static' }
   | { path: '/tooling/inspection'; render: 'static' }
   | { path: '/tooling/library'; render: 'static' }
   | { path: '/tooling/size-limit'; render: 'static' }

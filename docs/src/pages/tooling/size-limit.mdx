@@ -404,7 +404,7 @@ note: `Token` runs `ERC20`, `ERC20Permit` from their facets
 }
 ```
 
-The plan lists exactly the facets the source marks. Send each facet's `data` to its `to`, in order, then deploy the router's `bytecode` as you would any creation code, with its `deploy` arguments appended. Skip a facet whose address already has code, because another contract already deployed it: `CREATE2` can't deploy to it twice, and it is already the right code. The router's creation code checks that every facet has code, and reverts if one is missing. `deploy` can call its facets' functions across as the router's code can.
+The plan lists exactly the facets the source marks. [Deploying](/tooling/deploying#a-contract-with-facets) shows how to deploy it with `cast`, Foundry, or Hardhat. Send each facet's `data` to its `to`, in order, then deploy the router's `bytecode` as you would any creation code, with its `deploy` arguments appended. Skip a facet whose address already has code, because another contract already deployed it: `CREATE2` can't deploy to it twice, and it is already the right code. The router's creation code checks that every facet has code, and reverts if one is missing. `deploy` can call its facets' functions across as the router's code can.
 
 An upgradeable router is listed with its own `address`, `to`, and `data`, so it can be deployed through the factory too, at an address known in advance.
 

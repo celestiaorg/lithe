@@ -97,7 +97,7 @@ async function compile(compiler, checkSpecs, root, cwd) {
 
 // `out/<file>.lithe/<Contract>.json` becomes `artifacts/<path of file>.lithe/<Contract>.json`,
 // and `out/facets/` becomes `artifacts/<root>/facets/`. The runtime code of every facet a
-// contract delegates to goes into `facets`, by the address the contract routes to.
+// contract's plan deploys goes into `facets`, by its address.
 async function convert(projectRoot, root, sources, outDir, artifactsDir, facets) {
   // A root of library files only writes nothing.
   const folders = await readdir(outDir).catch((error) => (error.code === "ENOENT" ? [] : Promise.reject(error)));
@@ -110,7 +110,7 @@ async function convert(projectRoot, root, sources, outDir, artifactsDir, facets)
     const artifacts = [];
     for (const file of (await readdir(path.join(outDir, folder))).sort()) {
       const lithe = JSON.parse(await readFile(path.join(outDir, folder, file), "utf8"));
-      for (const facet of lithe.facets ?? []) {
+      for (const facet of lithe.plan?.facets ?? []) {
         facets[facet.address] ??= await facetCode(outDir, facet);
       }
       const artifact = {
@@ -125,6 +125,8 @@ async function convert(projectRoot, root, sources, outDir, artifactsDir, facets)
         immutableReferences: {},
         inputSourceName: sourceName,
         buildInfoId: BUILD_INFO_ID,
+        ...(lithe.facets && { facets: lithe.facets }),
+        ...(lithe.plan && { plan: lithe.plan }),
       };
       artifacts.push(artifact);
       await writeFile(path.join(dest, `${artifact.contractName}.json`), JSON.stringify(artifact, null, 2));

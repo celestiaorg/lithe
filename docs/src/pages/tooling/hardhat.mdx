@@ -1,0 +1,133 @@
+---
+title: "Hardhat"
+description: "The @lithe-lang/hardhat plugin: building Lithe contracts into Hardhat 3's artifacts, testing them, and deploying them, facets included."
+---
+
+# Hardhat
+
+The `@lithe-lang/hardhat` plugin compiles Lithe contracts as part of Hardhat 3's build, into Hardhat's own artifacts. Tests, scripts, and Ignition then deploy a Lithe contract by name, as they would a Solidity one.
+
+## Install
+
+The plugin runs the `lithe` compiler, so that has to be [installed](/guide/getting-started) too. Install the plugin:
+
+```bash
+npm install --save-dev @lithe-lang/hardhat
+```
+
+Add it to `hardhat.config.ts`:
+
+```ts
+import { defineConfig } from "hardhat/config";
+import hardhatToolboxViem from "@nomicfoundation/hardhat-toolbox-viem";
+import hardhatLithe from "@lithe-lang/hardhat";
+
+export default defineConfig({
+  plugins: [hardhatToolboxViem, hardhatLithe],
+  solidity: "0.8.30",
+});
+```
+
+It needs Hardhat 3.18 or later. Hardhat's simulated chain runs Osaka, the fork Lithe builds for unless its `lithe.toml` says otherwise.
+
+| Option | Is |
+| --- | --- |
+| `lithe.path` | the compiler to run, `lithe` on the `PATH` unless set |
+| `lithe.checkSpecs` | `true` to build with [`--check-specs`](/tooling/testing#checking-specs-while-fuzzing), `false` unless set. A build with the `production` profile, which is what deployments build, ignores it |
+
+Everything else about the build, such as the fork, the size limit, and the [CREATE2 deployer](/tooling/deploying#the-create2-deployer), comes from the project's [`lithe.toml`](/tooling/config), as it does for `lithe` itself. Put it beside `hardhat.config.ts`.
+
+## Building
+
+Put `.lithe` files in `contracts/`, or anywhere under Hardhat's source paths. Each `hardhat build`, and the build that `hardhat test` and `hardhat ignition deploy` start with, runs `lithe compile` on them once the Solidity contracts are built. A compile error fails the build.
+
+The artifacts go where Hardhat writes its own, so Hardhat finds a Lithe contract by its name, `Vault`, or by its full name, `contracts/vault.lithe:Vault`, and types it from its ABI. A contract with facets keeps two more fields from the compiler's artifact: `facets`, each facet's module, address, and the selectors the router forwards to it, and `plan`, what to [deploy first](/tooling/deploying#a-contract-with-facets).
+
+## Testing
+
+TypeScript tests deploy a Lithe contract with `viem.deployContract("Vault")`, and Solidity tests with `deployCode("Vault")`. See [Testing](/tooling/testing#hardhat).
+
+A contract with [`delegated` modules](/tooling/size-limit) needs its facets on the chain before it deploys. Each connection to Hardhat's simulated chain starts with every built facet's code already at its address, so tests deploy these contracts by name too. It also starts with the default [CREATE2 deployer](/tooling/deploying#the-create2-deployer), which the simulated chain lacks otherwise, so `lithe.deploy` works against `hardhat node` as it does against a live network.
+
+## Deploying
+
+On any other network, a contract with facets needs them deployed first. The plugin adds a `lithe` helper to each network connection:
+
+| Helper | Does |
+| --- | --- |
+| `lithe.deploy(name, args?, config?)` | deploys the facets the contract's plan lists that the network doesn't have yet, then the contract with hardhat-viem's `deployContract`, and returns the typed contract it returns. The facets go from the same wallet client, with the same fee fields |
+| `lithe.deployFacets(name, { from? }?)` | deploys only the facets, from `from` or the network's first account |
+
+Both skip a facet that is already deployed, and fail if the network has no CREATE2 deployer where the build expects it. For a contract without facets, `lithe.deploy` is `viem.deployContract`.
+
+Configure the network in `hardhat.config.ts`:
+
+```ts
+import { configVariable, defineConfig } from "hardhat/config";
+
+export default defineConfig({
+  // ...
+  networks: {
+    sepolia: {
+      type: "http",
+      url: configVariable("SEPOLIA_RPC_URL"),
+      accounts: [configVariable("SEPOLIA_PRIVATE_KEY")],
+    },
+  },
+});
+```
+
+and deploy from a script:
+
+```ts
+// scripts/deploy.ts
+import { network } from "hardhat";
+
+const { lithe } = await network.create();
+const token = await lithe.deploy("Token", [owner]);
+console.log(`Token deployed to ${token.address}`);
+```
+
+```bash
+npx hardhat run scripts/deploy.ts --network sepolia
+```
+
+### With Ignition
+
+An Ignition module deploys a Lithe contract by name:
+
+```ts
+// ignition/modules/Token.ts
+import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
+
+export default buildModule("TokenModule", (m) => ({
+  token: m.contract("Token", [m.getAccount(0)]),
+}));
+```
+
+Ignition can't skip a step that another contract already did, so deploy a contract's facets before the module runs:
+
+```ts
+// scripts/facets.ts
+import { network } from "hardhat";
+
+const { lithe } = await network.create();
+await lithe.deployFacets("Token");
+```
+
+```bash
+npx hardhat run scripts/facets.ts --network sepolia
+npx hardhat ignition deploy ignition/modules/Token.ts --network sepolia
+```
+
+A contract without facets needs only the module.
+
+### With ethers
+
+`lithe.deployFacets` sends through the connection's provider, so it works beside any library. Deploy the facets, then the contract:
+
+```ts
+const { lithe, ethers } = await network.create();
+await lithe.deployFacets("Token");
+const token = await ethers.deployContract("Token", [owner]);
+```

@@ -126,7 +126,7 @@ Other proxy designs, such as a beacon or a proxy whose admin lives outside the i
 
 ## Deploying
 
-Deploy the implementation, then deploy a standard ERC-1967 proxy, such as OpenZeppelin's `ERC1967Proxy`, that points at it. Give the proxy's constructor a call to the contract's [`deploy`](/language/deploy#upgradeable-contracts) as its data, and the proxy is initialized in the same transaction that creates it. Wallets and explorers treat the proxy as they treat any UUPS contract.
+Deploy the implementation, then deploy a standard ERC-1967 proxy, such as OpenZeppelin's `ERC1967Proxy`, that points at it. Give the proxy's constructor a call to the contract's [`deploy`](/language/deploy#upgradeable-contracts) as its data, and the proxy is initialized in the same transaction that creates it. Wallets and explorers treat the proxy as they treat any UUPS contract. An implementation with facets deploys them first; see [Deploying](/tooling/deploying#upgradeable-contracts).
 
 ## Migrations
 

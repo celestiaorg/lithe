@@ -59,6 +59,8 @@ const guide = [
       { text: "Editors", link: "/tooling/editors" },
       { text: "Inspecting contracts", link: "/tooling/inspection" },
       { text: "Testing", link: "/tooling/testing" },
+      { text: "Deploying", link: "/tooling/deploying" },
+      { text: "Hardhat", link: "/tooling/hardhat" },
       { text: "Contract size limit", link: "/tooling/size-limit" },
       { text: "Project configuration", link: "/tooling/config" },
       { text: "Rust library", link: "/tooling/library" },

@@ -1605,6 +1605,10 @@ fn foundry_artifact(contract: &Contract) -> String {
         }
         out.push_str("\n  ]");
     }
+    if let Some(plan) = contract.plan_json() {
+        out.push_str(",\n  \"plan\": ");
+        out.push_str(&reindent(plan.trim_end()));
+    }
     out.push_str(",\n  \"contractName\": ");
     out.push_str(&json_string(&contract.name));
     out.push_str("\n}\n");

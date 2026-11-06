@@ -1323,6 +1323,10 @@ fn split_tooling_output() {
         router.contains("\"facets\": [\n    {\n      \"name\": \"Alpha\""),
         "{router}"
     );
+    assert!(
+        router.contains(&format!("\"plan\": {}", crate::reindent(plan.trim_end()))),
+        "{router}"
+    );
     // A second contract with another `Beta` facet: each `Beta` is named by its address, and
     // the `Beta.json` of the build before is gone.
     assert!(out.join("facets/Beta.json").exists());
