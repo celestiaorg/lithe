@@ -1,11 +1,12 @@
 use super::*;
 
-/// Every example and every program in `fuzz/`, with a path relative to the crate root.
+/// Every program in `examples/`, `fuzz/` and `bench/`, with a path relative to the crate root.
 pub(super) fn differential_targets() -> Vec<(std::path::PathBuf, String)> {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut found = Vec::new();
-    lithe_files(&root.join("examples"), &mut found);
-    lithe_files(&root.join("fuzz"), &mut found);
+    for dir in ["examples", "fuzz", "bench"] {
+        lithe_files(&root.join(dir), &mut found);
+    }
     found
         .into_iter()
         .filter_map(|path| {
@@ -181,6 +182,47 @@ pub(super) fn compare_builds_from(
     eprintln!("{rel}: {succeeded}/{steps} calls succeeded");
 }
 
+/// Builds one program under two sets of options and replays the same random call sequence
+/// against both runtimes.
+pub(super) fn compare_modes(
+    path: &std::path::Path,
+    rel: &str,
+    a: &crate::Options,
+    b: &crate::Options,
+    steps: usize,
+) {
+    OPAQUE_CODE.set(true);
+    install_mocks();
+    let build = |opts: &crate::Options| {
+        let out = crate::compile(&Sources::disk(), path, opts)
+            .and_then(crate::Output::single)
+            .map_err(first)
+            .unwrap_or_else(|e| panic!("{rel}: {e}"));
+        deploy_plan(&out);
+        deploy(&out.bytecode).unwrap_or_else(|e| panic!("{rel}: deploy: {e}"))
+    };
+    let (a, b) = (build(a), build(b));
+    let checked = crate::check::check(
+        crate::modules::load(&Sources::disk(), path).expect("load"),
+        Default::default(),
+    )
+    .expect("check");
+    let methods = crate::route::method_ids(&checked).expect("methods");
+    compare_builds(rel, &methods, &a, &b, steps, true);
+}
+
+/// Two build modes of one program must behave alike.
+#[test]
+fn fast_matches_release() {
+    let steps = steps_from_env("LITHE_FUZZ_STEPS", 200);
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // simplify: Release against Release on one program until a Fast mode exists; then every
+    // target from `differential_targets`, with Fast as the second build.
+    let rel = "bench/counter.lithe";
+    let opts = crate::Options::default();
+    compare_modes(&root.join(rel), rel, &opts, &opts, steps);
+}
+
 /// The optimizer must not change behavior. Each program runs a random call sequence
 /// against its unoptimized build. `LITHE_FUZZ_STEPS` sets calls per program.
 #[test]
@@ -199,19 +241,6 @@ fn optimizer_preserves_behavior() {
 #[test]
 fn static_heap_preserves_behavior() {
     let steps = steps_from_env("LITHE_FUZZ_STEPS", 200);
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut bench = Vec::new();
-    lithe_files(&root.join("bench"), &mut bench);
-    let bench = bench.into_iter().filter_map(|path| {
-        let src = std::fs::read_to_string(&path).ok()?;
-        let rel = path
-            .strip_prefix(&root)
-            .ok()?
-            .to_string_lossy()
-            .replace('\\', "/");
-        (is_program(&src) && contracts(&src) <= 1 && !needs_deploy_args(&src))
-            .then_some((path, rel))
-    });
     let build = |path: &std::path::Path, rel: &str, on: bool| {
         crate::gen::FORCE_STATIC_HEAP.set(Some(on));
         let code = compile_file(path);
@@ -220,7 +249,7 @@ fn static_heap_preserves_behavior() {
             .unwrap_or_else(|e| panic!("{rel}: deploy: {e}"))
     };
     let mut differ = 0;
-    for (path, rel) in differential_targets().into_iter().chain(bench) {
+    for (path, rel) in differential_targets() {
         OPAQUE_CODE.set(true);
         install_mocks();
         let (off, on) = (build(&path, &rel, false), build(&path, &rel, true));

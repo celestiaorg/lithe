@@ -36,14 +36,18 @@ pub(crate) enum Inst {
 use Inst::{Imm, Label, Mem, Op, Push, PushLabel, Table};
 
 /// Tests set this to have promotion check each analysis it updates against a new one, and
-/// range queries check what they remember against a new answer.
+/// range queries check what they remember against a new answer. `LITHE_VERIFY=1` turns it on
+/// for the whole test run.
 #[cfg(test)]
 pub(crate) static VERIFY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[inline(always)]
 pub(crate) fn verify() -> bool {
     #[cfg(test)]
-    return VERIFY.load(std::sync::atomic::Ordering::Relaxed);
+    return VERIFY.load(std::sync::atomic::Ordering::Relaxed) || {
+        static ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ENV.get_or_init(|| std::env::var_os("LITHE_VERIFY").is_some_and(|v| v == "1"))
+    };
     #[cfg(not(test))]
     return false;
 }
