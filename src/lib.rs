@@ -456,7 +456,7 @@ fn part_names(
 
 /// What an editor shows for unsaved `src` at `path`.
 pub struct Analysis {
-    /// The first error, including those only code generation finds.
+    /// The first error. [`analyze_frontend`] leaves out errors only a build finds.
     pub error: Option<Error>,
     /// What `lithe lint` reports for the file, once every contract in it checks.
     pub lints: Vec<Lint>,
@@ -464,9 +464,23 @@ pub struct Analysis {
     pub index: Option<Index>,
 }
 
-/// Checks every contract `src` defines, as `lithe compile directory` does, with the build
-/// options the nearest `lithe.toml` sets. `opt` is always [`Opt::Fast`].
+/// Checks every contract `src` defines and builds it. Same as [`analyze_full`].
 pub fn analyze(path: &Path, src: &str) -> Analysis {
+    analyze_full(path, src)
+}
+
+/// Loads `src`, checks it, and indexes it. No build, so a keystroke does not run codegen.
+pub fn analyze_frontend(path: &Path, src: &str) -> Analysis {
+    analyze_in(path, src, false)
+}
+
+/// [`analyze_frontend`], then a [`Opt::Fast`] build. Build errors (`route::NO_ENTRIES`, the
+/// size limit, `contract too large`) are reported when the frontend had none.
+pub fn analyze_full(path: &Path, src: &str) -> Analysis {
+    analyze_in(path, src, true)
+}
+
+fn analyze_in(path: &Path, src: &str, codegen: bool) -> Analysis {
     let (mut opts, mut failed) = match build_options(path) {
         Ok(opts) => (opts, None),
         Err(err) => (Options::default(), Some(err)),
@@ -489,12 +503,20 @@ pub fn analyze(path: &Path, src: &str) -> Analysis {
         let name = artifact_contract_name(&unit, path);
         match check::check_in(unit.clone(), false, opts.evm) {
             Ok(unit_checked) => {
-                if failed.is_none() {
-                    failed = build(&sources, path, unit, &name, &opts)
-                        .err()
-                        .filter(|err| {
-                            err.message != route::NO_ENTRIES || !declares_no_contract(src)
-                        });
+                if codegen && failed.is_none() {
+                    failed = match build(&sources, path, unit, &name, &opts) {
+                        Err(err)
+                            if err.message != route::NO_ENTRIES || !declares_no_contract(src) =>
+                        {
+                            Some(err)
+                        }
+                        Err(_) => None,
+                        Ok(contract) => contract
+                            .warnings
+                            .into_iter()
+                            .find(|w| w.contains("the limit is"))
+                            .map(|w| size_warning(&w)),
+                    };
                 }
                 checked.push(unit_checked);
             }
@@ -514,6 +536,27 @@ pub fn analyze(path: &Path, src: &str) -> Analysis {
         lints,
         index: (!checked.is_empty())
             .then(|| index::build(&root.display().to_string(), src, &checked)),
+    }
+}
+
+/// A size-limit warning (`path:line:col: warning: ...`) as an error on that place.
+fn size_warning(warning: &str) -> Error {
+    let mut line = 1;
+    let mut column = 1;
+    if let Some((head, _)) = warning.split_once(": warning:") {
+        let mut parts = head.rsplitn(3, ':');
+        if let (Some(col), Some(ln), Some(_)) = (parts.next(), parts.next(), parts.next()) {
+            if let (Ok(col), Ok(ln)) = (col.parse::<u32>(), ln.parse::<u32>()) {
+                line = ln.max(1);
+                column = col.max(1);
+            }
+        }
+    }
+    Error {
+        file: None,
+        line,
+        column,
+        message: warning.trim_end().to_string(),
     }
 }
 

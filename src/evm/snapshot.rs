@@ -23,26 +23,32 @@ fn snapshot_targets() -> Vec<(std::path::PathBuf, String)> {
         .collect()
 }
 
-/// The snapshot file's text: for each contract, the SHA-256 of its creation and runtime code
-/// and those of each facet it deploys, each part prefixed by its length.
+/// The snapshot file's text: for each contract, in Release and in Fast, the SHA-256 of its
+/// creation and runtime code and those of each facet it deploys, each part prefixed by its
+/// length. Release keys stay `path:Contract`. Fast keys add `:fast`.
 fn snapshot() -> String {
     let mut hashes = std::collections::BTreeMap::new();
+    let release = Options::default();
+    let mut fast = release.clone();
+    fast.opt = crate::Opt::Fast;
     for (path, rel) in snapshot_targets() {
-        let out = crate::compile(&Sources::disk(), &path, &Options::default())
-            .map_err(first)
-            .unwrap_or_else(|e| panic!("{rel}: {e}"));
-        for contract in out.contracts {
-            let mut parts = vec![&contract.bytecode, &contract.deployed_bytecode];
-            for facet in contract.plan.iter().flat_map(|plan| &plan.facets) {
-                parts.extend([&facet.bytecode, &facet.deployed_bytecode]);
+        for (opts, suffix) in [(&release, ""), (&fast, ":fast")] {
+            let out = crate::compile(&Sources::disk(), &path, opts)
+                .map_err(first)
+                .unwrap_or_else(|e| panic!("{rel}{suffix}: {e}"));
+            for contract in out.contracts {
+                let mut parts = vec![&contract.bytecode, &contract.deployed_bytecode];
+                for facet in contract.plan.iter().flat_map(|plan| &plan.facets) {
+                    parts.extend([&facet.bytecode, &facet.deployed_bytecode]);
+                }
+                let mut bytes = Vec::new();
+                for part in parts {
+                    bytes.extend((part.len() as u64).to_be_bytes());
+                    bytes.extend(part);
+                }
+                let hash = hex(&crate::hash::sha256(&bytes));
+                hashes.insert(format!("{rel}:{}{suffix}", contract.name), hash);
             }
-            let mut bytes = Vec::new();
-            for part in parts {
-                bytes.extend((part.len() as u64).to_be_bytes());
-                bytes.extend(part);
-            }
-            let hash = hex(&crate::hash::sha256(&bytes));
-            hashes.insert(format!("{rel}:{}", contract.name), hash);
         }
     }
     let lines: Vec<String> = hashes
@@ -74,14 +80,14 @@ fn assert_snapshot(got: &str) {
             .filter(|l| !old.contains(l))
             .map(|l| format!("+{l}"));
         panic!(
-            "release bytecode differs from {SNAPSHOT}; rerun with LITHE_UPDATE_SNAPSHOTS=1 if \
+            "bytecode differs from {SNAPSHOT}; rerun with LITHE_UPDATE_SNAPSHOTS=1 if \
              intended:\n{}",
             removed.chain(added).collect::<Vec<_>>().join("\n")
         );
     }
 }
 
-/// Release bytecode is unchanged unless the snapshot is regenerated with
+/// Release and Fast bytecode are unchanged unless the snapshot is regenerated with
 /// `LITHE_UPDATE_SNAPSHOTS=1`, so a change meant not to alter codegen can prove it.
 #[test]
 #[cfg_attr(miri, ignore)]
