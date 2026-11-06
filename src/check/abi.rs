@@ -249,7 +249,7 @@ pub(crate) fn abi_nested(types: &[RType], ty: usize, name: &str) -> Result<AbiFi
             })
         }
         TyKind::List => {
-            let Some(elem) = t.elem.filter(|&e| types[e].kind != TyKind::Operation) else {
+            let Some(elem) = t.elem else {
                 return Err(error(1, 1, "this type cannot be an ABI value"));
             };
             let inner = abi_nested(types, elem, "")?;
@@ -282,10 +282,7 @@ pub(crate) fn is_value(types: &[RType], ty: usize) -> bool {
     let t = &types[id];
     match t.kind {
         TyKind::Record | TyKind::Tuple => t.fields.iter().all(|f| is_value(types, f.ty)),
-        TyKind::List => t
-            .elem
-            .is_some_and(|e| types[e].kind != TyKind::Operation && is_value(types, e)),
-        TyKind::Option => t.elem.is_some_and(|e| is_value(types, e)),
+        TyKind::List | TyKind::Option => t.elem.is_some_and(|e| is_value(types, e)),
         kind => is_word(kind),
     }
 }

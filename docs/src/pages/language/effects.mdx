@@ -622,4 +622,5 @@ external view function peek(const to : address; const data : bytes) : bytes is
 
 - An inline state-changing call. `token.transfer(...)` without `defer` is not an expression, and neither is `Evm.call(...)`.
 - A `query` in a `pure` function, or a `defer` in a `view`.
-- A `query` or `defer` in a [migration](/language/upgrades).
+- A `defer` in `deploy` or a [migration](/language/upgrades), or in a function either calls.
+- A `query` in a query's receiver or arguments, or in a function they call. Bind the inner result to a `const` first.

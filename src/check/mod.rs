@@ -463,6 +463,9 @@ struct Checker {
     in_spec: bool,
 }
 
+const NESTED_QUERY: &str =
+    "a query's receiver and arguments cannot query; bind the inner result to a `const` first";
+
 /// `cur_fn` while the upgrade guard is checked.
 const GUARD_FN: usize = usize::MAX;
 
@@ -472,6 +475,10 @@ enum Piece {
     Call(usize, u32, u32),
     /// A write to an immutable, and the immutable's name.
     Write(u32, u32, String),
+    /// An effect `deploy` and `migrate` cannot have, as `forbid_effect` names it, or a query.
+    Effect(&'static str),
+    /// A call made while building a query, which must not query itself.
+    InQuery(usize, u32, u32),
 }
 
 fn const_fns(prog: &Program) -> HashMap<String, Func> {
@@ -1128,6 +1135,7 @@ fn check_program(
     c.price_callbacks(&mut prog.funcs);
     c.reject_failing_constants(&prog.funcs, prog.guard.as_ref())?;
     c.check_immutable_writes(&prog.funcs, prog.upgradeable)?;
+    c.check_transitive_effects(&prog.funcs)?;
     hooks::forward_via_hooks(&mut prog.funcs);
     // Each interface `supports` lists, by the signatures, selectors, and results of its
     // methods.

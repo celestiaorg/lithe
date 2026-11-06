@@ -271,7 +271,7 @@ impl<'a> Gen<'a> {
                     self.push_u64(0);
                     Ok(())
                 }
-                Lit::Nil | Lit::Zero => Err(error(*line, *col, "this value is not a word")),
+                Lit::Zero => Err(error(*line, *col, "this value is not a word")),
             },
             Expr::Ident {
                 builtin: Some(b),
@@ -508,16 +508,8 @@ impl<'a> Gen<'a> {
                 Ok(())
             }
             Expr::Binary {
-                op,
-                left,
-                right,
-                line,
-                col,
-                ..
+                op, left, right, ..
             } => {
-                if *op == BinOp::Cons {
-                    return Err(error(*line, *col, "`#` is not a word"));
-                }
                 if let Some(w) = self.const_word(e) {
                     self.push_word(w);
                     return Ok(());
@@ -1987,7 +1979,6 @@ impl<'a> Gen<'a> {
                 self.op(OR);
                 Ok(())
             }
-            BinOp::Cons => Ok(()),
         }
     }
 

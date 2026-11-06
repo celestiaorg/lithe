@@ -142,7 +142,18 @@ const REJECT_RULES: &[(&str, &str)] = &[
         "reject/migrate_defer.lithe",
         "migrate cannot defer an operation",
     ),
-    ("reject/migrate_query.lithe", "migrate cannot query"),
+    (
+        "reject/deploy_helper_defer.lithe",
+        "deploy cannot defer an operation, and `credit`, which it calls, does",
+    ),
+    (
+        "reject/migrate_helper_defer.lithe",
+        "migrate cannot defer an operation, and `refund`, which it calls, does",
+    ),
+    (
+        "reject/nested_query.lithe",
+        "`asset` queries, and a query's receiver and arguments cannot query",
+    ),
     (
         "reject/cycle/main.lithe",
         "cyclic module dependency detected",

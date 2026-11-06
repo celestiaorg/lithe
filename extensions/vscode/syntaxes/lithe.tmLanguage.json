@@ -44,7 +44,7 @@
     },
     "effect": {
       "name": "keyword.control.effect.lithe",
-      "match": "\\b(query|emit|defer|fail|failwith|assert)\\b"
+      "match": "\\b(query|emit|defer|fail|assert)\\b"
     },
     "keyword": {
       "patterns": [
@@ -76,7 +76,7 @@
     },
     "constant": {
       "name": "constant.language.lithe",
-      "match": "\\b(true|false|Unit|nil|Some|None)\\b"
+      "match": "\\b(true|false|Unit|Some|None)\\b"
     },
     "module": {
       "name": "entity.name.namespace.lithe",

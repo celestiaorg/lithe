@@ -2035,7 +2035,7 @@ impl<'a> Gen<'a> {
     }
 
     /// A value built in place, in a buffer of its own.
-    fn value_buf(&mut self, e: &Expr) -> Result<i32, Error> {
+    pub(super) fn value_buf(&mut self, e: &Expr) -> Result<i32, Error> {
         let ty = e.ty();
         self.return_sites += 1;
         let buf = self.region(

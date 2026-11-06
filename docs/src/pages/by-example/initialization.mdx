@@ -34,5 +34,5 @@ external view function cap() : uint is
 ```
 
 - Deploy it like a Solidity contract: the arguments are ABI-encoded after the creation code, and the ABI has a `constructor` entry for them.
-- `deploy` can write storage and emit events, but cannot `query` or `defer`. See [Deployment](/language/deploy).
+- `deploy` can write storage, emit events, and `query` other contracts, but cannot `defer`. See [Deployment](/language/deploy).
 - In an [upgradeable](/by-example/upgradeable) contract, `deploy` initializes the proxy, as the proxy is created. Later versions set up new state with `migrate`.

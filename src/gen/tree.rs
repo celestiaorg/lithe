@@ -2951,11 +2951,43 @@ impl<'a> Gen<'a> {
             }
         }
         match e {
+            Expr::Index { root: None, .. } => self.mem_path(e),
             Expr::Index { base, .. } | Expr::Field { base, .. } => {
                 indexed(base) && self.mem_path(e)
             }
             _ => false,
         }
+    }
+
+    /// A list or record no name holds, such as a call's result, that an index or field
+    /// reads from memory.
+    fn value_root(&self, e: &Expr) -> bool {
+        !matches!(
+            e,
+            Expr::Ident { .. } | Expr::Index { .. } | Expr::Field { .. }
+        ) && matches!(
+            self.checked.types[self.peel_nominal(e.ty())].kind,
+            TyKind::List | TyKind::Record
+        )
+    }
+
+    /// Whether `e` lies inline in a `value_root`, through record fields and fixed lists.
+    fn inline_in_value(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Field { base, .. } => self.inline_in_value(base),
+            Expr::Index { base, .. } if self.fixed_list(base.ty()) => self.inline_in_value(base),
+            _ => self.value_root(e),
+        }
+    }
+
+    /// Pushes the pointer to a dynamic list `mem_path` finds.
+    fn push_list_ptr(&mut self, e: &Expr) -> Result<(), Error> {
+        if self.value_root(e) {
+            return self.compile_value(e);
+        }
+        self.push_mem_addr(e)?;
+        self.op(MLOAD);
+        Ok(())
     }
 
     /// Whether a value lives in memory, found from a local through lists, fixed lists, and
@@ -2984,7 +3016,7 @@ impl<'a> Gen<'a> {
                     && t.fields.iter().any(|f| &f.name == name)
                     && self.mem_path(base)
             }
-            _ => false,
+            _ => self.value_root(e),
         }
     }
 
@@ -3003,6 +3035,40 @@ impl<'a> Gen<'a> {
                     self.checked.types[bt].elem.unwrap_or(0),
                 );
                 let k = u64::from(self.checked.types[elem].words.max(1));
+                if bits > 0 && self.value_root(base) {
+                    // The list stays where it was built while the index is computed,
+                    // unless computing it could build another in the same place.
+                    let at = if self.inert(index) {
+                        self.value_addr(base)?
+                    } else {
+                        self.value_buf(base)?
+                    };
+                    self.compile_value(index)?;
+                    self.bounds_index(u64::from(bits), false)?;
+                    self.push_u64(32 * k);
+                    self.op(MUL);
+                    self.push_mem(at);
+                    self.op(ADD);
+                    return Ok(());
+                }
+                if bits > 0 && !self.inert(index) && self.inline_in_value(base) {
+                    // Computing the index could build another value where this one is, so
+                    // the list is copied out first.
+                    let n = u32::from(bits) * self.checked.types[elem].words.max(1) * 32;
+                    self.return_sites += 1;
+                    let at = self.region(Region::Stored(self.return_sites), n);
+                    self.push_u64(n.into());
+                    self.push_mem_addr(base)?;
+                    self.push_mem(at);
+                    self.op(MCOPY);
+                    self.compile_value(index)?;
+                    self.bounds_index(u64::from(bits), false)?;
+                    self.push_u64(32 * k);
+                    self.op(MUL);
+                    self.push_mem(at);
+                    self.op(ADD);
+                    return Ok(());
+                }
                 if bits > 0 {
                     // A fixed list inline: its elements follow one another.
                     let at = self.temp();
@@ -3018,8 +3084,7 @@ impl<'a> Gen<'a> {
                 }
                 // A list behind a pointer: its length, then its elements.
                 let list = self.temp();
-                self.push_mem_addr(base)?;
-                self.op(MLOAD);
+                self.push_list_ptr(base)?;
                 self.mstore_off(list);
                 self.compile_value(index)?;
                 self.op(DUP1);
@@ -3055,6 +3120,11 @@ impl<'a> Gen<'a> {
                 ..
             } => {
                 let at = self.stage(e)?;
+                self.push_mem(at);
+                Ok(())
+            }
+            other if self.value_root(other) && !self.list_value(other.ty()) => {
+                let at = self.value_addr(other)?;
                 self.push_mem(at);
                 Ok(())
             }

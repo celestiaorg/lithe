@@ -704,11 +704,7 @@ impl<'a> Gen<'a> {
             } => !self.checked.syms[*s].storage,
             Expr::Binary {
                 op, left, right, ..
-            } => {
-                !matches!(op, BinOp::And | BinOp::Or | BinOp::Cons)
-                    && self.fixed(left)
-                    && self.fixed(right)
-            }
+            } => !matches!(op, BinOp::And | BinOp::Or) && self.fixed(left) && self.fixed(right),
             Expr::Unary { expr, .. } => self.fixed(expr),
             Expr::Call {
                 builtin: Some(Builtin::Cast),

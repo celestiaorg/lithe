@@ -712,7 +712,11 @@ impl<'a> Gen<'a> {
             id = under;
         }
         let info = &self.checked.types[id];
-        let bits = if info.bits == 0 { 256 } else { info.bits };
+        let bits = match info.bits {
+            0 => 256,
+            n if info.kind == TyKind::Bytes => n * 8,
+            n => n,
+        };
         (info.kind == TyKind::Int, bits)
     }
 

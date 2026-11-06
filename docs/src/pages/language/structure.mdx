@@ -118,9 +118,9 @@ These words are reserved:
 
 ```text
 and as assert at bound call case const contract create defer do else emit end error
-errors event external fail failwith false for function if import in indexed interface
-is list migrate module nil nonreentrant not of or payable private pure query raises
-record requires skip then true type Unit until upgrade upgradeable use var view with
+errors event external fail false for function if import in indexed interface is list
+migrate module nonreentrant not of or payable private pure query raises record
+requires skip then true type Unit until upgrade upgradeable use var view with
 ```
 
 `storage`, `transient`, `guard`, `receive`, and `fallback` are keywords only where a declaration expects them, `guarded` only after an external's header, `delegates`, `forwards`, and `to` only after `fallback`, and `forward` only before a name at the start of a statement. Elsewhere they are names like any other. `create` also names a function, or a member after `.`, so a contract can expose, or call, a factory's `create(...)`.

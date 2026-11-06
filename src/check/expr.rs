@@ -90,7 +90,6 @@ impl Checker {
                     Lit::Str(_) => TY_STRING,
                     Lit::Bytes(_) => bytes,
                     Lit::Unit => TY_UNIT,
-                    Lit::Nil => self.op_list(),
                     Lit::Zero => unreachable!(),
                 };
                 Ok(())
@@ -169,16 +168,31 @@ impl Checker {
             Expr::Index {
                 base,
                 index,
+                ty,
                 line,
                 col,
                 ..
             } if !is_named(base) => {
-                self.check_expr(base)?;
-                if self.types[self.peel(base.ty())].kind != TyKind::Bytes {
-                    return Err(error(*line, *col, "this value cannot be indexed"));
+                // `[a, b][i]` is a fixed list of the element the context expects.
+                let literal = match (&**base, self.expect) {
+                    (Expr::List { elems, .. }, Some(elem)) => u16::try_from(elems.len())
+                        .ok()
+                        .map(|n| self.list_of(elem, n)),
+                    _ => None,
+                };
+                self.check_expr_as(base, literal)?;
+                let base_ty = &self.types[self.peel(base.ty())];
+                match base_ty.kind {
+                    TyKind::Bytes => {
+                        self.check_uint_index(index)?;
+                        self.byte_at(e)
+                    }
+                    TyKind::List => {
+                        *ty = base_ty.elem.unwrap_or(TY_UNIT);
+                        self.check_uint_index(index)
+                    }
+                    _ => Err(error(*line, *col, "this value cannot be indexed")),
                 }
-                self.check_uint_index(index)?;
-                self.byte_at(e)
             }
             Expr::Field { .. } | Expr::Index { .. } => {
                 let p = self.place(e)?;
@@ -210,9 +224,10 @@ impl Checker {
                 line,
                 col,
             } => {
-                if let Some(once) = self.once {
-                    return Err(error(*line, *col, format!("{once} cannot query")));
+                if self.in_query {
+                    return Err(error(*line, *col, NESTED_QUERY));
                 }
+                self.note(Piece::Effect("query"));
                 if self.is_pure() {
                     return Err(self.weaker(*line, *col, "queries another contract"));
                 }
@@ -282,8 +297,8 @@ impl Checker {
                     }
                     UnOp::BitNot => {
                         self.check_expr(expr)?;
-                        if !self.is_integer(expr.ty()) {
-                            return Err(error(*line, *col, "`~` expects an integer"));
+                        if !self.is_bitwise(expr.ty()) {
+                            return Err(error(*line, *col, "`~` expects an integer or `bytesN`"));
                         }
                         *ty = expr.ty();
                     }
@@ -299,7 +314,7 @@ impl Checker {
                 col,
             } => {
                 if matches!(op, BinOp::Shl | BinOp::Shr | BinOp::Pow) {
-                    let left_expect = self.expect.filter(|id| self.is_integer(*id));
+                    let left_expect = self.expect.filter(|id| self.is_bitwise(*id));
                     self.check_expr_as(left, left_expect)?;
                     self.check_expr_as(right, Some(TY_UINT))?;
                 } else if op.is_cmp() {
@@ -314,9 +329,6 @@ impl Checker {
                 } else if matches!(op, BinOp::And | BinOp::Or) {
                     self.check_expr_as(left, Some(TY_BOOL))?;
                     self.check_expr_as(right, Some(TY_BOOL))?;
-                } else if matches!(op, BinOp::Cons) {
-                    self.check_expr(left)?;
-                    self.check_expr(right)?;
                 } else {
                     // A literal takes the other operand's type before the context's.
                     let (first, second) = if self.contextual(left) > self.contextual(right) {
@@ -1715,12 +1727,6 @@ impl Checker {
         let rk = self.types[r].kind;
         let num = self.types[self.peel(l)].kind;
         match op {
-            BinOp::Cons => {
-                if lk != TyKind::Operation || !self.is_op_list_ty(r) {
-                    return Err(error(line, col, "`#` expects operation # list(operation)"));
-                }
-                Ok(r)
-            }
             BinOp::And | BinOp::Or => {
                 if lk != TyKind::Bool || rk != TyKind::Bool {
                     return Err(error(
@@ -1760,21 +1766,24 @@ impl Checker {
                 Ok(l)
             }
             BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
-                if !self.same(l, r) || !self.is_integer(l) {
+                if !self.same(l, r) || !self.is_bitwise(l) {
                     return Err(error(
                         line,
                         col,
-                        format!("`{}` expects two integers of the same type", bit_name(op)),
+                        format!(
+                            "`{}` expects two integers or `bytesN` of the same type",
+                            bit_name(op)
+                        ),
                     ));
                 }
                 Ok(l)
             }
             BinOp::Shl | BinOp::Shr => {
-                if !self.is_integer(l) {
+                if !self.is_bitwise(l) {
                     return Err(error(
                         line,
                         col,
-                        format!("`{}` expects an integer", bit_name(op)),
+                        format!("`{}` expects an integer or `bytesN`", bit_name(op)),
                     ));
                 }
                 if self.types[self.peel(r)].kind != TyKind::Uint {

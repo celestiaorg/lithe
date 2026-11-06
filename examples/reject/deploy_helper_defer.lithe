@@ -1,0 +1,18 @@
+interface Ledger is {
+  function credit(amount : uint) : uint;
+}
+
+storage is record {
+  n      : uint;
+  ledger : Ledger;
+}
+
+function credit() is {
+  defer storage.ledger.credit(1) then (v : uint) {
+    storage.n := v;
+  };
+}
+
+deploy() is {
+  credit();
+}

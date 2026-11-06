@@ -68,7 +68,7 @@ enum Raw {
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Ident,
 
-    #[regex(r"0x[0-9a-fA-F_]+", hex_lit)]
+    #[regex(r"0x[0-9a-fA-F_]*", hex_lit)]
     #[regex(r"[0-9][0-9_]*(eth|gwei|wei|seconds|minutes|hours|days)?", number)]
     Number(Num),
 
@@ -177,8 +177,6 @@ enum Raw {
     Or,
     #[token("not")]
     Not,
-    #[token("failwith")]
-    Failwith,
     #[token("assert")]
     Assert,
     #[token("list")]
@@ -189,8 +187,6 @@ enum Raw {
     False,
     #[token("Unit")]
     Unit,
-    #[token("nil")]
-    Nil,
 
     #[token("(")]
     LParen,
@@ -228,8 +224,6 @@ enum Raw {
     DotDot,
     #[token(".")]
     Dot,
-    #[token("#")]
-    Hash,
     #[token("->")]
     Arrow,
     #[token("|")]
@@ -433,6 +427,9 @@ fn hex_lit(lex: &mut Lexer<Raw>) -> Result<Num, LexError> {
     let line = lex.extras.line;
     let col = col_at(lex, lex.span().start);
     let digits = lex.slice()[2..].replace('_', "");
+    if lex.slice() == "0x" {
+        return Ok(Num::Bytes(digits));
+    }
     if digits.len() > 64 {
         if digits.len() % 2 == 1 {
             return Err(LexError::BadNumber {
@@ -524,13 +521,11 @@ pub(crate) enum Kind {
     And,
     Or,
     Not,
-    Failwith,
     Assert,
     List,
     True,
     False,
     Unit,
-    Nil,
     LParen,
     RParen,
     LBrack,
@@ -544,7 +539,6 @@ pub(crate) enum Kind {
     Comma,
     DotDot,
     Dot,
-    Hash,
     Arrow,
     Pipe,
     Plus,
@@ -740,13 +734,11 @@ fn kind_of(raw: Raw) -> Kind {
         Raw::And => Kind::And,
         Raw::Or => Kind::Or,
         Raw::Not => Kind::Not,
-        Raw::Failwith => Kind::Failwith,
         Raw::Assert => Kind::Assert,
         Raw::List => Kind::List,
         Raw::True => Kind::True,
         Raw::False => Kind::False,
         Raw::Unit => Kind::Unit,
-        Raw::Nil => Kind::Nil,
         Raw::LParen => Kind::LParen,
         Raw::RParen => Kind::RParen,
         Raw::LBrack => Kind::LBrack,
@@ -760,7 +752,6 @@ fn kind_of(raw: Raw) -> Kind {
         Raw::Comma => Kind::Comma,
         Raw::DotDot => Kind::DotDot,
         Raw::Dot => Kind::Dot,
-        Raw::Hash => Kind::Hash,
         Raw::Arrow => Kind::Arrow,
         Raw::Pipe => Kind::Pipe,
         Raw::Plus => Kind::Plus,
@@ -844,13 +835,11 @@ pub(crate) fn kind_name(k: Kind) -> &'static str {
         Kind::And => "`and`",
         Kind::Or => "`or`",
         Kind::Not => "`not`",
-        Kind::Failwith => "`failwith`",
         Kind::Assert => "`assert`",
         Kind::List => "`list`",
         Kind::True => "`true`",
         Kind::False => "`false`",
         Kind::Unit => "`Unit`",
-        Kind::Nil => "`nil`",
         Kind::LParen => "`(`",
         Kind::RParen => "`)`",
         Kind::LBrack => "`[`",
@@ -864,7 +853,6 @@ pub(crate) fn kind_name(k: Kind) -> &'static str {
         Kind::Comma => "`,`",
         Kind::DotDot => "`..`",
         Kind::Dot => "`.`",
-        Kind::Hash => "`#`",
         Kind::Arrow => "`->`",
         Kind::Pipe => "`|`",
         Kind::Plus => "`+`",

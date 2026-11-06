@@ -1441,7 +1441,6 @@ pub(crate) fn fmt_expr(e: &Expr) -> String {
             Lit::Bool(true) => "true".into(),
             Lit::Bool(false) => "false".into(),
             Lit::Unit => "Unit".into(),
-            Lit::Nil => "nil".into(),
             Lit::Zero => "zero".into(),
             Lit::Str(s) => format!("\"{}\"", s.escape_default()),
             Lit::Bytes(b) => format!(
@@ -2474,6 +2473,5 @@ fn bin(op: BinOp) -> &'static str {
         BinOp::Ge => ">=",
         BinOp::And => "and",
         BinOp::Or => "or",
-        BinOp::Cons => "#",
     }
 }

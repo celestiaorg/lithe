@@ -263,6 +263,9 @@ impl Checker {
 
     pub(super) fn note_call(&mut self, idx: usize, line: u32, col: u32) {
         self.note(Piece::Call(idx, line, col));
+        if self.in_query {
+            self.note(Piece::InQuery(idx, line, col));
+        }
     }
 
     fn note_error(&mut self, idx: usize) {
@@ -276,7 +279,7 @@ impl Checker {
         }
     }
 
-    fn note(&mut self, piece: Piece) {
+    pub(super) fn note(&mut self, piece: Piece) {
         if self.cur_fn < self.pieces.len() {
             self.pieces[self.cur_fn].push(piece);
         } else if let (GUARD_FN, Piece::Call(j, ..)) = (self.cur_fn, &piece) {
@@ -303,7 +306,7 @@ impl Checker {
                 let found = self.pieces[i].iter().find_map(|piece| match piece {
                     Piece::Write(_, _, name) => Some(name.clone()),
                     Piece::Call(j, ..) => writes.get(*j).cloned().flatten(),
-                    Piece::Err(_) => None,
+                    Piece::Err(_) | Piece::Effect(_) | Piece::InQuery(..) => None,
                 });
                 if found.is_some() {
                     writes[i] = found;
@@ -341,7 +344,7 @@ impl Checker {
                             ));
                         }
                     }
-                    Piece::Err(_) => {}
+                    Piece::Err(_) | Piece::Effect(_) | Piece::InQuery(..) => {}
                 }
             }
             Ok(())
@@ -363,6 +366,93 @@ impl Checker {
                     None => describe(func.kind, source_name(&func.name)),
                 };
                 offending(&self.pieces[i], &who).map_err(|err| err.in_file(&func.origin))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `deploy` and `migrate` run once and call nobody back, so neither do the functions
+    /// they call; both may query, and `deploy` may emit. A query's receiver and arguments
+    /// make no query, through what they call either.
+    pub(super) fn check_transitive_effects(&self, funcs: &[Func]) -> Result<(), Error> {
+        let n = self.pieces.len().min(funcs.len());
+        let mut effects: Vec<Vec<&'static str>> = self.pieces[..n]
+            .iter()
+            .map(|pieces| {
+                let mut out = Vec::new();
+                for piece in pieces {
+                    if let Piece::Effect(kind) = piece {
+                        if !out.contains(kind) {
+                            out.push(*kind);
+                        }
+                    }
+                }
+                out
+            })
+            .collect();
+        loop {
+            let mut changed = false;
+            for i in 0..n {
+                for piece in &self.pieces[i] {
+                    let Piece::Call(j, ..) = piece else { continue };
+                    for k in 0..effects.get(*j).map_or(0, Vec::len) {
+                        let kind = effects[*j][k];
+                        if !effects[i].contains(&kind) {
+                            effects[i].push(kind);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        for (i, func) in funcs.iter().enumerate().take(n) {
+            for piece in &self.pieces[i] {
+                if let Piece::InQuery(j, line, col) = piece {
+                    if effects
+                        .get(*j)
+                        .is_some_and(|kinds| kinds.contains(&"query"))
+                    {
+                        return Err(error(
+                            *line,
+                            *col,
+                            format!(
+                                "`{}` queries, and {NESTED_QUERY}",
+                                source_name(&funcs[*j].name)
+                            ),
+                        )
+                        .in_file(&func.origin));
+                    }
+                }
+            }
+            let once = match func.kind {
+                ItemKind::Deploy => "deploy",
+                ItemKind::Migrate => "migrate",
+                _ => continue,
+            };
+            for piece in &self.pieces[i] {
+                let Piece::Call(j, line, col) = piece else {
+                    continue;
+                };
+                let Some(kind) = effects
+                    .get(*j)
+                    .into_iter()
+                    .flatten()
+                    .find(|kind| **kind != "query" && (once == "migrate" || **kind != "emit"))
+                else {
+                    continue;
+                };
+                return Err(error(
+                    *line,
+                    *col,
+                    format!(
+                        "{once} cannot {kind}, and `{}`, which it calls, does",
+                        source_name(&funcs[*j].name)
+                    ),
+                )
+                .in_file(&func.origin));
             }
         }
         Ok(())
@@ -951,10 +1041,16 @@ impl Checker {
         Ok(())
     }
 
-    pub(super) fn forbid_effect(&self, line: u32, col: u32, kind: &str) -> Result<(), Error> {
+    pub(super) fn forbid_effect(
+        &mut self,
+        line: u32,
+        col: u32,
+        kind: &'static str,
+    ) -> Result<(), Error> {
         if let Some(once) = self.once {
             return Err(error(line, col, format!("{once} cannot {kind}")));
         }
+        self.note(Piece::Effect(kind));
         if let Some(label) = &self.guard_label {
             return Err(error(
                 line,
@@ -1232,7 +1328,7 @@ fn expand(pieces: &[Piece], effective: &[Vec<usize>]) -> Vec<usize> {
     for piece in pieces {
         match piece {
             Piece::Err(id) => push_unique(&mut out, *id),
-            Piece::Write(..) => {}
+            Piece::Write(..) | Piece::Effect(_) | Piece::InQuery(..) => {}
             Piece::Call(idx, ..) => {
                 if let Some(set) = effective.get(*idx) {
                     for id in set {

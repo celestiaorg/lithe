@@ -781,8 +781,7 @@ impl Checker {
                     Some(size) => self.list_size(size)?,
                     None => len.unwrap_or(0),
                 } as u16;
-                let operations = self.types[e].kind == TyKind::Operation && bits == 0;
-                if !(operations || is_value(&self.types, e)) {
+                if !is_value(&self.types, e) {
                     return Err(error(
                         *line,
                         *col,
@@ -1022,6 +1021,12 @@ impl Checker {
 
     pub(super) fn is_integer(&self, id: usize) -> bool {
         matches!(self.types[self.peel(id)].kind, TyKind::Uint | TyKind::Int)
+    }
+
+    /// Integers and `bytesN` take the bitwise operators: `&`, `|`, `^`, `~`, `<<`, `>>`.
+    pub(super) fn is_bitwise(&self, id: usize) -> bool {
+        let t = &self.types[self.peel(id)];
+        self.is_integer(id) || t.kind == TyKind::Bytes && t.bits > 0
     }
 
     fn numeric_word(&self, id: usize) -> bool {

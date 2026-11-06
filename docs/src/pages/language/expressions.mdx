@@ -16,8 +16,8 @@ description: "Arithmetic, comparison, boolean, and bitwise operators, precedence
 | `=` `<>` | equal, not equal (`=/=` also means not equal) | two values of the same type with no map in them; strings, bytes, lists, and what holds them compare by content |
 | `<` `<=` `>` `>=` | ordered comparison | numeric types, `wei`, `timestamp`, and `address` and `bytesN`, which order as unsigned numbers, as in Solidity |
 | `and` `or` `not` | boolean logic | `bool` |
-| `&` `\|` `^` `~` | bitwise and, or, xor, not | integers of the same type |
-| `<<` `>>` | shift left, right (arithmetic for signed types) | integers |
+| `&` `\|` `^` `~` | bitwise and, or, xor, not | two integers or two `bytesN` of the same type; the result has their type |
+| `<<` `>>` | shift left, right (arithmetic for signed types) | an integer or `bytesN` and a `uint` shift; the result has the left side's type |
 
 `^` is xor. `**` is the power: `10 ** decimals` for a `uint8` `decimals` is a `uint` unless its context expects another integer type, and `0 ** 0` is `1`.
 
@@ -71,7 +71,7 @@ external function go() is {
 `2 ** 256` overflows `uint`
 ```
 
-Shifts do not overflow. Bits shifted past a type's width are dropped, so for a `uint8`, `1 << 8` is `0`. `~` flips bits within the type's width, so for a `uint8`, `~0` is `255`.
+Shifts do not overflow. Bits shifted past a type's width are dropped, so for a `uint8`, `1 << 8` is `0`. `~` flips bits within the type's width, so for a `uint8`, `~0` is `255`. On `bytesN` they work as in Solidity: `~` flips every bit of the N bytes, `<<` moves bytes toward the first, and `>>` toward the last, so for a `bytes4` `0x12345678`, `x << 8` is `0x34567800`.
 
 ```lithe
 import "std/uint";
@@ -81,6 +81,7 @@ storage is record {
   r      : uint;
   masked : uint;
   narrow : uint8;
+  tag    : bytes4;
 }
 
 external function run(const a : uint; const b : uint) is {
@@ -90,6 +91,7 @@ external function run(const a : uint; const b : uint) is {
   storage.masked := (a >> 8) & 0xff;
   const x : uint8 := ~0;
   storage.narrow := x ^ 0x0f;
+  storage.tag := ~(0x12345678 << 8) & 0xffff0000;
 }
 ```
 

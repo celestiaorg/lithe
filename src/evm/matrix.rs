@@ -610,6 +610,36 @@ const PLACES: &[Place] = &[
         "const xs : list(list($T)) := wrap($V, $W);",
         "xs[1][1]",
     ),
+    local(
+        "returned list element",
+        "elem",
+        "pure function wrap(const v : $T; const w : $T) : list($T) is [w, v, w]",
+        "skip;",
+        "wrap($V, $W)[1]",
+    ),
+    local(
+        "returned fixed list element",
+        "elem",
+        "pure function wrap(const v : $T; const w : $T) : list($T, 3) is [w, v, w]",
+        "skip;",
+        "wrap($V, $W)[1]",
+    ),
+    local(
+        "returned nested list element",
+        "elem",
+        "pure function wrap(const v : $T; const w : $T) : list(list($T)) is [[w], [w, v]]",
+        "skip;",
+        "wrap($V, $W)[1][1]",
+    ),
+    local(
+        "returned list of records element",
+        "elem nest",
+        "type Holder is record { pre : uint8; x : $T; post : bool; }
+pure function wrap(const v : $T; const w : $T) : list(Holder) is [{ pre = 1; x = w; post = false; }, { pre = 2; x = v; post = true; }]",
+        "skip;",
+        "wrap($V, $W)[1].x",
+    ),
+    local("list literal element", "elem", "", "skip;", "list($T)([$W, $V, $W])[1]"),
     local("list of records write", "elem nest", HOLDER, "var hs : list(Holder) := [{ pre = 1; x = $W; post = false; }, { pre = 2; x = $W; post = true; }]; hs[1].x := $V;", "hs[1].x"),
     local("list of records element", "elem nest", HOLDER, "const hs : list(Holder) := [{ pre = 1; x = $W; post = false; }, { pre = 2; x = $V; post = true; }]; const h : Holder := hs[1];", "h.x"),
     local("option", "opt", "", "const o : option($T) := Some($V);", "case o of { Some(x) -> x | None -> $W }"),
@@ -1837,6 +1867,8 @@ external view function left(const now : $T) : uint is
 external pure function sq(const a : $A) : $A is a ** 2 * 3 / 2
 external pure function low(const a : $S; const b : $S) : bool is a < b or a >= b + 1
 external pure function first(const a : $K; const b : $K) : bool is a < b
+external pure function flip(const a : $K; const b : $K) : $K is (~(a & b) ^ (a | b)) >> 3 << 1
+external pure function flip4(const a : $G; const b : $G) : bool is ~a = b and (a ^ b) << 8 = a & b
 pure function same(T)(const x : T) : T is x
 external function keep(const a : $A; const b : $A) is {
   Set.add(storage.ids, a + 1);
@@ -1851,6 +1883,7 @@ fn nominal_numbers_have_their_representations_operations() {
     let spell = |a: &str, s: &str, i: &str, t: &str, k: &str, decl: &str| {
         NOMINAL_NUMBERS
             .replace("$D", decl)
+            .replace("$G", if decl.is_empty() { "bytes4" } else { "Tag" })
             .replace("$K", k)
             .replace("$A", a)
             .replace("$S", s)
@@ -1866,7 +1899,7 @@ fn nominal_numbers_have_their_representations_operations() {
         "Deadline",
         "Key",
         "type Amount is uint;\ntype Small is uint8;\ntype Delta is int16;\ntype Deadline is timestamp;\n\
-         type Key is bytes32;",
+         type Key is bytes32;\ntype Tag is bytes4;",
     ))
     .expect("nominal");
     assert!(plain == nominal, "a nominal type costs code");
@@ -1886,9 +1919,14 @@ fn nominal_numbers_have_their_representations_operations() {
         "external pure function f(const x : Deadline; const y : Amount) : Deadline is x + y",
         "external pure function f(const x : Deadline; const y : timestamp) : uint is x - y",
         "external pure function f(const x : Flag; const y : Flag) : bool is x < y",
+        "external pure function f(const x : Key; const y : bytes32) : Key is x ^ y",
+        "external pure function f(const x : Key) : bytes32 is ~x",
+        "external pure function f(const x : Key; const y : Tag) : bool is x & y = x",
+        "external pure function f(const x : Flag) : Flag is ~x",
     ] {
         let src = format!(
             "type Amount is uint;\ntype Other is uint;\ntype Deadline is timestamp;\ntype Flag is bool;\n\
+             type Key is bytes32;\ntype Tag is bytes4;\n\
              storage is record {{ n : uint; }}\n{mixed}\n"
         );
         assert!(compile(&src).is_err(), "accepted: {mixed}");

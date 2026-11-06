@@ -2,28 +2,6 @@
 
 Open bugs, gaps and doc fixes found by auditing the old PRDs (lithe-prd, lithe-positioning, lithe-builtins, lithe-stdlib, upgrade-prd, upgrade-prd-2, codegen-prd, hooks-prd, split-prd) and ports-ignore/modularium/GAPS.md against main at 0ec5ffdd0 (2026-11-05). Everything else in those files shipped, is documented, or was superseded.
 
-## Bugs
-
-- **deploy drops deferred calls made in helpers.** The "deploy/migrate cannot query or defer" check runs only on the function's own body (`self.once`, set in `src/check/funcs.rs:54`, checked in `src/check/expr.rs:213`). A helper called from `deploy` that defers compiles, and the creation code builds the calldata but never makes the call, so the continuation never runs. A query in a helper does emit a real STATICCALL. `migrate` shares the check, so it likely has the same hole. Fix: make the check follow calls. Repro:
-
-  ```lithe
-  interface L is { function f(x : uint) : uint; }
-  contract C is {
-    storage is record { n : uint; l : L; }
-    function helper() is { defer storage.l.f(1) then (v : uint) { storage.n := v; }; }
-    deploy() is { helper(); }
-    external view function k() : uint is storage.n
-  }
-  ```
-
-## Compiler
-
-- **Remove LIGO leftovers.** `#` (cons), `nil` and `list(operation)` still parse and type-check (`src/lex.rs:192`, `:231`, `src/check/expr.rs:1718`, `src/check/place.rs:220`), but a `list(operation)` can never be bound ("this value cannot be stored").
-- **Nested query error.** `query l.f(g())` where `g` queries fails only at codegen with "nested query is not supported", pointing inside `g` rather than at the call (`src/gen/calls.rs:12`). Reject it in the checker at the call site.
-- **Indexing a call result.** `f(a)[1]` and `pair(n)[1]` fail with "this value cannot be indexed" (`src/check/expr.rs:178`). Binding to a `const` first works.
-- **`^` on `bytes4`** is rejected (`src/check/expr.rs:1767`).
-- **Bare `0x`** isn't an empty-bytes literal and gives "expected a declaration, found `x`".
-
 ## Codegen
 
 - **Calldata list into storage.** Assigning a calldata list parameter to a storage list decodes it into memory first; the `Stmt::Assign` arm counts it as an "other" use (`src/gen/decode.rs:437-446`). Could copy from calldata in place.

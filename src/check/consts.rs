@@ -321,7 +321,7 @@ impl Fold<'_> {
     /// Whether `e` is known when the contract compiles, as code generation folds it.
     fn folds(&self, e: &Expr, seen: &mut Vec<usize>) -> bool {
         match e {
-            Expr::Lit { lit, .. } => !matches!(lit, Lit::Unit | Lit::Nil | Lit::Zero),
+            Expr::Lit { lit, .. } => !matches!(lit, Lit::Unit | Lit::Zero),
             Expr::Convert { expr, .. } | Expr::Unary { expr, .. } => self.folds(expr, seen),
             Expr::Binary { left, right, .. } => self.folds(left, seen) && self.folds(right, seen),
             Expr::Call {

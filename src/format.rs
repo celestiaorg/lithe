@@ -896,7 +896,6 @@ fn binary(pieces: &[Piece], i: usize) -> Option<u8> {
         Kind::Neq | Kind::Lt | Kind::Gt | Kind::Le | Kind::Ge => 5,
         Kind::Caret => 9,
         Kind::Amp => 11,
-        Kind::Hash => 13,
         Kind::Shl | Kind::Shr => 15,
         Kind::Plus => 17,
         Kind::Minus if !unary_minus(prev_kind) => 17,
@@ -1394,7 +1393,6 @@ fn clause(kind: Kind) -> bool {
             | Kind::And
             | Kind::Or
             | Kind::DotDot
-            | Kind::Hash
             | Kind::With
             | Kind::Then
     )
@@ -1446,7 +1444,6 @@ fn unary_minus(prev: Option<Kind>) -> bool {
                 | Kind::String
                 | Kind::True
                 | Kind::False
-                | Kind::Nil
                 | Kind::Unit
                 | Kind::RParen
                 | Kind::RBrack

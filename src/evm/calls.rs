@@ -1841,14 +1841,29 @@ external view function paid() : wei is storage.paid
     assert_eq!(slot(&made.storage, 0), w(5));
 
     for (body, want) in [
-        ("deploy() is { skip }\ndeploy() is { skip }", "a contract has at most one `deploy`"),
-        ("deploy() : uint is { skip }", "`deploy` does not declare a return type"),
-        ("external deploy() is { skip }", "`deploy` takes only `payable`"),
-        ("deploy() is { storage.n := uint(Evm.value()); }", "`deploy` reads `Evm.value()`; write `payable deploy`"),
-        ("deploy() is { defer Evm.transfer(Evm.sender(), 1wei); }", "deploy cannot defer an operation"),
         (
-            "interface I is { view function n() : uint; }\ndeploy() is { storage.n := query I(Evm.sender()).n(); }",
-            "deploy cannot query",
+            "deploy() is { skip }\ndeploy() is { skip }",
+            "a contract has at most one `deploy`",
+        ),
+        (
+            "deploy() : uint is { skip }",
+            "`deploy` does not declare a return type",
+        ),
+        (
+            "external deploy() is { skip }",
+            "`deploy` takes only `payable`",
+        ),
+        (
+            "deploy() is { storage.n := uint(Evm.value()); }",
+            "`deploy` reads `Evm.value()`; write `payable deploy`",
+        ),
+        (
+            "deploy() is { defer Evm.transfer(Evm.sender(), 1wei); }",
+            "deploy cannot defer an operation",
+        ),
+        (
+            "function pay() is { defer Evm.transfer(Evm.sender(), 1wei); }\ndeploy() is { pay(); }",
+            "deploy cannot defer an operation, and `pay`, which it calls, does",
         ),
     ] {
         let src = format!(
@@ -2378,7 +2393,7 @@ external function each(const e : Echo) is {
         ("defer e.ping(1) with gas = true;", "`gas` must be uint"),
         (
             "storage.n := query e.peek(query e.peek(1) with gas = 1);",
-            "nested query",
+            "a query's receiver and arguments cannot query",
         ),
     ] {
         let bad = src.replace("storage.n := case query e.peek(1) with gas = 30000 of { | Ok(v) -> v | Error(_) -> 9 };", body);

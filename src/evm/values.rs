@@ -353,6 +353,101 @@ external view function onceD(const n : uint) : int16 is int16(1) + once(n).d
     );
 }
 
+/// A list no name holds, such as a call's result, a record field of one, or a literal, is
+/// indexed as a named list is: checked against its length, its elements read whole.
+#[test]
+fn unnamed_lists_are_indexed() {
+    let src = r#"
+import "std/abi";
+type P is record { x : uint; s : string; }
+type Q is record { a : uint; b : uint; }
+type H is record { xs : list(uint); n : uint; trio : list(uint, 3); }
+pure function same(const a : list(uint)) : list(uint) is a
+pure function holder(const n : uint) : H is { xs = [n, n + 1]; n = n; trio = [n, n * 2, n * 3]; }
+pure function trio(const n : uint) : list(uint, 3) is [n, n + 1, n + 2]
+pure function grid(const n : uint) : list(list(uint)) is [[n], [n + 1, n + 2]]
+pure function people(const n : uint) : list(P) is [{ x = n; s = "ab"; }, { x = n + 1; s = "cde"; }]
+pure function pairs(const n : uint) : list(Q) is [{ a = n; b = 1; }, { a = n; b = 2; }]
+pure function sum(const q : Q) : uint is q.a + q.b
+external pure function word(const xs : list(uint); const i : uint) : uint is same(xs)[i]
+external pure function named(const xs : list(uint); const i : uint) : uint is { const t : list(uint) := same(xs); } with t[i]
+external pure function inRecord(const n : uint; const i : uint) : uint is holder(n).xs[i] + holder(n).trio[i]
+external pure function fixedList(const n : uint; const i : uint) : uint is trio(n)[i]
+external pure function reentered(const n : uint) : uint is trio(n)[trio(2)[0]]
+external pure function nested(const n : uint; const i : uint; const j : uint) : uint is grid(n)[i][j]
+external pure function parens(const n : uint) : uint is (grid(n))[1][0]
+external pure function field(const n : uint; const i : uint) : uint is people(n)[i].x
+external pure function text(const n : uint; const i : uint) : string is people(n)[i].s
+external pure function whole(const n : uint; const i : uint) : uint is sum(pairs(n)[i])
+external pure function literal(const i : uint) : uint is [7, 8, 9][i]
+external pure function inRecordReentered(const n : uint; const i : uint) : uint is holder(n).trio[holder(i).n]
+pure function square(const n : uint) : list(list(uint, 2), 2) is [[n, n + 1], [n + 2, n + 3]]
+external pure function squareReentered(const n : uint) : uint is square(n)[1][square(0)[0][1]]
+type Trio is list(uint, 3);
+type Ids is list(uint);
+external pure function decoded(const n : uint; const i : uint) : uint is Abi.decode(Abi.encode(trio(n)), Trio)[i]
+external pure function decodedList(const xs : list(uint); const i : uint) : uint is Abi.decode(Abi.encode(same(xs)), Ids)[i]
+"#;
+    let rt = deploy(&compile(src).expect("compile")).expect("deploy");
+    let n = Word::from_u64;
+    let call = |sig: &str, args: &[Arg]| call_raw(&rt, &encode_args(sig, args));
+    let returns = |sig: &str, args: &[Arg]| {
+        let out = call(sig, args);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        out.returndata
+    };
+    let word = |sig: &str, args: &[Arg]| load_bytes(&returns(sig, args), 0);
+    let panics = |sig: &str, args: &[Arg]| {
+        let out = call(sig, args);
+        assert!(out.reverted, "{sig}");
+        assert_eq!(&out.returndata[..4], selector("Panic(uint256)"), "{sig}");
+        assert_eq!(load_bytes(&out.returndata, 4), n(0x32), "{sig}");
+    };
+    let xs = || Arg::L(vec![n(10), n(11), n(12)]);
+    for sig in ["word(uint256[],uint256)", "named(uint256[],uint256)"] {
+        assert_eq!(word(sig, &[xs(), Arg::W(n(1))]), n(11));
+        panics(sig, &[xs(), Arg::W(n(3))]);
+    }
+    let w = |args: &[u64]| args.iter().map(|&a| Arg::W(n(a))).collect::<Vec<_>>();
+    assert_eq!(word("inRecord(uint256,uint256)", &w(&[5, 1])), n(6 + 10));
+    panics("inRecord(uint256,uint256)", &w(&[5, 2]));
+    assert_eq!(word("fixedList(uint256,uint256)", &w(&[5, 2])), n(7));
+    panics("fixedList(uint256,uint256)", &w(&[5, 3]));
+    assert_eq!(word("reentered(uint256)", &w(&[5])), n(7));
+    assert_eq!(
+        word("inRecordReentered(uint256,uint256)", &w(&[5, 2])),
+        n(15)
+    );
+    assert_eq!(word("squareReentered(uint256)", &w(&[5])), n(8));
+    assert_eq!(
+        word("nested(uint256,uint256,uint256)", &w(&[5, 1, 1])),
+        n(7)
+    );
+    assert_eq!(
+        word("nested(uint256,uint256,uint256)", &w(&[5, 0, 0])),
+        n(5)
+    );
+    panics("nested(uint256,uint256,uint256)", &w(&[5, 0, 1]));
+    panics("nested(uint256,uint256,uint256)", &w(&[5, 2, 0]));
+    assert_eq!(word("parens(uint256)", &w(&[5])), n(6));
+    assert_eq!(word("field(uint256,uint256)", &w(&[5, 1])), n(6));
+    panics("field(uint256,uint256)", &w(&[5, 2]));
+    let text = returns("text(uint256,uint256)", &w(&[5, 1]));
+    assert_eq!(load_bytes(&text, 32), n(3));
+    assert_eq!(&text[64..67], b"cde");
+    assert_eq!(word("whole(uint256,uint256)", &w(&[5, 1])), n(7));
+    panics("whole(uint256,uint256)", &w(&[5, 2]));
+    assert_eq!(word("literal(uint256)", &w(&[2])), n(9));
+    panics("literal(uint256)", &w(&[3]));
+    assert_eq!(word("decoded(uint256,uint256)", &w(&[5, 2])), n(7));
+    panics("decoded(uint256,uint256)", &w(&[5, 3]));
+    assert_eq!(
+        word("decodedList(uint256[],uint256)", &[xs(), Arg::W(n(2))]),
+        n(12)
+    );
+    panics("decodedList(uint256[],uint256)", &[xs(), Arg::W(n(3))]);
+}
+
 /// A missing map key reads as `None`, so a map of options tells "never set" from zero.
 /// Options also sit in records held by maps, and in transient storage and its maps.
 #[test]
@@ -1162,6 +1257,8 @@ storage is record { n : uint; }
 external pure function zero() : bytes is 0x00
 external pure function one() : bytes is 0x0001
 external pure function ff() : bytes is 0x0000_00ff
+external pure function empty() : bytes is 0x
+external pure function isEmpty(const b : bytes) : bool is b = 0x
 external pure function reject() : uint raises BadData is { assert(false, BadData(0x00)); } with 0
 ";
     let abi_bytes = |data: &[u8]| abi_string("x()", data)[4..].to_vec();
@@ -1178,6 +1275,12 @@ external pure function reject() : uint raises BadData is { assert(false, BadData
     let out = call(&runtime, "reject()", &[]);
     assert!(out.reverted);
     assert_eq!(&out.returndata[4..], abi_bytes(&[0]));
+    let out = call(&runtime, "empty()", &[]);
+    assert_eq!(out.returndata, abi_bytes(&[])[..64], "empty()");
+    for (arg, want) in [(&[][..], 1), (&[0u8][..], 0)] {
+        let out = call_raw(&runtime, &abi_string("isEmpty(bytes)", arg));
+        assert_eq!(out.returndata[31], want, "isEmpty({arg:?})");
+    }
 
     let err = compile(
         "storage is record { n : uint; }\nexternal pure function f() : bytes4 is 0x0012345678\n",
@@ -2163,6 +2266,102 @@ fn operators_divide_shift_and_return_tuples() {
     let min_mod = call(&runtime, "minMod(int256)", &[min]);
     assert!(min_mod.reverted);
     assert_eq!(load_bytes(&min_mod.returndata, 4), Word::from_u64(0x11));
+}
+
+/// `&`, `|`, `^`, `~`, `<<`, and `>>` work on `bytesN` as in Solidity, and `~` leaves no
+/// bits set past the type's bytes.
+#[test]
+fn bitwise_operators_take_fixed_bytes() {
+    let src = "storage is record { tag : bytes4; flag : bytes1; n : uint8; }
+external pure function and4(const a : bytes4; const b : bytes4) : bytes4 is a & b
+external pure function or4(const a : bytes4; const b : bytes4) : bytes4 is a | b
+external pure function xor4(const a : bytes4; const b : bytes4) : bytes4 is a ^ b
+external pure function not4(const a : bytes4) : bytes4 is ~a
+external pure function notWord(const a : bytes4) : uint is uint(uint32(~a))
+external pure function notIs(const a : bytes4; const b : bytes4) : bool is ~a = b
+external pure function notLit(const a : bytes4) : bool is ~a = 0x21524110
+external pure function notConst() : bool is ~bytes4(0xdeadbeef) = 0x21524110
+external pure function lits() : bytes4 is ~(0x12345678 << 8) & 0xffff0000
+external pure function shl4(const a : bytes4; const n : uint) : bytes4 is a << n
+external pure function shr4(const a : bytes4; const n : uint) : bytes4 is a >> n
+external pure function not1(const a : bytes1) : bytes1 is ~a
+external pure function not1Word(const a : bytes1) : uint is uint(uint8(~a))
+external pure function xor1(const a : bytes1; const b : bytes1) : bytes1 is a ^ b
+external pure function not32(const a : bytes32) : bytes32 is ~a
+external pure function mix32(const a : bytes32; const b : bytes32) : bytes32 is (a & b) ^ (a | b)
+external function save(const a : bytes4; const b : bytes1) : uint is {
+  storage.tag := ~a;
+  storage.flag := ~b;
+  storage.n := 7;
+} with uint(uint32(storage.tag)) + uint(uint8(storage.flag))
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let b4 = |x: u64| Word::from_u64(x).shl(224);
+    let b1 = |x: u64| Word::from_u64(x).shl(248);
+    let w = Word::from_u64;
+    let ret = |sig: &str, args: &[Word]| {
+        let out = call(&runtime, sig, args);
+        assert!(!out.reverted, "{sig}: {}", pretty(&out.returndata));
+        assert_eq!(out.returndata.len(), 32, "{sig}");
+        load_bytes(&out.returndata, 0)
+    };
+    let (a, b) = (b4(0xdeadbeef), b4(0x0000ffff));
+    assert_eq!(ret("and4(bytes4,bytes4)", &[a, b]), b4(0x0000beef));
+    assert_eq!(ret("or4(bytes4,bytes4)", &[a, b]), b4(0xdeadffff));
+    assert_eq!(ret("xor4(bytes4,bytes4)", &[a, b]), b4(0xdead4110));
+    assert_eq!(ret("not4(bytes4)", &[a]), b4(0x21524110));
+    assert_eq!(ret("not4(bytes4)", &[w(0)]), b4(0xffffffff));
+    assert_eq!(ret("notWord(bytes4)", &[a]), w(0x21524110));
+    assert_eq!(ret("notWord(bytes4)", &[w(0)]), w(0xffffffff));
+    assert_eq!(ret("notIs(bytes4,bytes4)", &[a, b4(0x21524110)]), w(1));
+    assert_eq!(ret("notIs(bytes4,bytes4)", &[a, a]), w(0));
+    assert_eq!(ret("notLit(bytes4)", &[a]), w(1));
+    assert_eq!(ret("notConst()", &[]), w(1));
+    assert_eq!(ret("lits()", &[]), b4(0xcba90000));
+    // Shifts move bytes toward the first (`<<`) or the last (`>>`), dropping what leaves.
+    for (n, left, right) in [
+        (0, 0xdeadbeef, 0xdeadbeef),
+        (8, 0xadbeef00, 0x00deadbe),
+        (4, 0xeadbeef0, 0x0deadbee),
+        (31, 0x80000000, 0x00000001),
+        (32, 0, 0),
+        (300, 0, 0),
+    ] {
+        assert_eq!(ret("shl4(bytes4,uint256)", &[a, w(n)]), b4(left), "<< {n}");
+        assert_eq!(ret("shr4(bytes4,uint256)", &[a, w(n)]), b4(right), ">> {n}");
+    }
+    assert_eq!(ret("not1(bytes1)", &[b1(0x80)]), b1(0x7f));
+    assert_eq!(ret("not1Word(bytes1)", &[b1(0x80)]), w(0x7f));
+    assert_eq!(ret("xor1(bytes1,bytes1)", &[b1(0xf0), b1(0xff)]), b1(0x0f));
+    let ones = Word::from_u64(0).not();
+    let x = ones.shr(8).bitxor(w(0x1234));
+    assert_eq!(ret("not32(bytes32)", &[x]), x.not());
+    assert_eq!(ret("not32(bytes32)", &[ones]), w(0));
+    assert_eq!(ret("mix32(bytes32,bytes32)", &[x, ones]), x.bitxor(ones));
+
+    let saved = call(&runtime, "save(bytes4,bytes1)", &[a, b1(0x80)]);
+    assert!(!saved.reverted, "{}", pretty(&saved.returndata));
+    assert_eq!(load_bytes(&saved.returndata, 0), w(0x21524110 + 0x7f));
+    assert_eq!(
+        slot(&saved.storage, 0),
+        w((7 << 40) | (0x7f << 32) | 0x21524110)
+    );
+
+    for bad in [
+        "external pure function f(const a : bytes4; const b : bytes1) : bytes4 is a ^ b",
+        "external pure function f(const a : bytes4; const b : uint32) : bytes4 is a & b",
+        "external pure function f(const a : bytes4; const b : bytes32) : bytes32 is a | b",
+        "external pure function f(const a : bytes; const b : bytes) : bytes is a ^ b",
+        "external pure function f(const a : bytes) : bytes is ~a",
+        "external pure function f(const a : bytes) : bytes is a << 1",
+        "external pure function f(const a : bytes4; const n : int) : bytes4 is a << n",
+        "external pure function f(const a : bytes4; const n : bytes4) : bytes4 is a >> n",
+        "external pure function f(const a : bytes4) : bytes4 is a + a",
+        "external pure function f(const a : bytes4) : bytes4 is -a",
+    ] {
+        let src = format!("storage is record {{ n : uint; }}\n{bad}\n");
+        assert!(compile(&src).is_err(), "accepted: {bad}");
+    }
 }
 
 /// Negating a signed type's minimum overflows, at every width.

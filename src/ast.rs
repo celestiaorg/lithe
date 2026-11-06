@@ -845,7 +845,6 @@ pub(crate) enum BinOp {
     Ge,
     And,
     Or,
-    Cons,
 }
 
 impl BinOp {
@@ -1073,7 +1072,6 @@ pub(crate) enum Lit {
     /// A hex literal longer than a word, which only `bytes` can hold.
     Bytes(Vec<u8>),
     Unit,
-    Nil,
     /// What `delete place;` assigns: the place type's zero value, filled in by the checker.
     Zero,
 }

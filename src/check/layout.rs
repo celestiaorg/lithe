@@ -28,11 +28,7 @@ pub(super) fn layout(types: &mut [RType], id: usize) {
             };
             layout(types, elem);
             types[id].words = if types[id].bits == 0 {
-                if types[elem].kind == TyKind::Operation {
-                    0
-                } else {
-                    1
-                }
+                1
             } else {
                 u32::from(types[id].bits) * types[elem].words
             };
@@ -379,16 +375,6 @@ pub(super) fn check_storage_shape(types: &[RType], id: usize, at: &str) -> Resul
                     format!("storage field `{at}` cannot hold this type"),
                 ));
             };
-            if types[id].kind == TyKind::List
-                && types[id].bits == 0
-                && types[elem].kind == TyKind::Operation
-            {
-                return Err(error(
-                    1,
-                    1,
-                    format!("storage field `{at}` cannot hold this type"),
-                ));
-            }
             // A stored list's elements are values, laid out as Solidity lays out an array's.
             let inner = types[peel_id(types, elem)].kind;
             if types[id].kind == TyKind::List && !is_value(types, elem) {
@@ -526,10 +512,8 @@ pub(super) fn check_immutable_shape(types: &[RType], ty: usize, at: &str) -> Res
             .iter()
             .try_for_each(|f| check_immutable_shape(types, f.ty, &f.name)),
         TyKind::List | TyKind::Option => match t.elem {
-            Some(elem) if types[elem].kind != TyKind::Operation => {
-                check_immutable_shape(types, elem, at)
-            }
-            _ => Err(format!("immutable field `{at}` cannot hold this type")),
+            Some(elem) => check_immutable_shape(types, elem, at),
+            None => Err(format!("immutable field `{at}` cannot hold this type")),
         },
         kind if is_word(kind) && t.words == 1 => Ok(()),
         _ => Err(format!("immutable field `{at}` cannot hold this type")),

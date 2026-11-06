@@ -163,7 +163,7 @@ external view function feeBps() : uint is
 
 - A migration can be called only from `upgradeToAndCall`. Called directly, even later in the upgrade's own transaction, it reverts: the upgrade sets a transient flag that the migration checks, and clears it once the migration returns.
 - It is not in the ABI as a normal function. Nobody can call it after the upgrade.
-- It cannot `query` or `defer`. An upgrade should only change your own state.
+- It can `query` other contracts, but neither it nor a function it calls can `defer` or `emit`. An upgrade should only change your own state.
 - Every field starts at zero, so a migration is needed only to set non-zero values.
 - A migration can write [immutables](/language/storage#immutables), which an upgradeable contract keeps in the proxy's storage. A field that a new version adds to a block is set this way.
 

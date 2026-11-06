@@ -2937,7 +2937,6 @@ impl<'a> Parser<'a> {
             kind if kind == Kind::Fail || self.forward_ahead() => Ok(Stmt::Fail {
                 reason: self.fail_reason()?,
             }),
-            Kind::Failwith => Err(self.err("errors must be typed; use `fail`")),
             Kind::SkipKw => {
                 self.bump();
                 Ok(Stmt::Skip)
@@ -3615,15 +3614,6 @@ impl<'a> Parser<'a> {
                     ty: 0,
                 })
             }
-            Kind::Nil => {
-                self.bump();
-                Ok(Expr::Lit {
-                    line,
-                    col,
-                    lit: Lit::Nil,
-                    ty: 0,
-                })
-            }
             Kind::HexBytes => {
                 let digits = self.tok().string.clone().unwrap_or_default();
                 let bytes = (0..digits.len())
@@ -3651,7 +3641,10 @@ impl<'a> Parser<'a> {
             Kind::Case => self.case_expr(),
             Kind::If => self.if_expr(),
             Kind::LBrace => self.record_expr(line, col),
-            Kind::LBrack => self.list_expr(line, col),
+            Kind::LBrack => {
+                let list = self.list_expr(line, col)?;
+                self.postfix(list)
+            }
             Kind::LParen => {
                 self.bump();
                 let first = self.expr()?;
@@ -3670,7 +3663,7 @@ impl<'a> Parser<'a> {
                     })
                 } else {
                     self.want(Kind::RParen)?;
-                    Ok(first)
+                    self.postfix(first)
                 }
             }
             Kind::List => {
@@ -4243,7 +4236,6 @@ fn infix(k: Kind) -> Option<(BinOp, u8, u8)> {
         Kind::Pipe => (BinOp::BitOr, 7, 8),
         Kind::Caret => (BinOp::BitXor, 9, 10),
         Kind::Amp => (BinOp::BitAnd, 11, 12),
-        Kind::Hash => (BinOp::Cons, 13, 13),
         Kind::Shl => (BinOp::Shl, 15, 16),
         Kind::Shr => (BinOp::Shr, 15, 16),
         Kind::Plus => (BinOp::Add, 17, 18),

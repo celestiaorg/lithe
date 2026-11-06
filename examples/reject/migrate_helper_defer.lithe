@@ -1,0 +1,21 @@
+import "std/evm";
+
+upgradeable
+
+error Denied;
+
+storage is record {
+  n : uint;
+}
+
+upgrade guard is {
+  assert(true, Denied);
+}
+
+function refund(const to : address) is {
+  defer Evm.transfer(to, 1wei);
+}
+
+migrate init(const to : address) is {
+  refund(to);
+}

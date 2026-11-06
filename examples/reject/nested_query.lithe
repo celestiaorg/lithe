@@ -1,0 +1,14 @@
+interface Oracle is {
+  view function price(asset : address) : uint;
+  view function asset() : address;
+}
+
+storage is record {
+  oracle : Oracle;
+}
+
+view function asset() : address is
+  query storage.oracle.asset()
+
+external view function price() : uint is
+  query storage.oracle.price(asset())

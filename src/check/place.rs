@@ -217,36 +217,6 @@ impl Checker {
         })
     }
 
-    pub(super) fn op_list(&mut self) -> usize {
-        if let Some((id, _)) =
-            self.types.iter().enumerate().find(|(_, t)| {
-                t.kind == TyKind::List && t.bits == 0 && t.elem == Some(TY_OPERATION)
-            })
-        {
-            return id;
-        }
-        let id = self.types.len();
-        self.types.push(RType {
-            kind: TyKind::List,
-            fields: Vec::new(),
-            variants: Vec::new(),
-            elem: Some(TY_OPERATION),
-            left: None,
-            right: None,
-            words: 0,
-            bits: 0,
-            laid: true,
-            flat: None,
-        });
-        id
-    }
-
-    pub(super) fn is_op_list_ty(&self, ty: usize) -> bool {
-        self.types[ty].kind == TyKind::List
-            && self.types[ty].bits == 0
-            && self.types[ty].elem == Some(TY_OPERATION)
-    }
-
     pub(super) fn push_scope(&mut self, parent: usize) -> usize {
         let id = self.scopes.len();
         self.scopes.push(Scope {
@@ -601,8 +571,8 @@ pub(super) fn path_expr(line: u32, col: u32, path: &[String]) -> Expr {
 /// Whether a field or index chain starts at a name, so it is a place.
 pub(super) fn is_named(expr: &Expr) -> bool {
     match expr {
-        Expr::Ident { .. } | Expr::Index { .. } => true,
-        Expr::Field { base, .. } => is_named(base),
+        Expr::Ident { .. } => true,
+        Expr::Field { base, .. } | Expr::Index { base, .. } => is_named(base),
         _ => false,
     }
 }

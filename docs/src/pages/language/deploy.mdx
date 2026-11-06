@@ -38,7 +38,7 @@ external view function owner() : address is
 
 - A contract has at most one `deploy`. Without one, the contract starts with every field at zero.
 - `deploy` can read its arguments and the `Evm` context, write storage and [immutables](/language/storage#immutables), emit events, and raise errors. A raised error reverts the deployment.
-- It cannot `query` or `defer`. The contract has no code until `deploy` returns, so no one can call it back, and a continuation would have nothing to return to.
+- It can `query` other contracts, but neither it nor a function it calls can `defer`. The contract has no code until `deploy` returns, so a continuation would have nothing to return to.
 - It declares no return type. The deployment returns the contract's code.
 - It cannot be called afterwards, and it is not in the ABI as a function.
 - An imported file cannot have a `deploy`. It belongs to the contract being compiled.
