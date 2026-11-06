@@ -80,7 +80,7 @@ for item in &counter.abi.items {
 | `Param` | `ty` (`uint256`, `tuple[]`, ...), `name`, `components` for a tuple, and `internal_type`. |
 | `StateMutability` | `Pure`, `View`, `NonPayable`, or `Payable`. |
 
-`abi.to_json()` prints the Solidity JSON ABI, byte for byte what `lithe abi` prints. `lithe::abi(&sources, entry)` returns the ABI alone. It needs only the checked program, so a contract too large to build still has one.
+`abi.to_json()` prints the Solidity JSON ABI, byte for byte what `lithe abi` prints. `lithe::abi(&sources, entry)` returns the ABI alone. It needs only the checked program, so a contract too large to build still has one. `lithe::interface_abis(&sources, entry)` returns the ABI of each interface the entry file declares, by name, and `lithe::interface_abi(&sources, entry, name)` one of them, as `lithe abi --interface` prints it. `abi.render(name, AbiFormat::Ts)` is what `--format ts` prints.
 
 ## Errors
 

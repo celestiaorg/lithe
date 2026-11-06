@@ -143,6 +143,8 @@ pub(crate) struct IfaceMethod {
     pub params: Vec<usize>,
     pub ret: usize,
     pub sig: String,
+    /// The errors its `raises` names, as indexes into `Checked::errors`, and `FORWARDED`.
+    pub errors: Vec<usize>,
 }
 
 #[derive(Clone)]
@@ -1057,10 +1059,15 @@ fn check_program(
     c.register_events(&prog)?;
     c.register_errors(&prog)?;
     for iface in &prog.interfaces {
-        for member in &iface.methods {
+        let id = c.named[&iface.name];
+        for (i, member) in iface.methods.iter().enumerate() {
             if let Some(raises) = &member.raises {
-                c.resolve_raises(raises)
+                let errors = c
+                    .resolve_raises(raises)
                     .map_err(|err| err.in_file(&iface.origin))?;
+                if let Some(method) = c.ifaces.get_mut(&id).and_then(|methods| methods.get_mut(i)) {
+                    method.errors = errors;
+                }
             }
         }
     }

@@ -37,6 +37,18 @@ fn main() {
         cmd.as_str(),
         "compile" | "abi" | "facets" | "abi-tree" | "footprint" | "upgrade" | "upgrade-check"
     );
+    let emits = matches!(cmd.as_str(), "compile" | "abi");
+    let out_dir = emits.then(|| take_flag(&mut args, "--out")).flatten();
+    let interface = emits.then(|| take_flag(&mut args, "--interface")).flatten();
+    let format = match (cmd == "abi")
+        .then(|| take_flag(&mut args, "--format"))
+        .flatten()
+        .as_deref()
+    {
+        None | Some("json") => lithe::AbiFormat::Json,
+        Some("ts") => lithe::AbiFormat::Ts,
+        Some(_) => usage_exit("--format is json or ts"),
+    };
     let flags = if builds {
         build_flags(&mut args)
     } else {
@@ -94,12 +106,19 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if out_dir.is_some() && !meta.is_dir() {
+        usage_exit("--out is for a directory build");
+    }
+    if interface.is_some() && (cmd != "abi" || meta.is_dir()) {
+        usage_exit("--interface is for `lithe abi file.lithe`");
+    }
     if meta.is_dir() {
+        let out = Path::new(out_dir.as_deref().unwrap_or("out"));
         let result = match cmd.as_str() {
-            "compile" => lithe::compile_dir(Path::new(&path), Path::new("out"), &|file| {
-                build_options(file, &flags)
-            }),
-            "abi" => lithe::abi_dir(Path::new(&path), Path::new("out"), &|file| {
+            "compile" => {
+                lithe::compile_dir(Path::new(&path), out, &|file| build_options(file, &flags))
+            }
+            "abi" => lithe::abi_dir(Path::new(&path), out, format, &|file| {
                 build_options(file, &flags)
             }),
             cmd => {
@@ -114,9 +133,13 @@ fn main() {
     let mut note = None;
     let mut warnings = None;
     let result = match cmd.as_str() {
-        "abi" => lithe::abi(&sources, file)
-            .map(|abi| abi.to_json())
-            .map_err(Vec::from),
+        "abi" => match &interface {
+            Some(name) => lithe::interface_abi(&sources, file, name).map(|abi| (name.clone(), abi)),
+            None => lithe::abi(&sources, file)
+                .and_then(|abi| Ok((lithe::contract_name(&sources, file)?, abi))),
+        }
+        .map(|(name, abi)| abi.render(&name, format))
+        .map_err(Vec::from),
         "abi-tree" => lithe::abi_tree(&sources, file, &opts).map_err(Vec::from),
         "footprint" => lithe::footprint(&sources, file, &opts).map_err(Vec::from),
         "analysis" => lithe::analysis(&sources, file).map_err(Vec::from),
@@ -257,6 +280,16 @@ fn fail(errors: &[lithe::Error], file: Option<&Path>) -> ! {
         .collect();
     eprintln!("{}", errors.join("\n\n"));
     std::process::exit(1);
+}
+
+/// Removes `flag` and its value from `args`, returning the value.
+fn take_flag(args: &mut Vec<String>, flag: &str) -> Option<String> {
+    let at = args.iter().position(|arg| arg == flag)?;
+    if at + 1 == args.len() {
+        usage_exit(&format!("{flag} needs a value"));
+    }
+    args.remove(at);
+    Some(args.remove(at))
 }
 
 /// Takes each `--key value` build flag, and `--check-specs`, out of `args`.
@@ -577,9 +610,9 @@ fn usage() {
     eprintln!(
         "\
 usage: lithe compile file.lithe
-       lithe compile directory
-       lithe abi file.lithe
-       lithe abi directory
+       lithe compile directory [--out dir]
+       lithe abi file.lithe [--interface Name] [--format json|ts]
+       lithe abi directory [--out dir] [--format json|ts]
        lithe abi-tree file.lithe
        lithe footprint file.lithe
        lithe analysis file.lithe
@@ -629,7 +662,9 @@ the newest tags their version ranges admit and the commits their revs name now, 
 
 --standard-json reads solc-style standard JSON on stdin and writes the output to stdout
 
-directory commands write to ./out
+directory commands write to ./out, or the directory --out names; abi writes each contract's
+and each interface's ABI there, as <file>.lithe/<Name>.abi.json; --format ts writes
+<Name>.abi.ts, a module of `export const nameAbi = [...] as const`
 builds are cached in ~/.cache/lithe; set LITHE_CACHE_DIR to move it, or empty to turn it off"
     );
 }

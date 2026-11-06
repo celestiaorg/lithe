@@ -155,6 +155,17 @@ impl Checker {
                     Some(ty) => self.build(ty).map_err(|err| err.in_file(&iface.origin))?,
                     None => TY_UNIT,
                 };
+                // An optional result is `None` when the callee returns no data.
+                let answer = match &self.types[ret] {
+                    t if t.kind == TyKind::Option => t.elem.unwrap_or(ret),
+                    _ => ret,
+                };
+                if let Some(ty) = m.ret.as_ref().filter(|_| !abi_value(&self.types, answer)) {
+                    return Err(
+                        error(ty.line(), ty.col(), "interface results must be ABI values")
+                            .in_file(&iface.origin),
+                    );
+                }
                 if m.kind == ItemKind::View && ret == TY_UNIT {
                     return Err(error(m.line, m.col, "a view method must return a value: return a `bool` the caller can check, and let the caller fail").in_file(&iface.origin));
                 }
@@ -165,6 +176,7 @@ impl Checker {
                     params,
                     ret,
                     sig,
+                    errors: Vec::new(),
                 });
             }
             self.ifaces.insert(id, methods);

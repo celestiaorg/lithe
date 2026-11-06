@@ -7,9 +7,9 @@ description: "Every lithe command, its arguments, and its output."
 
 ```text
 lithe compile file.lithe
-lithe compile directory
-lithe abi file.lithe
-lithe abi directory
+lithe compile directory [--out dir]
+lithe abi file.lithe [--interface Name] [--format json|ts]
+lithe abi directory [--out dir] [--format json|ts]
 lithe abi-tree file.lithe
 lithe footprint file.lithe
 lithe analysis file.lithe
@@ -75,7 +75,7 @@ A contract or facet over the size limit still prints its bytecode or plan, and w
 
 ### `lithe compile directory`
 
-Compiles every `.lithe` file under the directory and its subdirectories, but hidden and symlinked ones, so point it at your sources, such as `src`, rather than a project root that vendors dependencies under `lib/`. Each file builds with its nearest `lithe.toml`. Library files, which declare no contract, only modules, interfaces, and shared declarations, are skipped. It writes one Foundry-style artifact per contract to `./out/<file>/<Contract>.json`:
+Compiles every `.lithe` file under the directory and its subdirectories, but hidden and symlinked ones, so point it at your sources, such as `src`, rather than a project root that vendors dependencies under `lib/`. Each file builds with its nearest `lithe.toml`. Library files, which declare no contract, only modules, interfaces, and shared declarations, are skipped. It writes one Foundry-style artifact per contract to `./out/<file>/<Contract>.json`, or under the directory `--out` names:
 
 ```json
 {
@@ -99,7 +99,13 @@ Builds the contract to check its [specs](/language/verification) as it runs, for
 
 ### `lithe abi file.lithe` / `lithe abi directory`
 
-Prints the Solidity-compatible JSON ABI: functions, events, and errors. Given a directory, it writes ABIs to `./out`.
+Prints the Solidity-compatible JSON ABI: functions, events, and errors.
+
+`--interface Name` prints the ABI of an interface the file declares instead, so a file of interfaces alone has ABIs too: the interface's functions, the errors their `raises` clauses name, and, since an interface declares no events of its own, events from its file: for an interface at the top of the file, the events declared at the top or in any contract's body, and those of the file's modules a contract uses; for an interface in a contract's body, the same for that contract alone. A module's events reach an interface only through a contract that uses the module, so the interfaces in a file of modules and interfaces alone carry none of the modules' events. An optional result, `option(T)`, is a `T` output.
+
+Given a directory, it writes each contract's ABI to `./out/<file>/<Contract>.abi.json`, and each interface's to `./out/<file>/<Interface>.abi.json`, files of interfaces alone included. Only files that would write the same ABI file clash, so a file of interfaces may share its name with a contract file in another subdirectory. `--out dir` writes under `dir` instead of `./out`.
+
+`--format ts` writes TypeScript instead, for viem and wagmi to type calls with: a module of `export const counterAbi = [...] as const`, the constant named for the contract or interface in camelCase (`IERC20` exports `ierc20Abi`), and in a directory `<Name>.abi.ts` files.
 
 ### `lithe --standard-json`
 

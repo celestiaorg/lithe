@@ -2006,25 +2006,7 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
         });
     }
     for event in &checked.events {
-        let mut inputs = Vec::new();
-        for field in &event.fields {
-            let param = Param::of(
-                &crate::check::abi_nested(&checked.types, field.ty, &field.name)?,
-                &names,
-            );
-            inputs.push(EventParam {
-                ty: param.ty,
-                name: param.name,
-                indexed: field.indexed,
-                components: param.components,
-                internal_type: param.internal_type,
-            });
-        }
-        items.push(AbiItem::Event(Event {
-            name: crate::modules::shown(&event.name).to_string(),
-            inputs,
-            anonymous: event.anonymous,
-        }));
+        items.push(event_item(checked, event, &names)?);
     }
     if checked.prog.upgradeable {
         items.push(AbiItem::Function(Function {
@@ -2044,23 +2026,7 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
         }));
     }
     for err in &checked.errors {
-        let name = err
-            .abi_sig
-            .split_once('(')
-            .map(|(name, _)| name)
-            .unwrap_or(err.abi_sig.as_str());
-        let inputs = match (err.payload, err.fields.as_slice()) {
-            (Some(ty), [(None, _)]) => vec![crate::check::abi_nested(&checked.types, ty, "")?],
-            _ => err
-                .field_tys
-                .iter()
-                .map(|(name, ty)| crate::check::abi_nested(&checked.types, *ty, name))
-                .collect::<Result<_, _>>()?,
-        };
-        items.push(AbiItem::Error(AbiError {
-            name: name.to_string(),
-            inputs: params(&inputs, &names),
-        }));
+        items.push(error_item(checked, err, &names)?);
     }
     if checked.prog.upgradeable {
         let logged = items
@@ -2104,7 +2070,157 @@ pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
     Ok(Abi { items })
 }
 
+fn event_item(
+    checked: &Checked,
+    event: &crate::check::EventInfo,
+    names: &InternalNames,
+) -> Result<AbiItem, Error> {
+    let mut inputs = Vec::new();
+    for field in &event.fields {
+        let param = Param::of(
+            &crate::check::abi_nested(&checked.types, field.ty, &field.name)?,
+            names,
+        );
+        inputs.push(EventParam {
+            ty: param.ty,
+            name: param.name,
+            indexed: field.indexed,
+            components: param.components,
+            internal_type: param.internal_type,
+        });
+    }
+    Ok(AbiItem::Event(Event {
+        name: crate::modules::shown(&event.name).to_string(),
+        inputs,
+        anonymous: event.anonymous,
+    }))
+}
+
+fn error_item(
+    checked: &Checked,
+    err: &crate::check::ErrInfo,
+    names: &InternalNames,
+) -> Result<AbiItem, Error> {
+    let name = err
+        .abi_sig
+        .split_once('(')
+        .map(|(name, _)| name)
+        .unwrap_or(err.abi_sig.as_str());
+    let inputs = match (err.payload, err.fields.as_slice()) {
+        (Some(ty), [(None, _)]) => vec![crate::check::abi_nested(&checked.types, ty, "")?],
+        _ => err
+            .field_tys
+            .iter()
+            .map(|(name, ty)| crate::check::abi_nested(&checked.types, *ty, name))
+            .collect::<Result<_, _>>()?,
+    };
+    Ok(AbiItem::Error(AbiError {
+        name: name.to_string(),
+        inputs: params(&inputs, names),
+    }))
+}
+
+/// The ABI of each interface declared in `origin`, the file a program was loaded from, with
+/// the interface's position: its methods, the errors their `raises` name, and the events the
+/// program declares in that file, since an interface declares none of its own.
+pub(crate) fn interface_abis(
+    checked: &Checked,
+    origin: &str,
+) -> Result<Vec<(String, (u32, u32), Abi)>, Error> {
+    let names = InternalNames::new(checked);
+    let mut events = Vec::new();
+    for decl in checked.prog.events.iter().filter(|e| e.origin == origin) {
+        if let Some(event) = checked.events.iter().find(|e| e.name == decl.name) {
+            events.push(event_item(checked, event, &names)?);
+        }
+    }
+    let mut out = Vec::new();
+    for iface in checked
+        .prog
+        .interfaces
+        .iter()
+        .filter(|i| i.origin == origin)
+    {
+        let methods = &checked.ifaces[&checked.named[&iface.name]];
+        let mut items = Vec::new();
+        let mut raised = Vec::new();
+        for (decl, method) in iface.methods.iter().zip(methods) {
+            // An optional result is `None` when the callee returns no data, and its value
+            // otherwise.
+            let ret = match &checked.types[method.ret] {
+                t if t.kind == TyKind::Option => t.elem.unwrap_or(method.ret),
+                _ => method.ret,
+            };
+            let mut inputs = Vec::new();
+            for (param, &ty) in decl.params.iter().zip(&method.params) {
+                inputs.extend(params(
+                    &abi_fields(&checked.types, ty, &param.name)?,
+                    &names,
+                ));
+            }
+            items.push(AbiItem::Function(Function {
+                name: method.name.clone(),
+                inputs,
+                outputs: params(&abi_fields(&checked.types, ret, "")?, &names),
+                state_mutability: match (method.query, decl.external_pure) {
+                    (true, true) => StateMutability::Pure,
+                    (true, false) => StateMutability::View,
+                    (false, _) => StateMutability::paying(method.payable),
+                },
+            }));
+            for &err in &method.errors {
+                if err != crate::check::FORWARDED && !raised.contains(&err) {
+                    raised.push(err);
+                }
+            }
+        }
+        items.extend(events.iter().cloned());
+        for err in raised {
+            items.push(error_item(checked, &checked.errors[err], &names)?);
+        }
+        out.push((
+            crate::modules::shown(&iface.name).to_string(),
+            (iface.line, iface.col),
+            Abi { items },
+        ));
+    }
+    Ok(out)
+}
+
+/// How `lithe abi` writes an ABI: Solidity's JSON, or a TypeScript module exporting it
+/// `as const`, for viem and wagmi to type calls with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiFormat {
+    Json,
+    Ts,
+}
+
 impl Abi {
+    /// `name` is the contract's or interface's, which names the TypeScript constant:
+    /// `IERC20` exports `ierc20Abi`. A name from a file stem may hold characters an identifier
+    /// can't, `my-token` exporting `my_tokenAbi` and `1inch` `_1inchAbi`.
+    pub fn render(&self, name: &str, format: AbiFormat) -> String {
+        match format {
+            AbiFormat::Json => self.to_json(),
+            AbiFormat::Ts => {
+                let mut ident: String = camel_case(name)
+                    .chars()
+                    .map(|c| match c {
+                        'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '$' => c,
+                        _ => '_',
+                    })
+                    .collect();
+                if ident.starts_with(|c: char| c.is_ascii_digit()) {
+                    ident.insert(0, '_');
+                }
+                format!(
+                    "export const {ident}Abi = {} as const;\n",
+                    self.to_json().trim_end()
+                )
+            }
+        }
+    }
+
     pub fn to_json(&self) -> String {
         let mut out = String::from("[\n");
         for (i, item) in self.items.iter().enumerate() {
@@ -2117,6 +2233,28 @@ impl Abi {
         out.push_str("]\n");
         out
     }
+}
+
+/// Lowers a type name's leading capitals, keeping the last of a run that starts a word:
+/// `Counter` is `counter`, `IGenerative` `iGenerative`, and `ERC721Drop` `erc721Drop`.
+fn camel_case(name: &str) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    let run = chars.iter().take_while(|c| c.is_ascii_uppercase()).count();
+    let lower = match chars.get(run) {
+        Some(c) if c.is_ascii_lowercase() && run > 1 => run - 1,
+        _ => run,
+    };
+    chars
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            if i < lower {
+                c.to_ascii_lowercase()
+            } else {
+                *c
+            }
+        })
+        .collect()
 }
 
 fn write_item(out: &mut String, item: &AbiItem) {

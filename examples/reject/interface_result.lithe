@@ -1,0 +1,6 @@
+(* A result must be an ABI value even when nothing calls the method. *)
+interface IA is {
+  view function f() : option(option(uint));
+}
+
+external view function g() : uint is 1

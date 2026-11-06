@@ -72,8 +72,8 @@ pub use modules::{import_path, Sources};
 pub use packages::{add, install, packages, Add};
 pub use prove::{serve_if_child, Proof, ProveOptions};
 pub use route::{
-    Abi, AbiError, AbiItem, Constructor, Event, EventParam, Fallback, Function, Param, Receive,
-    StateMutability,
+    Abi, AbiError, AbiFormat, AbiItem, Constructor, Event, EventParam, Fallback, Function, Param,
+    Receive, StateMutability,
 };
 pub use split::{EvmVersion, Options, DEPLOYER, SIZE_LIMIT};
 
@@ -394,7 +394,96 @@ fn evm_near(entry: &Path) -> EvmVersion {
 /// The ABI needs the checked program, not its code: a contract over the size limit that
 /// can't be split still has one.
 pub fn abi(sources: &Sources, entry: &Path) -> Result<Abi, Error> {
-    route::abi(&checked(sources, entry)?)
+    checked(sources, entry)
+        .and_then(|checked| route::abi(&checked))
+        .map_err(|err| match interface_abis(sources, entry) {
+            Ok(abis) if err.message == route::NO_ENTRIES && !abis.is_empty() => Error {
+                message: format!(
+                    "{}\n\nname one of the file's interfaces with --interface: {}",
+                    err.message,
+                    interface_names(&abis)
+                ),
+                ..err
+            },
+            _ => err,
+        })
+}
+
+/// The name of the contract `entry` declares, or of the file when it names none, as its
+/// artifacts are named.
+pub fn contract_name(sources: &Sources, entry: &Path) -> Result<String, Error> {
+    Ok(artifact_contract_name(
+        &modules::load(sources, entry)?,
+        entry,
+    ))
+}
+
+/// The ABI of each interface `entry` declares, by name, whether or not it declares a contract:
+/// at the top of the file, or in the body of any of its contracts. Every contract sees an
+/// interface at the top of the file, which carries the events of all of them.
+pub fn interface_abis(sources: &Sources, entry: &Path) -> Result<Vec<(String, Abi)>, Error> {
+    let prog = modules::load(sources, entry)?;
+    let origin = prog.origin.clone();
+    let mut abis: Vec<(String, (u32, u32), Abi)> = Vec::new();
+    for unit in modules::split_units(prog) {
+        let checked = check::check_in(unit, false, evm_near(entry))?;
+        for (name, at, abi) in route::interface_abis(&checked, &origin)? {
+            let Some((_, first, have)) = abis.iter_mut().find(|(have, ..)| *have == name) else {
+                abis.push((name, at, abi));
+                continue;
+            };
+            if *first != at {
+                return Err(error(
+                    at.0,
+                    at.1,
+                    format!(
+                        "interface `{name}` is also declared at {}:{}; interfaces of one file need distinct names for their ABIs",
+                        first.0, first.1
+                    ),
+                ));
+            }
+            let errors = have
+                .items
+                .iter()
+                .position(|item| matches!(item, route::AbiItem::Error(_)))
+                .unwrap_or(have.items.len());
+            let events: Vec<_> = abi
+                .items
+                .into_iter()
+                .filter(|item| {
+                    matches!(item, route::AbiItem::Event(_)) && !have.items.contains(item)
+                })
+                .collect();
+            have.items.splice(errors..errors, events);
+        }
+    }
+    Ok(abis.into_iter().map(|(name, _, abi)| (name, abi)).collect())
+}
+
+/// The ABI of the interface `name` that `entry` declares.
+pub fn interface_abi(sources: &Sources, entry: &Path, name: &str) -> Result<Abi, Error> {
+    let abis = interface_abis(sources, entry)?;
+    let known = match interface_names(&abis) {
+        names if names.is_empty() => "none".to_string(),
+        names => names,
+    };
+    abis.into_iter()
+        .find(|(have, _)| have == name)
+        .map(|(_, abi)| abi)
+        .ok_or_else(|| {
+            error(
+                1,
+                1,
+                format!("no interface `{name}`; the file declares {known}"),
+            )
+        })
+}
+
+fn interface_names(abis: &[(String, Abi)]) -> String {
+    abis.iter()
+        .map(|(name, _)| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub fn warnings(sources: &Sources, entry: &Path) -> Result<Vec<String>, Error> {
@@ -1162,19 +1251,26 @@ pub type OptionsFor<'a> = &'a (dyn Fn(&Path) -> Result<Options, String> + Sync);
 /// `examples/bank.lithe` becomes `out/bank.lithe/bank.json`, and every facet a split contract
 /// uses `facets/<Module>.json`, shared by the contracts that use it.
 pub fn compile_dir(dir: &Path, out_dir: &Path, opts: OptionsFor) -> Result<DirOutput, Error> {
-    emit_dir(dir, out_dir, true, opts)
+    emit_dir(dir, out_dir, None, opts)
 }
 
-/// Write a bare ABI file for every contract file under `dir`.
-/// `examples/bank.lithe` becomes `out/bank.lithe/bank.abi.json`.
-pub fn abi_dir(dir: &Path, out_dir: &Path, opts: OptionsFor) -> Result<DirOutput, Error> {
-    emit_dir(dir, out_dir, false, opts)
+/// Write a bare ABI file for every contract and interface declared under `dir`.
+/// `examples/bank.lithe` becomes `out/bank.lithe/bank.abi.json`, and its interface `IBank`
+/// `out/bank.lithe/IBank.abi.json`, or `.abi.ts` files in TypeScript.
+pub fn abi_dir(
+    dir: &Path,
+    out_dir: &Path,
+    format: AbiFormat,
+    opts: OptionsFor,
+) -> Result<DirOutput, Error> {
+    emit_dir(dir, out_dir, Some(format), opts)
 }
 
+/// `abi` is `None` for Foundry-style artifacts.
 fn emit_dir(
     dir: &Path,
     out_dir: &Path,
-    artifact: bool,
+    abi: Option<AbiFormat>,
     opts: OptionsFor,
 ) -> Result<DirOutput, Error> {
     let files = lithe_sources(dir)?;
@@ -1189,7 +1285,7 @@ fn emit_dir(
                 .spawn_scoped(s, || loop {
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(path) = files.get(i) else { break };
-                    let out = emit_file(path, out_dir, artifact, opts);
+                    let out = emit_file(path, out_dir, abi, opts);
                     done.lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .push((i, out));
@@ -1201,19 +1297,24 @@ fn emit_dir(
     done.sort_by_key(|(i, _)| *i);
     let mut all = DirOutput::default();
     let mut facets: Vec<(String, Facet)> = Vec::new();
-    // Folder names compare case-folded, as case-insensitive file systems do.
-    let mut folders: Vec<(String, &Path)> = Vec::new();
+    // A build claims its file's whole folder; an ABI build only the files it writes, so an
+    // interfaces file may share a name with a contract file.
+    let mut claimed: Vec<(String, &Path)> = Vec::new();
     for (i, (out, writes, used)) in done {
         let path = &files[i];
         let source = path.display().to_string();
         let folder = contract_dir(out_dir, path);
         if !writes.is_empty() {
-            let name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_lowercase();
-            if let Some((_, first)) = folders.iter().find(|(seen, _)| *seen == name) {
+            let claims: Vec<&Path> = match abi {
+                Some(_) => writes.iter().map(|(dest, _)| dest.as_path()).collect(),
+                None => vec![folder.as_path()],
+            };
+            if let Some((clash, first)) = claims.iter().find_map(|&c| {
+                claimed
+                    .iter()
+                    .find(|(seen, _)| *seen == folded(c))
+                    .map(|(_, first)| (c, first))
+            }) {
                 all.failed.push(SourceError {
                     path: source,
                     error: error(
@@ -1222,13 +1323,13 @@ fn emit_dir(
                         format!(
                             "{} also writes `{}`; rename one of the files",
                             first.display(),
-                            folder.display()
+                            clash.display()
                         ),
                     ),
                 });
                 continue;
             }
-            folders.push((name, path));
+            claimed.extend(claims.iter().map(|&c| (folded(c), path.as_path())));
             if let Err(err) = std::fs::create_dir_all(&folder) {
                 all.failed.push(SourceError {
                     path: source,
@@ -1250,7 +1351,7 @@ fn emit_dir(
         all.notes.extend(out.notes);
         facets.extend(used);
     }
-    if artifact {
+    if abi.is_none() {
         write_facets(out_dir, facets, &mut all);
     }
     Ok(all)
@@ -1321,7 +1422,7 @@ fn facet_artifact(facet: &Facet) -> String {
 fn emit_file(
     path: &Path,
     out_dir: &Path,
-    artifact: bool,
+    abi: Option<AbiFormat>,
     opts: OptionsFor,
 ) -> (DirOutput, Vec<(PathBuf, String)>, Vec<(String, Facet)>) {
     let mut out = DirOutput::default();
@@ -1339,31 +1440,43 @@ fn emit_file(
             return (out, writes, facets);
         }
     };
+    let folder = contract_dir(out_dir, path);
+    let abi_file = |name: &str, body: &Abi, format: AbiFormat| {
+        let ext = match format {
+            AbiFormat::Json => "json",
+            AbiFormat::Ts => "ts",
+        };
+        (
+            folder.join(format!("{name}.abi.{ext}")),
+            body.render(name, format),
+        )
+    };
     let compiled = match compile(&Sources::disk(), path, &opts) {
-        Ok(compiled) => compiled,
-        Err(errors) if is_library(&Sources::disk(), path, &errors) => return (out, writes, facets),
+        Ok(compiled) => Some(compiled),
+        Err(errors) if is_library(&Sources::disk(), path, &errors) => None,
         Err(errors) => {
             out.failed.extend(errors.into_iter().map(failed));
             return (out, writes, facets);
         }
     };
-    let folder = contract_dir(out_dir, path);
-    for contract in compiled.contracts {
-        let (file_name, body) = if artifact {
-            (
-                format!("{}.json", contract.name),
-                foundry_artifact(&contract),
-            )
-        } else {
-            (
-                format!("{}.abi.json", contract.name),
-                contract.abi.to_json(),
-            )
-        };
-        writes.push((folder.join(file_name), body));
-        if !artifact {
+    if let Some(format) = abi {
+        match interface_abis(&Sources::disk(), path) {
+            Ok(abis) => writes.extend(abis.iter().map(|(name, body)| abi_file(name, body, format))),
+            Err(err) => {
+                out.failed.push(failed(err));
+                return (out, writes, facets);
+            }
+        }
+    }
+    for contract in compiled.into_iter().flat_map(|compiled| compiled.contracts) {
+        if let Some(format) = abi {
+            writes.push(abi_file(&contract.name, &contract.abi, format));
             continue;
         }
+        writes.push((
+            folder.join(format!("{}.json", contract.name)),
+            foundry_artifact(&contract),
+        ));
         out.notes.extend(
             contract
                 .split
@@ -1378,7 +1491,32 @@ fn emit_file(
             facets.push((source.clone(), facet));
         }
     }
+    if abi.is_some() {
+        let clash = writes.iter().enumerate().find_map(|(i, (file, _))| {
+            let key = folded(file);
+            writes[..i]
+                .iter()
+                .any(|(seen, _)| folded(seen) == key)
+                .then_some(file)
+        });
+        if let Some(file) = clash {
+            out.failed.push(failed(error(
+                1,
+                1,
+                format!(
+                    "contracts or interfaces of this file share a name, ignoring case, so their ABIs would both be {}; rename one of them",
+                    file.display()
+                ),
+            )));
+            return (out, Vec::new(), facets);
+        }
+    }
     (out, writes, facets)
+}
+
+/// A path as case-insensitive file systems compare it.
+fn folded(path: &Path) -> String {
+    path.to_string_lossy().to_lowercase()
 }
 
 /// Whether `errors`, from compiling `path`, only say it has no entrypoints, and it declares

@@ -73,6 +73,10 @@ const REJECT_RULES: &[(&str, &str)] = &[
     ),
     ("reject/string_error.lithe", "errors must be typed"),
     (
+        "reject/interface_result.lithe",
+        "3:23: interface results must be ABI values",
+    ),
+    (
         "reject/undeclared_error.lithe",
         "external function `go` must declare its errors",
     ),

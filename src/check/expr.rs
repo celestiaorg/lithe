@@ -723,10 +723,6 @@ impl Checker {
                             "an optional result must be a static value",
                         ));
                     }
-                    // A result is any ABI value, decoded and checked when it arrives.
-                    if ret != TY_UNIT && !abi_value(&self.types, answer) {
-                        return Err(error(*line, *col, "a call's result must be an ABI value"));
-                    }
                     *iface = Some(bid);
                     *method = Some(mi);
                     if query {

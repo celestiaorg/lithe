@@ -367,6 +367,213 @@ fn abi_internal_types_name_records_variants_and_interfaces() {
     );
 }
 
+/// An interface's ABI: its methods, the errors their `raises` name, and its file's events.
+#[test]
+fn interface_abis_hold_methods_raised_errors_and_file_events() {
+    use crate::route::AbiItem;
+    let src = "event Minted of record {\n  indexed to : address;\n  seed : bytes32;\n}\n\
+        error SoldOut;\n\
+        error TooMany of record {\n  wanted : uint;\n  left : uint;\n}\n\
+        errors MintErrors is SoldOut | TooMany;\n\
+        interface IGen is {\n\
+          payable function mint(count : uint) raises MintErrors | forwarded;\n\
+          function transfer(to : address; value : uint) : option(bool) raises SoldOut;\n\
+          view function seed(id : uint) : bytes32;\n\
+          pure function version() : uint;\n\
+        }\n\
+        interface IOther is { view function owner() : address; }\n";
+    let abis = crate::interface_abis(&memory(src), Path::new(ENTRY)).expect("interface abis");
+    let shown: Vec<(String, Vec<String>)> = abis
+        .iter()
+        .map(|(name, abi)| {
+            let items = abi.items.iter().map(|item| match item {
+                AbiItem::Function(f) => format!(
+                    "function {}({}) {} -> ({})",
+                    f.name,
+                    f.inputs
+                        .iter()
+                        .map(|p| p.ty.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    f.state_mutability.as_str(),
+                    f.outputs
+                        .iter()
+                        .map(|p| p.ty.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
+                AbiItem::Event(e) => format!("event {}", e.name),
+                AbiItem::Error(e) => format!("error {}({})", e.name, e.inputs.len()),
+                other => format!("{other:?}"),
+            });
+            (name.clone(), items.collect())
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            (
+                "IGen".to_string(),
+                vec![
+                    "function mint(uint256) payable -> ()".to_string(),
+                    "function transfer(address,uint256) nonpayable -> (bool)".to_string(),
+                    "function seed(uint256) view -> (bytes32)".to_string(),
+                    "function version() pure -> (uint256)".to_string(),
+                    "event Minted".to_string(),
+                    "error SoldOut(0)".to_string(),
+                    "error TooMany(2)".to_string(),
+                ]
+            ),
+            (
+                "IOther".to_string(),
+                vec![
+                    "function owner() view -> (address)".to_string(),
+                    "event Minted".to_string(),
+                ]
+            ),
+        ]
+    );
+    let err = crate::abi(&memory(src), Path::new(ENTRY)).expect_err("no contract");
+    assert!(
+        err.message.contains("--interface: `IGen`, `IOther`"),
+        "{err}"
+    );
+    let err = crate::interface_abi(&memory(src), Path::new(ENTRY), "INope").expect_err("unknown");
+    assert!(err.message.contains("`IGen`, `IOther`"), "{err}");
+
+    let dir = std::env::temp_dir().join(format!("lithe-interface-abi-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp");
+    std::fs::write(dir.join("gen.lithe"), src).expect("gen");
+    let options = |_: &Path| Ok(Options::default());
+    let out = crate::abi_dir(&dir, &dir.join("out"), crate::AbiFormat::Json, &options);
+    assert!(out.expect("abi dir").failed.is_empty());
+    let written = std::fs::read_to_string(dir.join("out/gen.lithe/IGen.abi.json")).expect("IGen");
+    assert_eq!(written, abis[0].1.to_json());
+    assert!(dir.join("out/gen.lithe/IOther.abi.json").exists());
+    let out = crate::abi_dir(&dir, &dir.join("ts"), crate::AbiFormat::Ts, &options);
+    assert!(out.expect("abi dir").failed.is_empty());
+    let written = std::fs::read_to_string(dir.join("ts/gen.lithe/IGen.abi.ts")).expect("IGen");
+    assert_eq!(
+        written,
+        format!(
+            "export const iGenAbi = {} as const;\n",
+            abis[0].1.to_json().trim_end()
+        )
+    );
+    for (name, export) in [
+        ("Counter", "counterAbi"),
+        ("IERC20", "ierc20Abi"),
+        ("ERC721Drop", "erc721DropAbi"),
+        ("IGenerativeERC721", "iGenerativeERC721Abi"),
+        ("My-token", "my_tokenAbi"),
+        ("1inch", "_1inchAbi"),
+    ] {
+        let ts = crate::Abi { items: Vec::new() }.render(name, crate::AbiFormat::Ts);
+        assert_eq!(ts, format!("export const {export} = [\n] as const;\n"));
+    }
+
+    let first = "contract First is {\n\
+          event FirstEvent of record { at : uint; }\n\
+          external view function one() : uint is 1\n\
+        }\n";
+    let second = "contract Second is {\n\
+          event SecondEvent of record { at : uint; }\n\
+          interface ISecond is { view function two() : uint; }\n\
+          external view function two() : uint is 2\n\
+        }\n";
+    let top = "interface ITop is { view function top() : uint; }\n";
+    let events = |src: &str, name: &str| -> Vec<String> {
+        let abi = crate::interface_abi(&memory(src), Path::new(ENTRY), name).expect(name);
+        let mut events: Vec<String> = abi
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                AbiItem::Event(e) => Some(e.name.clone()),
+                _ => None,
+            })
+            .collect();
+        events.sort();
+        events
+    };
+    let several = format!("{top}{first}{second}");
+    for src in [several.clone(), format!("{top}{second}{first}")] {
+        assert_eq!(events(&src, "ITop"), ["FirstEvent", "SecondEvent"]);
+        assert_eq!(events(&src, "ISecond"), ["SecondEvent"]);
+    }
+    let modules = "module Used is { event UsedEvent of record { at : uint; } }\n\
+        module Unused is { event UnusedEvent of record { at : uint; } }\n";
+    let using = first.replace(
+        "contract First is {\n",
+        "contract First is {\n  use Used;\n",
+    );
+    assert_eq!(
+        events(&format!("{modules}{top}{using}"), "ITop"),
+        ["FirstEvent", "UsedEvent"]
+    );
+    assert!(events(&format!("{modules}{top}"), "ITop").is_empty());
+    let names: Vec<String> = crate::interface_abis(&memory(&several), Path::new(ENTRY))
+        .expect("interface abis")
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(names, ["ITop", "ISecond"]);
+    let clash = format!(
+        "{}{second}",
+        first.replace(
+            "event FirstEvent",
+            "interface ISecond is { view function one() : uint; }\n  event FirstEvent"
+        )
+    );
+    let err = crate::interface_abis(&memory(&clash), Path::new(ENTRY)).expect_err("clash");
+    assert!(
+        err.message.contains("interface `ISecond` is also declared"),
+        "{err}"
+    );
+    crate::interface_abi(&memory(&several), Path::new(ENTRY), "ISecond").expect("ISecond");
+    std::fs::write(dir.join("gen.lithe"), &several).expect("several");
+    let out = crate::abi_dir(&dir, &dir.join("several"), crate::AbiFormat::Json, &options);
+    assert!(out.expect("abi dir").failed.is_empty());
+    assert!(dir.join("several/gen.lithe/ISecond.abi.json").exists());
+
+    std::fs::remove_file(dir.join("gen.lithe")).expect("gen");
+    for (i, (file, source)) in [
+        (
+            "token.lithe",
+            "interface Token is { view function name() : uint; }\n\
+             external view function supply() : uint is 1\n",
+        ),
+        (
+            "token.lithe",
+            "interface TOKEN is { view function name() : uint; }\n\
+             external view function supply() : uint is 1\n",
+        ),
+        (
+            "ifaces.lithe",
+            "interface IFoo is { view function a() : uint; }\n\
+             interface IFOO is { view function b() : uint; }\n",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        std::fs::write(dir.join(file), source).expect("clash source");
+        let out_dir = dir.join(format!("clash{i}"));
+        let out = crate::abi_dir(&dir, &out_dir, crate::AbiFormat::Json, &options);
+        let failed = out.expect("abi dir").failed;
+        assert!(
+            failed
+                .iter()
+                .any(|f| f.path.ends_with(file) && f.error.message.contains("share a name")),
+            "{:?}",
+            failed.iter().map(|f| &f.error.message).collect::<Vec<_>>()
+        );
+        assert!(!out_dir.join(file).exists(), "{file} wrote ABIs");
+        std::fs::remove_file(dir.join(file)).expect("clash source");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn directory_compile_writes_bytecode_and_abi() {
     let dir = std::env::temp_dir().join(format!("lithe-compile-{}", std::process::id()));
@@ -449,9 +656,27 @@ fn directory_compile_writes_bytecode_and_abi() {
     let abi_only = dir.join("abi-only");
     std::fs::create_dir_all(&abi_only).expect("abi-only");
     std::fs::write(abi_only.join("pay.lithe"), PAY).expect("pay");
+    std::fs::create_dir_all(abi_only.join("interfaces")).expect("interfaces");
+    std::fs::write(
+        abi_only.join("interfaces").join("pay.lithe"),
+        "interface IPay is {\n  function pay(to : address);\n}\n",
+    )
+    .expect("interface");
+    std::fs::write(
+        abi_only.join("two.lithe"),
+        "contract A is {\n  external view function a() : uint is nope;\n}\n\
+         contract B is {\n  external view function b() : uint is alsoNope;\n}\n",
+    )
+    .expect("two");
     let abi_out = dir.join("abi-out");
-    let out = crate::abi_dir(&abi_only, &abi_out, &|_| Ok(Options::default())).expect("abi dir");
-    assert!(out.failed.is_empty());
+    let out = crate::abi_dir(&abi_only, &abi_out, crate::AbiFormat::Json, &|_| {
+        Ok(Options::default())
+    })
+    .expect("abi dir");
+    let msgs: Vec<_> = out.failed.iter().map(ToString::to_string).collect();
+    assert_eq!(msgs.len(), 2, "{msgs:?}");
+    assert!(msgs.iter().all(|m| m.contains("two.lithe")), "{msgs:?}");
+    assert!(abi_out.join("pay.lithe").join("IPay.abi.json").exists());
     let abi = std::fs::read_to_string(abi_out.join("pay.lithe").join("Pay.abi.json")).expect("abi");
     assert_eq!(abi, super::abi(PAY).expect("pay abi"));
     assert!(!abi_only.join("pay.abi.json").exists());
