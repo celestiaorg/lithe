@@ -1,6 +1,8 @@
 # `make check` runs what every commit must pass.
 .PHONY: check fmt clippy test verify differential snapshot bench-gas wasm
 
+export LITHE_CACHE_DIR :=
+
 check: fmt clippy test verify differential snapshot bench-gas wasm
 
 fmt:

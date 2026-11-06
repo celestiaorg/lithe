@@ -199,7 +199,7 @@ pub(super) fn compare_modes(
             .map_err(first)
             .unwrap_or_else(|e| panic!("{rel}: {e}"));
         deploy_plan(&out);
-        deploy(&out.bytecode).unwrap_or_else(|e| panic!("{rel}: deploy: {e}"))
+        deploy_state(&out.bytecode).unwrap_or_else(|e| panic!("{rel}: deploy: {e}"))
     };
     let (a, b) = (build(a), build(b));
     let checked = crate::check::check(
@@ -208,19 +208,17 @@ pub(super) fn compare_modes(
     )
     .expect("check");
     let methods = crate::route::method_ids(&checked).expect("methods");
-    compare_builds(rel, &methods, &a, &b, steps, true);
+    compare_builds_from(rel, &methods, (&a.0, &a.1), (&b.0, &b.1), steps, true);
 }
 
 /// Two build modes of one program must behave alike.
 #[test]
 fn fast_matches_release() {
     let steps = steps_from_env("LITHE_FUZZ_STEPS", 200);
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // simplify: Release against Release on one program until a Fast mode exists; then every
-    // target from `differential_targets`, with Fast as the second build.
-    let rel = "bench/counter.lithe";
     let opts = crate::Options::default();
-    compare_modes(&root.join(rel), rel, &opts, &opts, steps);
+    for (path, rel) in differential_targets() {
+        compare_modes(&path, &rel, &opts, &opts, steps);
+    }
 }
 
 /// The optimizer must not change behavior. Each program runs a random call sequence
