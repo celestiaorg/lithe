@@ -8,7 +8,7 @@
 //! every label push. A label costs a `JUMPDEST` only when a jump refers to it.
 
 use std::collections::{HashMap, HashSet};
-use std::hash::BuildHasherDefault;
+use std::hash::{BuildHasherDefault, Hash};
 
 use crate::error;
 use crate::word::Word;
@@ -6350,6 +6350,7 @@ fn flow(
 ) -> (Vec<f64>, Vec<u32>, Vec<(usize, Vec<f64>)>) {
     flow_(code, starts_at, sum)
 }
+
 fn flow_(
     code: &[Inst],
     starts_at: &[u32],
@@ -6823,16 +6824,31 @@ fn expansion_gas(code: &[Inst], cols: &[(usize, Vec<f64>)], heap: Option<Heap>) 
         .sum()
 }
 
-/// Estimated gas of running every entrypoint once, by `heat`, where code the entrypoints
-/// that begin at `entries` share runs once for each of them, with the memory each expands.
-pub(crate) fn gas(code: &[Inst], entries: &[u32], heap: Option<Heap>) -> f64 {
+/// `flow` of one optimized program. A later candidate with the same code reuses it.
+pub(crate) struct GasFlow {
+    heat: Vec<f64>,
+    cols: Vec<(usize, Vec<f64>)>,
+}
+
+pub(crate) fn gas_flow(code: &[Inst], entries: &[u32]) -> GasFlow {
     let (heat, _, cols) = flow(code, entries, true);
-    let ops: f64 = heat
+    GasFlow { heat, cols }
+}
+
+pub(crate) fn gas_from(code: &[Inst], flow: &GasFlow, heap: Option<Heap>) -> f64 {
+    let ops: f64 = flow
+        .heat
         .iter()
         .zip(code)
         .map(|(h, inst)| h * inst_gas(inst))
         .sum();
-    ops + expansion_gas(code, &cols, heap)
+    ops + expansion_gas(code, &flow.cols, heap)
+}
+
+/// Estimated gas of running every entrypoint once, by `heat`, where code the entrypoints
+/// that begin at `entries` share runs once for each of them, with the memory each expands.
+pub(crate) fn gas(code: &[Inst], entries: &[u32], heap: Option<Heap>) -> f64 {
+    gas_from(code, &gas_flow(code, entries), heap)
 }
 
 /// What a program costs: its gas, and its bytes at `byte_gas`.

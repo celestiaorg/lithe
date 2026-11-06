@@ -70,7 +70,7 @@ pub use config::{
 pub use format::{add_use, format_source};
 pub use index::{Completion, Def, File, Index, Kind, Ref, Signature, Span};
 pub use lint::{lint_paths, lithe_files, Lint};
-pub use modules::{import_path, Sources};
+pub use modules::{import_path, ModuleCache, Sources};
 pub use packages::{add, install, packages, Add};
 pub use prove::{serve_if_child, Proof, ProveOptions};
 pub use route::{
@@ -471,23 +471,43 @@ pub fn analyze(path: &Path, src: &str) -> Analysis {
 
 /// Loads `src`, checks it, and indexes it. No build, so a keystroke does not run codegen.
 pub fn analyze_frontend(path: &Path, src: &str) -> Analysis {
-    analyze_in(path, src, false)
+    ModuleCache::new().analyze_frontend(path, src)
 }
 
 /// [`analyze_frontend`], then a [`Opt::Fast`] build. Build errors (`route::NO_ENTRIES`, the
 /// size limit, `contract too large`) are reported when the frontend had none.
 pub fn analyze_full(path: &Path, src: &str) -> Analysis {
-    analyze_in(path, src, true)
+    ModuleCache::new().analyze_full(path, src)
 }
 
-fn analyze_in(path: &Path, src: &str, codegen: bool) -> Analysis {
+impl ModuleCache {
+    /// [`analyze_frontend`] using this session's parsed and checked modules.
+    pub fn analyze_frontend(&self, path: &Path, src: &str) -> Analysis {
+        analyze_in(path, src, false, self)
+    }
+
+    /// [`analyze_full`] using this session's parsed and checked modules.
+    pub fn analyze_full(&self, path: &Path, src: &str) -> Analysis {
+        analyze_in(path, src, true, self)
+    }
+}
+
+fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Analysis {
     let (mut opts, mut failed) = match build_options(path) {
         Ok(opts) => (opts, None),
         Err(err) => (Options::default(), Some(err)),
     };
     opts.opt = Opt::Fast;
     let sources = Sources::disk();
-    let prog = match modules::load_source(&sources, path, src) {
+    let mut touched = Vec::new();
+    let prog = match modules::load_in(
+        &sources,
+        path,
+        Some(src),
+        Some(cache),
+        opts.evm,
+        &mut touched,
+    ) {
         Ok(prog) => prog,
         Err(err) => {
             return Analysis {
@@ -497,10 +517,50 @@ fn analyze_in(path: &Path, src: &str, codegen: bool) -> Analysis {
             }
         }
     };
+    let fp = modules::fingerprint(&touched);
     let units = modules::split_units(prog);
+    let root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let root_s = root.display().to_string();
+    let build_error = |units: &[ast::Program], failed: Option<Error>| -> Option<Error> {
+        if !codegen {
+            return failed;
+        }
+        let mut failed = failed;
+        for unit in units {
+            if failed.is_some() {
+                break;
+            }
+            let name = artifact_contract_name(unit, path);
+            failed = match build(&sources, path, unit.clone(), &name, &opts) {
+                Err(err) if err.message != route::NO_ENTRIES || !declares_no_contract(src) => {
+                    Some(err)
+                }
+                Err(_) => None,
+                Ok(contract) => contract
+                    .warnings
+                    .into_iter()
+                    .find(|w| w.contains("the limit is"))
+                    .map(|w| size_warning(&w)),
+            };
+        }
+        failed
+    };
+    if let Some((index, lints)) = cache.with_checked(&root, fp, opts.evm, |checked| {
+        let lints = lint::lint_source(src, path, units.clone()).unwrap_or_default();
+        let index = (!checked.is_empty()).then(|| index::build(&root_s, src, checked));
+        (index, lints)
+    }) {
+        return Analysis {
+            error: build_error(&units, failed),
+            lints,
+            index,
+        };
+    }
     let mut checked = Vec::new();
     for unit in units.clone() {
         let name = artifact_contract_name(&unit, path);
+        #[cfg(test)]
+        cache.note_check();
         match check::check_in(unit.clone(), false, opts.evm) {
             Ok(unit_checked) => {
                 if codegen && failed.is_none() {
@@ -525,17 +585,20 @@ fn analyze_in(path: &Path, src: &str, codegen: bool) -> Analysis {
             }
         }
     }
-    let lints = if checked.len() == units.len() {
+    let all_checked = checked.len() == units.len();
+    let lints = if all_checked {
         lint::lint_source(src, path, units).unwrap_or_default()
     } else {
         Vec::new()
     };
-    let root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let index = (!checked.is_empty()).then(|| index::build(&root_s, src, &checked));
+    if all_checked {
+        cache.store_checked(&root, fp, opts.evm, checked);
+    }
     Analysis {
         error: failed,
         lints,
-        index: (!checked.is_empty())
-            .then(|| index::build(&root.display().to_string(), src, &checked)),
+        index,
     }
 }
 
@@ -2003,3 +2066,37 @@ pub(crate) fn error(line: u32, column: u32, message: impl Into<String>) -> Error
 
 #[cfg(test)]
 mod evm;
+
+#[cfg(test)]
+mod session_cache {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn second_analysis_does_not_recheck() {
+        let cache = ModuleCache::new();
+        let path = Path::new("bench/counter.lithe");
+        let text = std::fs::read_to_string(path).expect("counter");
+        assert!(cache.analyze_frontend(path, &text).error.is_none());
+        let n = cache.check_count();
+        assert!(n > 0);
+        assert!(cache.analyze_frontend(path, &text).error.is_none());
+        assert_eq!(cache.check_count(), n);
+    }
+
+    #[test]
+    fn undo_reuses_the_checked_program() {
+        let cache = ModuleCache::new();
+        let path = Path::new("bench/counter.lithe");
+        let text = std::fs::read_to_string(path).expect("counter");
+        let edited = format!("{text}\n");
+        assert!(cache.analyze_frontend(path, &text).error.is_none());
+        assert!(cache.analyze_frontend(path, &edited).error.is_none());
+        let n = cache.check_count();
+        assert!(cache.analyze_frontend(path, &text).error.is_none());
+        assert_eq!(cache.check_count(), n);
+        assert!(cache.analyze_frontend(path, &edited).error.is_none());
+        assert_eq!(cache.check_count(), n);
+    }
+}

@@ -8,6 +8,7 @@
 //! no body shares overlapping.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -232,6 +233,58 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+fn priced(
+    e: &Emitted,
+    code: &[Inst],
+    flow: Option<&asm::GasFlow>,
+    limit: usize,
+) -> Result<Finished, Error> {
+    let gas = match flow {
+        Some(flow) => asm::gas_from(code, flow, e.heap),
+        None => asm::gas(code, &e.entries, e.heap),
+    };
+    let (runtime, marks) = match immutable::place_runtime(code, &e.data, &e.tail_blobs) {
+        Ok(placed) => placed,
+        Err(err) if err.line == 0 && err.message == "contract too large" => {
+            return Ok(Finished {
+                runtime: Vec::new(),
+                marks: Vec::new(),
+                gas,
+                bytes: usize::MAX,
+                cost: 2.0 * OVER_LIMIT,
+            });
+        }
+        Err(err) => return Err(err),
+    };
+    let bytes = runtime.len();
+    let over = if bytes > limit { OVER_LIMIT } else { 0.0 };
+    Ok(Finished {
+        runtime,
+        marks,
+        gas,
+        bytes,
+        cost: gas + bytes as f64 * asm::byte_gas() + over,
+    })
+}
+
+struct OptSaved {
+    code: Vec<Inst>,
+    entries: Vec<u32>,
+    leaves: Vec<(u32, usize)>,
+    optimized: Arc<Vec<Inst>>,
+    flow: Arc<asm::GasFlow>,
+}
+
+fn opt_hash(code: &[Inst], entries: &[u32], leaves: &[(u32, usize)]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    code.hash(&mut hasher);
+    entries.hash(&mut hasher);
+    leaves.hash(&mut hasher);
+    hasher.finish()
+}
+
+type EmitHit = Result<(Arc<Emitted>, Arc<Vec<Facet>>), Error>;
+
 /// The creation code, and the runtime code it deploys, for the entrypoints `shape` keeps.
 pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> {
     let imm_consts = init_constants(checked, shape);
@@ -281,7 +334,30 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         Ok((emitted, std::mem::take(&mut g.needs)))
     };
     let limit = shape.opts.size_limit;
+    let opt_cache: std::sync::Mutex<HashMap<u64, Vec<OptSaved>>> =
+        std::sync::Mutex::new(HashMap::new());
     let finish = |e: &Emitted, both: bool| -> Result<Finished, Error> {
+        let cacheable = !both && !asm::track::on();
+        if cacheable {
+            let hash = opt_hash(&e.code, &e.entries, &e.leaves);
+            let hit = opt_cache
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .get(&hash)
+                .and_then(|bucket| {
+                    bucket
+                        .iter()
+                        .find(|saved| {
+                            saved.code == e.code
+                                && saved.entries == e.entries
+                                && saved.leaves == e.leaves
+                        })
+                        .map(|saved| (Arc::clone(&saved.optimized), Arc::clone(&saved.flow)))
+                });
+            if let Some((code, flow)) = hit {
+                return priced(e, &code, Some(&flow), limit);
+            }
+        }
         let _t = time(Some(&FINISHES), &FINISH_NS);
         let mut code = e.code.clone();
         {
@@ -297,43 +373,82 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             asm::track::pass(code, asm::rotate_exits);
         });
         drop(outline);
-        let gas = asm::gas(&code, &e.entries, e.heap);
-        let (runtime, marks) = match immutable::place_runtime(&code, &e.data, &e.tail_blobs) {
-            Ok(placed) => placed,
-            Err(err) if err.line == 0 && err.message == "contract too large" => {
-                return Ok(Finished {
-                    runtime: Vec::new(),
-                    marks: Vec::new(),
-                    gas,
-                    bytes: usize::MAX,
-                    cost: 2.0 * OVER_LIMIT,
-                });
-            }
-            Err(err) => return Err(err),
-        };
-        let bytes = runtime.len();
-        let over = if bytes > limit { OVER_LIMIT } else { 0.0 };
-        let cost = gas + bytes as f64 * asm::byte_gas() + over;
-        Ok(Finished {
-            runtime,
-            marks,
-            gas,
-            bytes,
-            cost,
-        })
+        let flow = cacheable.then(|| Arc::new(asm::gas_flow(&code, &e.entries)));
+        if let Some(flow) = &flow {
+            let saved = OptSaved {
+                code: e.code.clone(),
+                entries: e.entries.clone(),
+                leaves: e.leaves.clone(),
+                optimized: Arc::new(code.clone()),
+                flow: Arc::clone(flow),
+            };
+            let hash = opt_hash(&saved.code, &saved.entries, &saved.leaves);
+            opt_cache
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .entry(hash)
+                .or_default()
+                .push(saved);
+        }
+        priced(e, &code, flow.as_deref(), limit)
     };
     // Plans often emit the same program, which is optimized once.
     let done = std::sync::Mutex::new(HashMap::<Arc<Emitted>, Arc<Finished>>::new());
+    let emitted_cache: std::sync::Mutex<HashMap<Plan, EmitHit>> =
+        std::sync::Mutex::new(HashMap::new());
     // The outline sets of builds over the limit. Inlining more only grows code, so later
     // rounds skip the sets that inline at least as much, whose builds are also the slowest.
     let too_big = std::sync::Mutex::new(Vec::<Big>::new());
     // Each plan's build, or the error building it hit. Builds over the limit are noted by
-    // `note_big`, only once the search uses them.
+    // `note_big`, only once the search uses them. Identical plans are emitted once.
     let build_raw = |plans: &[Plan]| -> Vec<Result<Candidate, Error>> {
-        let emitted: Vec<Result<(Arc<Emitted>, Vec<Facet>), Error>> = parallel_map(plans, emit)
-            .into_iter()
-            .map(|e| e.map(|(e, needs)| (Arc::new(e), needs)))
-            .collect();
+        let emitted: Vec<Result<(Arc<Emitted>, Vec<Facet>), Error>> = {
+            enum Slot {
+                Hit(EmitHit),
+                Fresh(usize),
+                Copy(usize),
+            }
+            let mut slots = Vec::with_capacity(plans.len());
+            let mut unique = Vec::new();
+            {
+                let cache = emitted_cache.lock().unwrap_or_else(|err| err.into_inner());
+                let mut index: HashMap<&Plan, usize> = HashMap::new();
+                for plan in plans {
+                    if let Some(hit) = cache.get(plan) {
+                        slots.push(Slot::Hit(hit.clone()));
+                    } else if let Some(&i) = index.get(plan) {
+                        slots.push(Slot::Copy(i));
+                    } else {
+                        index.insert(plan, unique.len());
+                        slots.push(Slot::Fresh(unique.len()));
+                        unique.push(plan.clone());
+                    }
+                }
+            }
+            let got = parallel_map(&unique, emit);
+            let mut stored = Vec::with_capacity(got.len());
+            {
+                let mut cache = emitted_cache.lock().unwrap_or_else(|err| err.into_inner());
+                for (plan, result) in unique.into_iter().zip(got) {
+                    let hit = match result {
+                        Ok((emitted, needs)) => Ok((Arc::new(emitted), Arc::new(needs))),
+                        Err(err) => Err(err),
+                    };
+                    cache.insert(plan, hit.clone());
+                    stored.push(hit);
+                }
+            }
+            slots
+                .into_iter()
+                .map(|slot| {
+                    let hit = match slot {
+                        Slot::Hit(hit) => hit,
+                        Slot::Fresh(i) | Slot::Copy(i) => stored[i].clone(),
+                    };
+                    hit.map(|(emitted, needs)| (emitted, needs.as_ref().clone()))
+                })
+                .collect()
+        };
         let todo: Vec<&Arc<Emitted>> = {
             let done = done.lock().unwrap_or_else(|e| e.into_inner());
             let mut seen = HashSet::new();
@@ -357,7 +472,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                 }
             }
         }
-        plans
+        let built: Vec<Result<Candidate, Error>> = plans
             .iter()
             .zip(emitted)
             .map(|(plan, e)| {
@@ -372,7 +487,8 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                     needs,
                 })
             })
-            .collect()
+            .collect();
+        built
     };
     let note_big = |c: &Candidate| {
         if c.built.bytes > limit {
@@ -385,20 +501,33 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         built.iter().flatten().for_each(note_big);
         built
     };
-    // Each move in turn, kept when the build costs less. Most are kept, so every move left
-    // is built at once, each with all those before it kept; one not kept leaves the builds
-    // after it to be done again. A failed build is not kept where `fatal` is false.
+    // The cost of this exact plan, when an earlier build finished it.
+    let known_cost = |plan: &Plan| -> Option<f64> {
+        let emitted = {
+            let cache = emitted_cache.lock().unwrap_or_else(|err| err.into_inner());
+            match cache.get(plan) {
+                Some(Ok((emitted, _))) => Some(Arc::clone(emitted)),
+                _ => None,
+            }
+        }?;
+        let done = done.lock().unwrap_or_else(|err| err.into_inner());
+        done.get(&emitted).map(|built| built.cost)
+    };
+    // Each move in turn, kept when the build costs less. A failed build is not kept
+    // where `fatal` is false.
     let chain = |mut best: Candidate, moves: &[&Move], fatal: bool| -> Result<Candidate, Error> {
         let mut i = 0;
         while i < moves.len() {
-            let mut p = best.plan.clone();
-            let plans: Vec<Plan> = moves[i..]
-                .iter()
-                .map(|m| {
-                    m.apply(&mut p);
-                    p.clone()
-                })
-                .collect();
+            let mut cursor = best.plan.clone();
+            let mut plans = Vec::new();
+            for m in &moves[i..] {
+                m.apply(&mut cursor);
+                plans.push(cursor.clone());
+            }
+            if plans.is_empty() {
+                i += 1;
+                continue;
+            }
             for c in build_raw(&plans) {
                 i += 1;
                 let c = match c {
@@ -469,12 +598,20 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     // the build gets cheaper. The cheapest program by `asm::byte_gas` wins; ties keep the
     // start, which keeps slots and tight sites.
     let round = |from: Candidate, dims: &[Vec<Move>]| -> Result<(Candidate, Vec<f64>), Error> {
+        let retry_bar = from.cost() + RETRY_COST;
         let tried: Vec<(usize, &Move)> = dims
             .iter()
             .enumerate()
             .flat_map(|(d, moves)| moves.iter().map(move |m| (d, m)))
             .collect();
         let plans: Vec<Plan> = tried.iter().map(|(_, m)| m.applied(&from.plan)).collect();
+        // An exact plan already finished at or above the retry bar cannot win, and its
+        // delta is past the threshold. A plan that merely inlines more is still built:
+        // inlining can shrink the placed runtime.
+        let measured_out: Vec<bool> = plans
+            .iter()
+            .map(|plan| known_cost(plan).is_some_and(|cost| cost >= retry_bar))
+            .collect();
         // When inlining everything takes more instructions than the limit has bytes, an
         // outline set inside another tried with it, which inlines more, is built after that
         // one, and not at all if that one is over the limit. Elsewhere waiting would cost
@@ -502,6 +639,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                 (0..plans.len())
                     .filter(|&i| later[i] == wave)
                     .filter(|&i| !wave || !too_big.iter().any(|b| plans[i].no_smaller(b)))
+                    .filter(|&i| !measured_out[i])
                     .collect()
             };
             if picked.is_empty() {
@@ -1076,6 +1214,25 @@ fn place_marked(
     Err(error(0, 0, "internal: embedded code did not settle"))
 }
 
+#[cfg(test)]
+#[test]
+fn plan_eq_ignores_set_order() {
+    let mut left = Plan::default();
+    left.outline.insert(1);
+    left.outline.insert(2);
+    left.shared_raises.insert("A".to_string());
+    let mut right = Plan::default();
+    right.outline.insert(2);
+    right.outline.insert(1);
+    right.shared_raises.insert("A".to_string());
+    assert!(left == right);
+    let mut a = std::collections::hash_map::DefaultHasher::new();
+    let mut b = std::collections::hash_map::DefaultHasher::new();
+    left.hash(&mut a);
+    right.hash(&mut b);
+    assert_eq!(a.finish(), b.finish());
+}
+
 /// Every call inlined, memory as emitted, no bytecode passes. Only placement and encoding.
 #[cfg(test)]
 pub(crate) fn codegen_unoptimized(checked: Checked) -> Result<Vec<u8>, Error> {
@@ -1593,6 +1750,85 @@ struct Plan {
     /// reverts with an error's fields, whose loads of the word become `DUP`s. Blocks alike
     /// before can then differ, which keeps them from being shared, so it is tried last.
     abandon: bool,
+}
+
+impl PartialEq for Plan {
+    fn eq(&self, other: &Self) -> bool {
+        self.cache_slots == other.cache_slots
+            && self.outline == other.outline
+            && self.looped == other.looped
+            && self.outlinable == other.outlinable
+            && self.specializable == other.specializable
+            && self.specialize == other.specialize
+            && self.blob_params == other.blob_params
+            && self.blob_rets == other.blob_rets
+            && self.shared_bytes == other.shared_bytes
+            && self.shared_decode == other.shared_decode
+            && self.shared_value == other.shared_value
+            && self.shared_eq == other.shared_eq
+            && self.shared_slice == other.shared_slice
+            && self.base64_fixed == other.base64_fixed
+            && self.shared_mul == other.shared_mul
+            && self.shared_exp == other.shared_exp
+            && self.queue_helper == other.queue_helper
+            && self.single_queues == other.single_queues
+            && self.split_insts == other.split_insts
+            && self.shared_raises == other.shared_raises
+            && self.outline_raises == other.outline_raises
+            && self.tight == other.tight
+            && self.hold_dups == other.hold_dups
+            && self.frames == other.frames
+            && self.forward_consts == other.forward_consts
+            && self.static_heap == other.static_heap
+            && self.every_bump == other.every_bump
+            && self.sink == other.sink
+            && self.abandon == other.abandon
+    }
+}
+
+impl Eq for Plan {}
+
+fn hash_set<T: Ord + Hash>(set: &HashSet<T>, state: &mut impl Hasher) {
+    let mut items: Vec<&T> = set.iter().collect();
+    items.sort();
+    state.write_u64(items.len() as u64);
+    for item in items {
+        item.hash(state);
+    }
+}
+
+impl Hash for Plan {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.cache_slots.hash(state);
+        hash_set(&self.outline, state);
+        hash_set(&self.looped, state);
+        hash_set(&self.outlinable, state);
+        hash_set(&self.specializable, state);
+        hash_set(&self.specialize, state);
+        hash_set(&self.blob_params, state);
+        hash_set(&self.blob_rets, state);
+        self.shared_bytes.hash(state);
+        self.shared_decode.hash(state);
+        self.shared_value.hash(state);
+        self.shared_eq.hash(state);
+        self.shared_slice.hash(state);
+        self.base64_fixed.hash(state);
+        self.shared_mul.hash(state);
+        self.shared_exp.hash(state);
+        self.queue_helper.hash(state);
+        hash_set(&self.single_queues, state);
+        hash_set(&self.split_insts, state);
+        hash_set(&self.shared_raises, state);
+        self.outline_raises.hash(state);
+        self.tight.hash(state);
+        self.hold_dups.hash(state);
+        self.frames.hash(state);
+        self.forward_consts.hash(state);
+        self.static_heap.hash(state);
+        self.every_bump.hash(state);
+        self.sink.hash(state);
+        self.abandon.hash(state);
+    }
 }
 
 /// A compiled function, whether it runs storage in place, whether it has calls across of its

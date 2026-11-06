@@ -39,14 +39,16 @@ fn serve<W: Write + Send + 'static>(input: &mut impl BufRead, output: W) -> (i32
     let docs = std::sync::Arc::new(Mutex::new(HashMap::<String, Doc>::new()));
     let generation = std::sync::Arc::new(AtomicU64::new(0));
     let output = std::sync::Arc::new(Mutex::new(output));
+    let cache = std::sync::Arc::new(lithe::ModuleCache::new());
     let (tx, rx) = mpsc::channel();
     let worker = thread::spawn({
         let docs = std::sync::Arc::clone(&docs);
         let generation = std::sync::Arc::clone(&generation);
         let output = std::sync::Arc::clone(&output);
-        move || save_worker(rx, &docs, &generation, &output)
+        let cache = std::sync::Arc::clone(&cache);
+        move || save_worker(rx, &docs, &generation, &output, &cache)
     });
-    let code = serve_loop(input, &docs, &generation, &output, &tx);
+    let code = serve_loop(input, &docs, &generation, &output, &cache, &tx);
     drop(tx);
     worker.join().unwrap();
     let Ok(output) = std::sync::Arc::try_unwrap(output) else {
@@ -61,6 +63,7 @@ fn serve_loop<W: Write + Send>(
     docs: &Mutex<HashMap<String, Doc>>,
     generation: &AtomicU64,
     output: &Mutex<W>,
+    cache: &lithe::ModuleCache,
     saved: &mpsc::Sender<u64>,
 ) -> i32 {
     let mut shutdown = false;
@@ -98,7 +101,7 @@ fn serve_loop<W: Write + Send>(
                     });
                     doc.text = text.to_string();
                     doc.codegen = None;
-                    apply_frontend(uri, doc);
+                    apply_frontend(uri, doc, cache);
                     publish(output, uri, doc);
                 }
             }
@@ -113,7 +116,7 @@ fn serve_loop<W: Write + Send>(
                         let Some(doc) = docs.get_mut(&uri) else {
                             continue;
                         };
-                        apply_frontend(&uri, doc);
+                        apply_frontend(&uri, doc, cache);
                         publish(output, &uri, doc);
                     }
                 }
@@ -183,8 +186,8 @@ fn serve_loop<W: Write + Send>(
     1
 }
 
-fn apply_frontend(uri: &str, doc: &mut Doc) {
-    let analysis = lithe::analyze_frontend(&file_path(uri), &doc.text);
+fn apply_frontend(uri: &str, doc: &mut Doc, cache: &lithe::ModuleCache) {
+    let analysis = cache.analyze_frontend(&file_path(uri), &doc.text);
     if analysis.index.is_some() {
         doc.index = analysis.index;
     }
@@ -204,6 +207,7 @@ fn save_worker<W: Write + Send>(
     docs: &Mutex<HashMap<String, Doc>>,
     generation: &AtomicU64,
     output: &Mutex<W>,
+    cache: &lithe::ModuleCache,
 ) {
     while let Ok(job) = rx.recv() {
         #[cfg(test)]
@@ -229,7 +233,8 @@ fn save_worker<W: Write + Send>(
                 break;
             }
             let codegen = if *frontend_ok {
-                lithe::analyze_full(&file_path(uri), text)
+                cache
+                    .analyze_full(&file_path(uri), text)
                     .error
                     .map(|err| in_document(&file_path(uri), text, err))
             } else {
