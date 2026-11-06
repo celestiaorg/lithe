@@ -27,13 +27,13 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **1.1** `Opt { Fast, Release }` (`Default` = Release). Fast is one build of the `start` plan, plus the size-limit outline-more loop. CLI, `lithe.toml`, Standard JSON, and `analyze` wired as in decision 1. See the measurements below.
 - [x] **1.2** Differential Fast vs Release over every target; Fast snapshot. Record erc20_full Fast time and the Fast-vs-Release size and gas table. Target ≤ 60 ms. See the measurements below.
 - [x] **1.3** Cheaper Release search, byte-identical: dedupe plans, post-promote finish cache, lower-bound short-circuit, share `flow`/`heat` in `asm::gas`. See the measurements below.
-- [ ] **1.4** Per-function body memo in `Gen`. Release byte-identical.
+- [x] **1.4** Per-function body memo in `Gen`. Release byte-identical. See the measurements below.
 
 ### Phase 2 — the language server never runs codegen on a keystroke
 
 - [x] **2.1** `analyze_frontend` / `analyze_full`. LSP uses the frontend on open and change. Codegen errors on save, on a worker, cancelled when a newer edit arrives. See the measurements below.
 - [x] **2.2** Per-session module cache keyed by path, content hash, and EVM version. `std/` parsed once per process. See the measurements below.
-- [ ] **2.3** Debounce `didChange` (~50 ms), reader thread plus worker, rename, workspace symbol. Diagnostics on `bench/erc20_full.lithe` ≤ 20 ms (relaxed under `debug_assertions`).
+- [x] **2.3** Debounce `didChange` (50 ms), reader plus worker, rename, workspace symbol. Diagnostics on `bench/erc20_full.lithe` ≤ 20 ms (relaxed under `debug_assertions`). See the measurements below.
 - [ ] **2.4** VS Code extension and TextMate smoke test.
 
 ### Phase 3 — block IR, one-shot stack scheduling, linear passes
@@ -174,3 +174,19 @@ Tests: `cargo test --offline --lib evm::snapshot::release_bytecode_matches_snaps
 The checked map keeps eight programs per path and drops the least recently used. A deeper undo checks again.
 
 Tests: `cargo test --offline --lib -- std_is_parsed_once session_cache::` (3 passed).
+
+## 1.4 Per-function body memo
+
+Outlined bodies are remembered for the rest of `codegen`, keyed by the function, whether it runs storage in place, the constants it was specialized to, a hash of the immutable constants, and the plan bits that reach the body. Those bits are the knobs read while emitting (`cache_slots`, `tight`, `outline_raises`, the shared helpers, blob and queue sets) and the outline and specialize flags of the functions the body calls. Frames, sink, held duplicates, abandon, forwarded constants, and a static heap are applied after emit, so a plan that flips only one of those does not re-emit the body.
+
+A hit pastes the body back with its labels and new regions shifted onto this emit. It is declined when a helper that already existed, or a region allocated earlier in this emit, no longer lines up; that body is compiled again. Release creation bytecode is unchanged: both snapshot tests passed, including `VERIFY`.
+
+Tests: `cargo test --offline --lib gen::body::memo_tests::release_search_reuses_outlined_bodies -- --exact`, `cargo test --offline --lib evm::snapshot -- --test-threads=8`, `cargo clippy --offline --all-targets -- -D warnings`, `cargo fmt --check`.
+
+## 2.3 Debounced language server
+
+`lithe lsp` reads frames on the calling thread and analyzes them on a worker. `didChange` waits 50 ms and keeps the latest text, so a burst of keystrokes checks once. The next message, or the end of the wait, runs that check. `textDocument/rename` returns a workspace edit for the name under the cursor. `workspace/symbol` lists outline symbols of the open files that match the query.
+
+On an edit of `bench/erc20_full.lithe`, with the standard library already parsed, `apply_frontend` plus publishing diagnostics took 21 ms in the opt-level 2 test build (`debug_assertions` on, so the test's ceiling is 2 s). The release ceiling in that test is 20 ms.
+
+Tests: `cargo test --offline --bin lithe -- lsp::` (22 tests), `cargo clippy --offline --all-targets -- -D warnings`, `cargo fmt --check`.

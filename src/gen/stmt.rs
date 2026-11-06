@@ -3062,7 +3062,13 @@ impl<'a> Gen<'a> {
         let ctx = FUNC_CTX + 2 * (copy + idx) + usize::from(self.direct);
         let caller = self.region_user().unwrap_or(usize::MAX);
         self.func_calls.insert((caller, ctx));
-        if !self.funcs.contains_key(&key) {
+        if !self.funcs.contains_key(&key) && !self.recall_body(&key) {
+            let recording = self.body_memo.is_some();
+            let parent_notes = recording.then(|| self.mem_notes.take()).flatten();
+            if recording {
+                self.mem_notes = Some(Vec::new());
+            }
+            let before = recording.then(|| self.body_before());
             let label = self.fresh();
             let saved_code = std::mem::take(&mut self.code);
             let saved_body = self.body.take();
@@ -3142,6 +3148,11 @@ impl<'a> Gen<'a> {
             self.val_cache = saved_vals;
             self.facts = saved_facts;
             self.const_params = saved_consts;
+            let notes = self.mem_notes.take().unwrap_or_default();
+            self.mem_notes = parent_notes;
+            if let Some(parent) = &mut self.mem_notes {
+                parent.extend_from_slice(&notes);
+            }
             result?;
             self.funcs.insert(
                 key.clone(),
@@ -3155,6 +3166,9 @@ impl<'a> Gen<'a> {
                     takes: params.map_or(0, |p| p.iter().map(|&(_, n)| n as usize).sum()),
                 },
             );
+            if let Some(before) = before {
+                self.remember_body(&key, before, notes);
+            }
         }
         if self.func_any(idx, &|n| self.stores(n), &mut Vec::new()) {
             self.forget_stored_values();

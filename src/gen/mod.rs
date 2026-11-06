@@ -288,6 +288,7 @@ type EmitHit = Result<(Arc<Emitted>, Arc<Vec<Facet>>), Error>;
 /// The creation code, and the runtime code it deploys, for the entrypoints `shape` keeps.
 pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> {
     let imm_consts = init_constants(checked, shape);
+    let body_memo = Arc::new(std::sync::Mutex::new(body::BodyMemo::default()));
     // The first pass inlines every call and measures what each function costs. What it
     // learns of the blobs calls pass and return lets it see further, so it runs again
     // while that grows.
@@ -295,6 +296,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         let mut known = Plan::default();
         loop {
             let mut g = Gen::new(checked, known.clone(), shape)?;
+            g.body_memo = Some(Arc::clone(&body_memo));
             g.imm_consts = imm_consts.clone();
             g.emit()?;
             let plan = g.plan();
@@ -313,6 +315,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     let emit = |plan: &Plan| -> Result<(Emitted, Vec<Facet>), Error> {
         let _t = time(Some(&EMITS), &EMIT_NS);
         let mut g = Gen::new(checked, plan.clone(), shape)?;
+        g.body_memo = Some(Arc::clone(&body_memo));
         g.imm_consts = imm_consts.clone();
         g.emit()?;
         g.drop_unread_caches();
@@ -1660,6 +1663,7 @@ enum Users {
 /// Where the ids of functions compiled once start among a region's users.
 const FUNC_CTX: usize = 1 << if usize::BITS > 32 { 40 } else { 30 };
 
+#[derive(Clone)]
 struct Space {
     region: Region,
     /// Bytes the region needs regardless of the offsets code uses.
@@ -1837,6 +1841,7 @@ impl Hash for Plan {
 type FuncKey = (usize, bool, bool, Vec<Option<[u64; 4]>>);
 
 /// A function compiled once. Calls merge what it reads and writes into their body.
+#[derive(Clone)]
 struct FuncSub {
     label: u32,
     code: Vec<Inst>,
@@ -2409,6 +2414,12 @@ struct Gen<'a> {
     /// Hooks the facet calls back that some call passes an argument other than an inert
     /// one: their bodies test the hook's bit after the arguments, not each call before them.
     untested_hooks: HashSet<usize>,
+    /// Outlined bodies remembered for later plans of this codegen.
+    body_memo: Option<Arc<std::sync::Mutex<body::BodyMemo>>>,
+    /// Regions allocated in `Gen::new`. Their indices do not depend on the plan.
+    fixed_spaces: usize,
+    /// Set while an outlined body is recorded: address, region user, and `shared`.
+    mem_notes: Option<Vec<(i32, Option<usize>, bool)>>,
 }
 
 enum Target {
