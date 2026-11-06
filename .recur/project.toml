@@ -25,6 +25,7 @@ CARGO_TERM_COLOR=always
 
 # Untracked working notes and port fixtures; edits to these in a workspace stay there.
 copy_files = ""
+conventional_commits = true
 
 [[run]]
 name = 'docs:dev'
@@ -49,8 +50,7 @@ for spec in $(find std examples -name '*.spec.lithe' | sort); do
   out=$(target/release/lithe prove "$file") || status=1
   echo "$out" | tail -1
 done
-exit $status
-"""
+exit $status"""
 
 [[run]]
 name = "bench"
@@ -78,8 +78,7 @@ cargo audit
 (cd playground && cargo audit)
 cd docs
 [ -d node_modules ] || npm ci
-npm run -s lint
-"""
+npm run -s lint"""
 
 [[run]]
 name = "fmt"
