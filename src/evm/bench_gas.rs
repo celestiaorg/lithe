@@ -1,7 +1,8 @@
 //! Benchmark gas without solc or a node: replays `bench/run.py`'s scenarios and suites
 //! through the interpreter with a gas meter on, and writes each one's runtime size, deploy
-//! gas, and transaction gas to `$LITHE_BENCH_OUT` as JSON when it is set. A suite's runtime
-//! size sums every contract it deploys.
+//! gas, transaction gas, and ordered step outcomes (status and Keccak-256 returndata hash)
+//! to `$LITHE_BENCH_OUT` as JSON when it is set. A suite's runtime size sums every contract
+//! it deploys.
 //!
 //! Each suite deploys its contracts from account A into one shared world, at the addresses
 //! anvil gives A's first deployments, so they call each other, then replays its steps; block
@@ -23,12 +24,9 @@
 //! - a zero-length memory access past the end still grows memory, and is charged for it;
 //! - `TIMESTAMP` is the interpreter's constant, so `run.py`'s waits are dropped: Uniswap's
 //!   price accumulators and the staking rewards never grow;
-//! - a contract called back in the middle of its own call sees its storage from before that
-//!   call, so `erc20_full`'s repaid flash loans revert here;
 //! - only the contract a transaction targets holds a balance; contracts it calls hold none.
 //!
-//! Price those, or carry storage across reentrant calls in the interpreter, when a number
-//! has to match anvil's.
+//! Price those when a number has to match anvil's.
 
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
@@ -192,10 +190,18 @@ struct Step {
     sig: String,
     args: Vec<String>,
     value: &'static str,
+    must_succeed: bool,
     sign: Option<(&'static str, Vec<String>, &'static str)>,
 }
 
 impl Step {
+    fn succeeds(self) -> Step {
+        Step {
+            must_succeed: true,
+            ..self
+        }
+    }
+
     fn on(self, to: &'static str) -> Step {
         Step { to, ..self }
     }
@@ -222,6 +228,7 @@ fn step(kind: Kind, from: &'static str, sig: &str, args: &[&str]) -> Step {
         args: args.iter().map(|a| a.to_string()).collect(),
         value: "0",
         sign: None,
+        must_succeed: false,
     }
 }
 
@@ -371,6 +378,7 @@ struct Measured {
     runtime_bytes: usize,
     deploy_gas: u64,
     gas: u64,
+    outcomes: Vec<String>,
 }
 
 /// One transaction from `from` to the contract at `to`, with its gas, kept only when
@@ -457,6 +465,7 @@ fn replay(suite: &Suite) -> Measured {
     let main = suite.deploy[0].0;
     let mut balances = HashMap::new();
     let (mut total, mut succeeded) = (0, false);
+    let mut outcomes = Vec::new();
     for s in &suite.steps {
         let to = roles[if s.to.is_empty() { main } else { s.to }];
         let mut args = fill(&s.args, &roles);
@@ -474,6 +483,17 @@ fn replay(suite: &Suite) -> Measured {
         }
         let keep = matches!(s.kind, Kind::Send);
         let (out, gas) = transact(from, to, &data, value, keep, &mut balances);
+        assert!(
+            !s.must_succeed || !out.reverted,
+            "{name}: {} reverted: {}",
+            s.sig,
+            hex_bytes(&out.returndata)
+        );
+        outcomes.push(format!(
+            "{{\"status\":\"{}\",\"returndata_hash\":\"{}\"}}",
+            if out.reverted { "revert" } else { "ok" },
+            hex_bytes(&keccak256(&out.returndata)),
+        ));
         if let Kind::Bind(role) = s.kind {
             roles.insert(role, load_bytes(&out.returndata, 0));
         } else {
@@ -488,6 +508,7 @@ fn replay(suite: &Suite) -> Measured {
         runtime_bytes,
         deploy_gas,
         gas: total,
+        outcomes,
     }
 }
 
@@ -2095,6 +2116,7 @@ fn suites() -> Vec<Suite> {
                 send(A, "flashLoan(address,address,uint256,bytes)", &["$borrower", "$token", "7", "0x"]),
                 send(A, "setMode(uint256)", &["0"]).on("borrower"),
                 send(B, "flashLoan(address,address,uint256,bytes)", &["$borrower", "$token", "7", "0x1234"]),
+                send(A, "flashLoan(address,address,uint256,bytes)", &["$borrower", "$token", "7", "0x"]).succeeds(),
                 send(B, "permit(address,address,uint256,uint256,uint8,bytes32,bytes32)", &[A, B, "123", "3000000000"]).signed(PERMIT, &[A, B, "123", "0", "3000000000"], KEY_A),
                 call(A, "allowance(address,address)", &[A, B]),
                 call(A, "nonces(address)", &[A]),
@@ -2564,8 +2586,8 @@ fn bench_gas() {
             let name = s.name;
             assert!(r.runtime_bytes > 0 && r.gas > 0, "{name}");
             format!(
-                "  \"{name}\": {{\"runtime_bytes\": {}, \"deploy_gas\": {}, \"gas\": {}}}",
-                r.runtime_bytes, r.deploy_gas, r.gas
+                "  \"{name}\": {{\"runtime_bytes\": {}, \"deploy_gas\": {}, \"gas\": {}, \"outcomes\": [{}]}}",
+                r.runtime_bytes, r.deploy_gas, r.gas, r.outcomes.join(",")
             )
         })
         .collect();
