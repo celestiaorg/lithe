@@ -49,6 +49,20 @@ fn main() {
         Some("ts") => lithe::AbiFormat::Ts,
         Some(_) => usage_exit("--format is json or ts"),
     };
+    let mut abi_dir = lithe::AbiDir {
+        format,
+        ..lithe::AbiDir::default()
+    };
+    if cmd == "abi" {
+        while let Some(glob) = take_flag(&mut args, "--exclude") {
+            abi_dir.exclude.push(glob);
+        }
+        abi_dir.contracts_only = take_switch(&mut args, "--contracts-only");
+        abi_dir.flat = take_switch(&mut args, "--flat");
+        abi_dir.clean = take_switch(&mut args, "--clean");
+    }
+    let dir_only =
+        !abi_dir.exclude.is_empty() || abi_dir.contracts_only || abi_dir.flat || abi_dir.clean;
     let flags = if builds {
         build_flags(&mut args)
     } else {
@@ -106,8 +120,10 @@ fn main() {
             std::process::exit(1);
         }
     };
-    if out_dir.is_some() && !meta.is_dir() {
-        usage_exit("--out is for a directory build");
+    if (out_dir.is_some() || dir_only) && !meta.is_dir() {
+        usage_exit(
+            "--out, --exclude, --contracts-only, --flat, and --clean are for a directory build",
+        );
     }
     if interface.is_some() && (cmd != "abi" || meta.is_dir()) {
         usage_exit("--interface is for `lithe abi file.lithe`");
@@ -118,7 +134,7 @@ fn main() {
             "compile" => {
                 lithe::compile_dir(Path::new(&path), out, &|file| build_options(file, &flags))
             }
-            "abi" => lithe::abi_dir(Path::new(&path), out, format, &|file| {
+            "abi" => lithe::abi_dir(Path::new(&path), out, &abi_dir, &|file| {
                 build_options(file, &flags)
             }),
             cmd => {
@@ -292,6 +308,15 @@ fn take_flag(args: &mut Vec<String>, flag: &str) -> Option<String> {
     Some(args.remove(at))
 }
 
+/// Removes `flag` from `args`, returning whether it was there.
+fn take_switch(args: &mut Vec<String>, flag: &str) -> bool {
+    let at = args.iter().position(|arg| arg == flag);
+    if let Some(at) = at {
+        args.remove(at);
+    }
+    at.is_some()
+}
+
 /// Takes each `--key value` build flag, and `--check-specs`, out of `args`.
 fn build_flags(args: &mut Vec<String>) -> Vec<(&'static str, Option<String>)> {
     let mut flags = Vec::new();
@@ -341,6 +366,9 @@ fn finish_dir(result: Result<lithe::DirOutput, lithe::Error>) -> ! {
     };
     for note in &out.notes {
         eprintln!("{note}");
+    }
+    for path in &out.removed {
+        eprintln!("removed {}", path.display());
     }
     for path in &out.wrote {
         println!("{}", path.display());
@@ -612,7 +640,8 @@ fn usage() {
 usage: lithe compile file.lithe
        lithe compile directory [--out dir]
        lithe abi file.lithe [--interface Name] [--format json|ts]
-       lithe abi directory [--out dir] [--format json|ts]
+       lithe abi directory [--out dir] [--format json|ts] [--exclude glob]...
+                           [--contracts-only] [--flat] [--clean]
        lithe abi-tree file.lithe
        lithe footprint file.lithe
        lithe analysis file.lithe
@@ -662,9 +691,16 @@ the newest tags their version ranges admit and the commits their revs name now, 
 
 --standard-json reads solc-style standard JSON on stdin and writes the output to stdout
 
-directory commands write to ./out, or the directory --out names; abi writes each contract's
-and each interface's ABI there, as <file>.lithe/<Name>.abi.json; --format ts writes
-<Name>.abi.ts, a module of `export const nameAbi = [...] as const`
+directory commands write to ./out, or the directory --out names, and rewrite a file only
+when it changes; abi writes each contract's and each interface's ABI there, as
+<file>.lithe/<Name>.abi.json; --format ts writes <Name>.abi.ts, a module of
+`export const nameAbi = [...] as const`; abi directory also takes
+       --exclude <glob>              leave out sources it matches, relative to the
+                                     directory, or under a directory it matches
+       --contracts-only              only contracts with entrypoints, no interfaces
+       --flat                        write <Name>.abi.json, without the file's folder
+       --clean                       remove ABI files of the format the build didn't
+                                     write, unless a file failed
 builds are cached in ~/.cache/lithe; set LITHE_CACHE_DIR to move it, or empty to turn it off"
     );
 }

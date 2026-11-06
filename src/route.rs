@@ -2121,19 +2121,16 @@ fn error_item(
 }
 
 /// The ABI of each interface declared in `origin`, the file a program was loaded from, with
-/// the interface's position: its methods, the errors their `raises` name, and the events the
-/// program declares in that file, since an interface declares none of its own.
+/// the interface's position: its methods and the errors their `raises` name. When `checked`
+/// or one of `facets`, the facets of modules in that file, dispatches every method of an
+/// interface, it implements it, and the interface adds the events and errors of those
+/// entrypoints, through everything they reach.
 pub(crate) fn interface_abis(
     checked: &Checked,
     origin: &str,
+    facets: &[Checked],
 ) -> Result<Vec<(String, (u32, u32), Abi)>, Error> {
     let names = InternalNames::new(checked);
-    let mut events = Vec::new();
-    for decl in checked.prog.events.iter().filter(|e| e.origin == origin) {
-        if let Some(event) = checked.events.iter().find(|e| e.name == decl.name) {
-            events.push(event_item(checked, event, &names)?);
-        }
-    }
     let mut out = Vec::new();
     for iface in checked
         .prog
@@ -2174,9 +2171,14 @@ pub(crate) fn interface_abis(
                 }
             }
         }
-        items.extend(events.iter().cloned());
         for err in raised {
             items.push(error_item(checked, &checked.errors[err], &names)?);
+        }
+        let sigs: Vec<&str> = methods.iter().map(|m| m.sig.as_str()).collect();
+        for program in std::iter::once(checked).chain(facets) {
+            if let Some(added) = implementation(program, &sigs)? {
+                merge_abi(&mut items, added);
+            }
         }
         out.push((
             crate::modules::shown(&iface.name).to_string(),
@@ -2187,10 +2189,114 @@ pub(crate) fn interface_abis(
     Ok(out)
 }
 
+/// The events `checked`'s entrypoints with signatures `sigs` emit, in any phase, and the
+/// errors they raise, or `None` when it does not dispatch every one of them. A view emits
+/// nothing.
+fn implementation(checked: &Checked, sigs: &[&str]) -> Result<Option<Vec<AbiItem>>, Error> {
+    let mut found = Vec::new();
+    let mut events: Vec<&str> = Vec::new();
+    let mut raised: Vec<usize> = Vec::new();
+    let mut raise = |sig: &str| {
+        if let Some(id) = checked.errors.iter().position(|e| e.abi_sig == sig) {
+            if !raised.contains(&id) {
+                raised.push(id);
+            }
+        }
+    };
+    for route in shown_routes(checked).filter(|r| sigs.contains(&r.sig.as_str())) {
+        found.push(route.sig.clone());
+        let phases = route.phases.iter().flat_map(|phase| &phase.events);
+        events.extend(route.events.iter().chain(phases).map(String::as_str));
+        route.raises.iter().for_each(|sig| raise(sig));
+    }
+    for func in checked
+        .prog
+        .funcs
+        .iter()
+        .filter(|f| f.kind == ItemKind::View)
+    {
+        let sig = view_sig(checked, func)?;
+        if sigs.contains(&sig.as_str()) {
+            found.push(sig);
+            for &id in &func.errors {
+                raise(&checked.raise_sig(id));
+            }
+        }
+    }
+    if sigs.is_empty() || !sigs.iter().all(|sig| found.iter().any(|f| f == sig)) {
+        return Ok(None);
+    }
+    let names = InternalNames::new(checked);
+    let mut items = Vec::new();
+    for event in &checked.events {
+        if events.contains(&event_label(checked, &event.name).as_str()) {
+            items.push(event_item(checked, event, &names)?);
+        }
+    }
+    for id in raised {
+        items.push(error_item(checked, &checked.errors[id], &names)?);
+    }
+    Ok(Some(items))
+}
+
+/// Adds the events and errors of `added` that `items` lacks: events before the first error,
+/// errors at the end. Two programs name one event's types alike only by chance, so an item
+/// is matched by its name and ABI types.
+pub(crate) fn merge_abi(items: &mut Vec<AbiItem>, added: Vec<AbiItem>) {
+    let key = |item: &AbiItem| match item {
+        AbiItem::Event(e) => Some((
+            true,
+            e.name.clone(),
+            e.inputs
+                .iter()
+                .map(|p| abi_type(&p.ty, &p.components))
+                .collect::<Vec<_>>(),
+        )),
+        AbiItem::Error(e) => Some((
+            false,
+            e.name.clone(),
+            e.inputs
+                .iter()
+                .map(|p| abi_type(&p.ty, &p.components))
+                .collect(),
+        )),
+        _ => None,
+    };
+    for item in added {
+        let Some(want) = key(&item) else {
+            continue;
+        };
+        if items.iter().any(|have| key(have).as_ref() == Some(&want)) {
+            continue;
+        }
+        let at = match item {
+            AbiItem::Event(_) => items
+                .iter()
+                .position(|have| matches!(have, AbiItem::Error(_)))
+                .unwrap_or(items.len()),
+            _ => items.len(),
+        };
+        items.insert(at, item);
+    }
+}
+
+/// A parameter's type as a signature writes it: a tuple's components in parentheses.
+fn abi_type(ty: &str, components: &[Param]) -> String {
+    if components.is_empty() {
+        return ty.to_string();
+    }
+    let parts: Vec<String> = components
+        .iter()
+        .map(|p| abi_type(&p.ty, &p.components))
+        .collect();
+    format!("({}){}", parts.join(","), ty.trim_start_matches("tuple"))
+}
+
 /// How `lithe abi` writes an ABI: Solidity's JSON, or a TypeScript module exporting it
 /// `as const`, for viem and wagmi to type calls with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AbiFormat {
+    #[default]
     Json,
     Ts,
 }
@@ -2214,7 +2320,7 @@ impl Abi {
                     ident.insert(0, '_');
                 }
                 format!(
-                    "export const {ident}Abi = {} as const;\n",
+                    "// Generated by `lithe abi`; do not edit.\nexport const {ident}Abi = {} as const;\n",
                     self.to_json().trim_end()
                 )
             }

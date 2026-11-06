@@ -419,15 +419,49 @@ pub fn contract_name(sources: &Sources, entry: &Path) -> Result<String, Error> {
 }
 
 /// The ABI of each interface `entry` declares, by name, whether or not it declares a contract:
-/// at the top of the file, or in the body of any of its contracts. Every contract sees an
-/// interface at the top of the file, which carries the events of all of them.
+/// at the top of the file, or in the body of any of its contracts. Every contract, and every
+/// module of the file, that implements an interface adds the events and errors of its
+/// entrypoints for it.
 pub fn interface_abis(sources: &Sources, entry: &Path) -> Result<Vec<(String, Abi)>, Error> {
     let prog = modules::load(sources, entry)?;
     let origin = prog.origin.clone();
+    let evm = evm_near(entry);
+    let methods: Vec<Vec<&str>> = std::iter::once(&prog)
+        .chain(&prog.siblings)
+        .flat_map(|unit| &unit.interfaces)
+        .filter(|iface| iface.origin == origin && !iface.methods.is_empty())
+        .map(|iface| iface.methods.iter().map(|m| m.name.as_str()).collect())
+        .collect();
+    // A facet drops what its contract's file declares outside modules, but here that file is
+    // the modules' own, whose errors and events they name.
+    let alone = ast::Program {
+        origin: String::new(),
+        ..prog.clone()
+    };
+    // Only a module whose externals could dispatch all of some interface is checked alone.
+    // simplify: one whose facet fails to check adds nothing; its errors show where it is used.
+    let facets: Vec<check::Checked> = prog
+        .modules
+        .iter()
+        .filter(|decl| decl.origin == origin && decl.params.is_empty())
+        .filter(|decl| {
+            methods.iter().any(|names| {
+                names.iter().all(|name| {
+                    decl.funcs.iter().any(|f| {
+                        f.name == *name
+                            && matches!(f.kind, ast::ItemKind::Entry | ast::ItemKind::View)
+                    })
+                })
+            })
+        })
+        .filter_map(|decl| {
+            check::check_in(split::facet_program(&alone, &decl.name, &[]), false, evm).ok()
+        })
+        .collect();
     let mut abis: Vec<(String, (u32, u32), Abi)> = Vec::new();
     for unit in modules::split_units(prog) {
-        let checked = check::check_in(unit, false, evm_near(entry))?;
-        for (name, at, abi) in route::interface_abis(&checked, &origin)? {
+        let checked = check::check_in(unit, false, evm)?;
+        for (name, at, abi) in route::interface_abis(&checked, &origin, &facets)? {
             let Some((_, first, have)) = abis.iter_mut().find(|(have, ..)| *have == name) else {
                 abis.push((name, at, abi));
                 continue;
@@ -442,19 +476,7 @@ pub fn interface_abis(sources: &Sources, entry: &Path) -> Result<Vec<(String, Ab
                     ),
                 ));
             }
-            let errors = have
-                .items
-                .iter()
-                .position(|item| matches!(item, route::AbiItem::Error(_)))
-                .unwrap_or(have.items.len());
-            let events: Vec<_> = abi
-                .items
-                .into_iter()
-                .filter(|item| {
-                    matches!(item, route::AbiItem::Event(_)) && !have.items.contains(item)
-                })
-                .collect();
-            have.items.splice(errors..errors, events);
+            route::merge_abi(&mut have.items, abi.items);
         }
     }
     Ok(abis.into_iter().map(|(name, _, abi)| (name, abi)).collect())
@@ -1238,6 +1260,8 @@ impl fmt::Display for SourceError {
 #[derive(Default)]
 pub struct DirOutput {
     pub wrote: Vec<PathBuf>,
+    /// The stale ABI files `--clean` removed.
+    pub removed: Vec<PathBuf>,
     pub failed: Vec<SourceError>,
     /// A note for each contract that was split.
     pub notes: Vec<String>,
@@ -1254,26 +1278,50 @@ pub fn compile_dir(dir: &Path, out_dir: &Path, opts: OptionsFor) -> Result<DirOu
     emit_dir(dir, out_dir, None, opts)
 }
 
+/// What `lithe abi directory` writes, and where.
+#[derive(Debug, Clone, Default)]
+pub struct AbiDir {
+    pub format: AbiFormat,
+    /// Globs of source paths, relative to the directory, to leave out. `*` and `?` stay
+    /// within a path segment, `**` crosses them, and a pattern that matches a directory
+    /// leaves out everything under it.
+    pub exclude: Vec<String>,
+    /// Only contracts with entrypoints, no interfaces.
+    pub contracts_only: bool,
+    /// `out/<Name>.abi.json` rather than `out/<file>.lithe/<Name>.abi.json`.
+    pub flat: bool,
+    /// Remove ABI files of the format that this build didn't write.
+    pub clean: bool,
+}
+
 /// Write a bare ABI file for every contract and interface declared under `dir`.
 /// `examples/bank.lithe` becomes `out/bank.lithe/bank.abi.json`, and its interface `IBank`
-/// `out/bank.lithe/IBank.abi.json`, or `.abi.ts` files in TypeScript.
+/// `out/bank.lithe/IBank.abi.json`, or `.abi.ts` files in TypeScript. ABIs only need the
+/// checked program, so nothing is built.
 pub fn abi_dir(
     dir: &Path,
     out_dir: &Path,
-    format: AbiFormat,
+    abi: &AbiDir,
     opts: OptionsFor,
 ) -> Result<DirOutput, Error> {
-    emit_dir(dir, out_dir, Some(format), opts)
+    let mut all = emit_dir(dir, out_dir, Some(abi), opts)?;
+    if abi.clean {
+        clean_abis(out_dir, abi.format, &mut all);
+    }
+    Ok(all)
 }
 
 /// `abi` is `None` for Foundry-style artifacts.
 fn emit_dir(
     dir: &Path,
     out_dir: &Path,
-    abi: Option<AbiFormat>,
+    abi: Option<&AbiDir>,
     opts: OptionsFor,
 ) -> Result<DirOutput, Error> {
-    let files = lithe_sources(dir)?;
+    let mut files = lithe_sources(dir)?;
+    if let Some(abi) = abi {
+        files.retain(|path| !excluded(&abi.exclude, path.strip_prefix(dir).unwrap_or(path)));
+    }
     // Files compile independently, so they share the machine; the output keeps file order.
     let next = std::sync::atomic::AtomicUsize::new(0);
     let done = std::sync::Mutex::new(Vec::new());
@@ -1303,7 +1351,7 @@ fn emit_dir(
     for (i, (out, writes, used)) in done {
         let path = &files[i];
         let source = path.display().to_string();
-        let folder = contract_dir(out_dir, path);
+        let folder = contract_dir(out_dir, path, abi);
         if !writes.is_empty() {
             let claims: Vec<&Path> = match abi {
                 Some(_) => writes.iter().map(|(dest, _)| dest.as_path()).collect(),
@@ -1321,9 +1369,14 @@ fn emit_dir(
                         0,
                         0,
                         format!(
-                            "{} also writes `{}`; rename one of the files",
+                            "{} also writes `{}`; rename one of the {}",
                             first.display(),
-                            clash.display()
+                            clash.display(),
+                            if abi.is_some_and(|abi| abi.flat) {
+                                "contracts or interfaces"
+                            } else {
+                                "files"
+                            }
                         ),
                     ),
                 });
@@ -1339,7 +1392,7 @@ fn emit_dir(
             }
         }
         for (dest, body) in writes {
-            match std::fs::write(&dest, body) {
+            match write_if_changed(&dest, &body) {
                 Ok(()) => all.wrote.push(dest),
                 Err(err) => all.failed.push(SourceError {
                     path: source.clone(),
@@ -1388,7 +1441,7 @@ fn write_facets(out_dir: &Path, facets: Vec<(String, Facet)>, all: &mut DirOutpu
                 Some(Err(err)) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
                 _ => Ok(()),
             })
-            .and_then(|_| std::fs::write(&dest, facet_artifact(facet)));
+            .and_then(|_| write_if_changed(&dest, &facet_artifact(facet)));
         match wrote {
             Ok(()) => all.wrote.push(dest),
             Err(err) => all.failed.push(SourceError {
@@ -1422,7 +1475,7 @@ fn facet_artifact(facet: &Facet) -> String {
 fn emit_file(
     path: &Path,
     out_dir: &Path,
-    abi: Option<AbiFormat>,
+    abi: Option<&AbiDir>,
     opts: OptionsFor,
 ) -> (DirOutput, Vec<(PathBuf, String)>, Vec<(String, Facet)>) {
     let mut out = DirOutput::default();
@@ -1440,39 +1493,45 @@ fn emit_file(
             return (out, writes, facets);
         }
     };
-    let folder = contract_dir(out_dir, path);
-    let abi_file = |name: &str, body: &Abi, format: AbiFormat| {
-        let ext = match format {
-            AbiFormat::Json => "json",
-            AbiFormat::Ts => "ts",
+    let folder = contract_dir(out_dir, path, abi);
+    if let Some(abi) = abi {
+        let abi_file = |name: &str, body: &Abi| {
+            (
+                folder.join(format!("{name}.{}", abi_ext(abi.format))),
+                body.render(name, abi.format),
+            )
         };
-        (
-            folder.join(format!("{name}.abi.{ext}")),
-            body.render(name, format),
-        )
-    };
-    let compiled = match compile(&Sources::disk(), path, &opts) {
-        Ok(compiled) => Some(compiled),
-        Err(errors) if is_library(&Sources::disk(), path, &errors) => None,
-        Err(errors) => {
-            out.failed.extend(errors.into_iter().map(failed));
-            return (out, writes, facets);
-        }
-    };
-    if let Some(format) = abi {
-        match interface_abis(&Sources::disk(), path) {
-            Ok(abis) => writes.extend(abis.iter().map(|(name, body)| abi_file(name, body, format))),
-            Err(err) => {
-                out.failed.push(failed(err));
+        let contracts = match contract_abis(&Sources::disk(), path, opts.evm) {
+            Ok(contracts) => contracts,
+            Err(errors) if is_library(&Sources::disk(), path, &errors) => Vec::new(),
+            Err(errors) => {
+                out.failed.extend(errors.into_iter().map(failed));
                 return (out, writes, facets);
             }
+        };
+        if !abi.contracts_only {
+            match interface_abis(&Sources::disk(), path) {
+                Ok(abis) => writes.extend(abis.iter().map(|(name, body)| abi_file(name, body))),
+                Err(err) => {
+                    out.failed.push(failed(err));
+                    return (out, writes, facets);
+                }
+            }
         }
+        writes.extend(contracts.iter().map(|(name, body)| abi_file(name, body)));
     }
+    let compiled = match abi {
+        Some(_) => None,
+        None => match compile(&Sources::disk(), path, &opts) {
+            Ok(compiled) => Some(compiled),
+            Err(errors) if is_library(&Sources::disk(), path, &errors) => None,
+            Err(errors) => {
+                out.failed.extend(errors.into_iter().map(failed));
+                return (out, writes, facets);
+            }
+        },
+    };
     for contract in compiled.into_iter().flat_map(|compiled| compiled.contracts) {
-        if let Some(format) = abi {
-            writes.push(abi_file(&contract.name, &contract.abi, format));
-            continue;
-        }
         writes.push((
             folder.join(format!("{}.json", contract.name)),
             foundry_artifact(&contract),
@@ -1554,8 +1613,128 @@ pub(crate) fn declares_no_contract(text: &str) -> bool {
         && !prog.types.iter().any(|decl| decl.name == "storage")
 }
 
-fn contract_dir(out_dir: &Path, source: &Path) -> PathBuf {
-    out_dir.join(source.file_name().unwrap_or_default())
+fn contract_dir(out_dir: &Path, source: &Path, abi: Option<&AbiDir>) -> PathBuf {
+    match abi {
+        Some(abi) if abi.flat => out_dir.to_path_buf(),
+        _ => out_dir.join(source.file_name().unwrap_or_default()),
+    }
+}
+
+/// The ABI of each contract `entry` defines, by name, from the checked program alone.
+fn contract_abis(
+    sources: &Sources,
+    entry: &Path,
+    evm: EvmVersion,
+) -> Result<Vec<(String, Abi)>, Vec<Error>> {
+    let prog = modules::load(sources, entry)?;
+    let mut abis = Vec::new();
+    let mut errors = Vec::new();
+    for unit in modules::split_units(prog) {
+        let name = artifact_contract_name(&unit, entry);
+        let origin = unit.origin.clone();
+        match check::check(unit, evm).and_then(|checked| route::abi(&checked)) {
+            Ok(abi) => abis.push((name, abi)),
+            Err(err) => errors.push(err.in_file(&origin)),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(abis)
+}
+
+fn abi_ext(format: AbiFormat) -> &'static str {
+    match format {
+        AbiFormat::Json => "abi.json",
+        AbiFormat::Ts => "abi.ts",
+    }
+}
+
+/// Whether a glob of `patterns` matches `path` or a directory it is in.
+fn excluded(patterns: &[String], path: &Path) -> bool {
+    fn glob(p: &[u8], s: &[u8]) -> bool {
+        match p {
+            [] => s.is_empty(),
+            [b'*', b'*', rest @ ..] => {
+                let rest = rest.strip_prefix(b"/").unwrap_or(rest);
+                rest.is_empty()
+                    || (0..=s.len()).any(|i| (i == 0 || s[i - 1] == b'/') && glob(rest, &s[i..]))
+            }
+            [b'*', rest @ ..] => (0..=s.len())
+                .take_while(|&i| i == 0 || s[i - 1] != b'/')
+                .any(|i| glob(rest, &s[i..])),
+            [b'?', rest @ ..] => s.first().is_some_and(|&c| c != b'/') && glob(rest, &s[1..]),
+            [c, rest @ ..] => s.first() == Some(c) && glob(rest, &s[1..]),
+        }
+    }
+    path.ancestors()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .any(|dir| {
+            let dir = dir.to_string_lossy().replace('\\', "/");
+            patterns.iter().any(|pattern| {
+                let pattern = pattern.strip_prefix("./").unwrap_or(pattern);
+                glob(pattern.trim_end_matches('/').as_bytes(), dir.as_bytes())
+            })
+        })
+}
+
+/// Writes `body` to `dest` unless it already holds it, through a file renamed over it, so a
+/// reader sees the old file or the new one, never part of one.
+fn write_if_changed(dest: &Path, body: &str) -> std::io::Result<()> {
+    if std::fs::read(dest).is_ok_and(|have| have == body.as_bytes()) {
+        return Ok(());
+    }
+    let name = dest.file_name().unwrap_or_default().to_string_lossy();
+    let temp = dest.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    std::fs::write(&temp, body)
+        .and_then(|()| std::fs::rename(&temp, dest))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&temp);
+        })
+}
+
+/// Removes each `format` ABI file under `out_dir` that `all` didn't write, and folders that
+/// leaves empty. A build with a failed file keeps them all, as its ABIs may come back.
+fn clean_abis(out_dir: &Path, format: AbiFormat, all: &mut DirOutput) {
+    if !all.failed.is_empty() {
+        all.notes
+            .push("--clean removed nothing, as some files failed".to_string());
+        return;
+    }
+    let suffix = format!(".{}", abi_ext(format));
+    let mut dirs = vec![out_dir.to_path_buf()];
+    let mut walked = Vec::new();
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => dirs.push(path),
+                Ok(kind)
+                    if kind.is_file()
+                        && path.to_string_lossy().ends_with(&suffix)
+                        && !all.wrote.contains(&path) =>
+                {
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => all.removed.push(path),
+                        Err(err) => all.failed.push(SourceError {
+                            path: path.display().to_string(),
+                            error: error(0, 0, err.to_string()),
+                        }),
+                    }
+                }
+                _ => {}
+            }
+        }
+        walked.push(dir);
+    }
+    for dir in walked.iter().skip(1).rev() {
+        if all.removed.iter().any(|path| path.starts_with(dir)) {
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
 }
 
 pub(crate) fn artifact_contract_name(prog: &ast::Program, source: &Path) -> String {
