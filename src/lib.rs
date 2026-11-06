@@ -310,6 +310,7 @@ fn build(
 ) -> Result<Contract, Error> {
     let mut notes = Vec::new();
     let mut plain = None;
+    let t_check = gen::timing().then(std::time::Instant::now);
     let checked = if opts.check_specs {
         let specs = spec::check(prog.clone(), opts.evm)?;
         if !prog.facets.is_empty() {
@@ -325,9 +326,27 @@ fn build(
         }
         check::check(prog, opts.evm)?
     };
+    let t_check = t_check.map(|t| t.elapsed());
     let abi = route::abi(&checked)?;
     let method_identifiers = route::method_ids(&checked)?;
+    let t_split = gen::timing().then(std::time::Instant::now);
     let split = split::build_from(&checked, plain.as_ref().unwrap_or(&checked), name, opts)?;
+    if let (Some(t_check), Some(t_split)) = (t_check, t_split) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let d = |a: &std::sync::atomic::AtomicU64| std::time::Duration::from_nanos(a.load(Relaxed));
+        eprintln!(
+            "[time] check={:?} backend={:?} | emits={} sum={:?} (promote {:?}) | finishes={} sum={:?} (optimize {:?}, outline+ {:?})",
+            t_check,
+            t_split.elapsed(),
+            gen::EMITS.load(Relaxed),
+            d(&gen::EMIT_NS),
+            d(&gen::PROMOTE_NS),
+            gen::FINISHES.load(Relaxed),
+            d(&gen::FINISH_NS),
+            d(&gen::OPT_NS),
+            d(&gen::OUTLINE_NS)
+        );
+    }
     let prerequisites = split.prerequisites();
     let plan = (!prerequisites.is_empty()).then(|| Plan {
         deployer: opts.deployer,

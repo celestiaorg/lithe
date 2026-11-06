@@ -8,6 +8,7 @@
 //! no body shares overlapping.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::asm::{self, Inst, Mark};
@@ -166,6 +167,49 @@ const TOPIC_WORDS: u32 = 8;
 /// A memory address before layout is `(region + 1) << REGION_SHIFT | offset`.
 const REGION_SHIFT: u32 = 16;
 
+/// Counts and CPU time of the backend's phases, kept only when `LITHE_TIME` is set.
+pub(crate) static EMITS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static FINISHES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static EMIT_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static PROMOTE_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static OPT_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static OUTLINE_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static FINISH_NS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn timing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("LITHE_TIME").is_some())
+}
+
+/// Adds the time until it drops to `total`.
+struct Timer(&'static AtomicU64, std::time::Instant);
+
+impl Drop for Timer {
+    fn drop(&mut self) {
+        self.0
+            .fetch_add(self.1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+}
+
+/// Counts one more of a phase into `count`, and times it into `total` while the result lives.
+fn time(count: Option<&AtomicUsize>, total: &'static AtomicU64) -> Option<Timer> {
+    timing().then(|| {
+        if let Some(count) = count {
+            count.fetch_add(1, Ordering::Relaxed);
+        }
+        Timer(total, std::time::Instant::now())
+    })
+}
+
+/// The worker threads `LITHE_THREADS` allows each parallel step, if it is set.
+pub(crate) fn thread_cap() -> Option<usize> {
+    static CAP: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| {
+        let n = std::env::var("LITHE_THREADS").ok()?.parse().ok()?;
+        (n > 0).then_some(n)
+    })
+}
+
 /// Compiled code: the creation code, the runtime code it deploys, where the creation code
 /// writes immutables into the runtime, and the facets of contracts it creates, which must be
 /// deployed before it can create them.
@@ -214,11 +258,15 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         }
     };
     let emit = |plan: &Plan| -> Result<(Emitted, Vec<Facet>), Error> {
+        let _t = time(Some(&EMITS), &EMIT_NS);
         let mut g = Gen::new(checked, plan.clone(), shape)?;
         g.imm_consts = imm_consts.clone();
         g.emit()?;
         g.drop_unread_caches();
-        g.promote();
+        {
+            let _t = time(None, &PROMOTE_NS);
+            g.promote();
+        }
         let code = g.resolve()?;
         let mut leaves: Vec<(u32, usize)> = g.func_leaves_by_label().into_iter().collect();
         leaves.sort_unstable();
@@ -234,15 +282,21 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     };
     let limit = shape.opts.size_limit;
     let finish = |e: &Emitted, both: bool| -> Result<Finished, Error> {
+        let _t = time(Some(&FINISHES), &FINISH_NS);
         let mut code = e.code.clone();
-        asm::optimize(&mut code);
+        {
+            let _t = time(None, &OPT_NS);
+            asm::optimize(&mut code);
+        }
         let leaves: HashMap<u32, usize> = e.leaves.iter().copied().collect();
+        let outline = time(None, &OUTLINE_NS);
         asm::outline(&mut code, &e.entries, both, |code| {
             asm::track::pass(code, |c| asm::tail_calls(c, &leaves));
             asm::track::pass(code, asm::rotate_loops);
             asm::track::pass(code, asm::hoist);
             asm::track::pass(code, asm::rotate_exits);
         });
+        drop(outline);
         let gas = asm::gas(&code, &e.entries, e.heap);
         let (runtime, marks) = match immutable::place_runtime(&code, &e.data, &e.tail_blobs) {
             Ok(placed) => placed,
@@ -873,15 +927,16 @@ impl Move {
     }
 }
 
-/// `f` of each item, in order, on at most one thread per core, each with the caller's
-/// byte weight.
-fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+/// `f` of each item, in order, on at most one thread per core (or per `LITHE_THREADS`), each
+/// with the caller's byte weight.
+pub(crate) fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let byte_gas = asm::byte_gas();
-    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers =
+        thread_cap().unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
+    let next = AtomicUsize::new(0);
     let done = std::sync::Mutex::new(Vec::with_capacity(items.len()));
     let work = || loop {
-        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let i = next.fetch_add(1, Ordering::Relaxed);
         let Some(item) = items.get(i) else { break };
         let out = f(item);
         done.lock()

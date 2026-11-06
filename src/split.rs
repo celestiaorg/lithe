@@ -525,11 +525,14 @@ fn stand_ins(checked: &Checked, crossing: &[(String, Vec<Crossing>)]) -> BTreeMa
     out
 }
 
-/// Runs `f` on each item on its own thread, keeping the order.
+/// Runs `f` on each item on its own thread (or on `LITHE_THREADS` of them), keeping the order.
 fn parallel<T: Sync, R: Send>(
     items: &[T],
     f: impl Fn(&T) -> Result<R, Error> + Sync,
 ) -> Result<Vec<R>, Error> {
+    if crate::gen::thread_cap().is_some() {
+        return crate::gen::parallel_map(items, f).into_iter().collect();
+    }
     let f = &f;
     let byte_gas = crate::asm::byte_gas();
     std::thread::scope(|s| {
