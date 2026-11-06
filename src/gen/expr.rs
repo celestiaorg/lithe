@@ -1890,6 +1890,10 @@ impl<'a> Gen<'a> {
             self.compile_value(arg)?;
             self.mstore_off(self.hash_buf + i as i32 * 32);
         }
+        // The precompile answers nothing for an invalid signature and leaves the output
+        // word as it was, so clear it first: the answer is then the zero address
+        self.push_u64(0);
+        self.mstore_off(self.ret_scratch);
         self.push_u64(32);
         self.push_mem(self.ret_scratch);
         self.push_u64(128);

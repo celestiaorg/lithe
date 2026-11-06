@@ -948,7 +948,16 @@ fn exec_state(
                     continue;
                 }
                 let precompile = if to == Word::from_u64(1) && in_size == 128 {
-                    crate::hash::ecrecover(&input).unwrap_or_else(|| Word::from_u64(0))
+                    match crate::hash::ecrecover(&input) {
+                        Some(address) => address,
+                        None => {
+                            // An invalid signature answers nothing, as the precompile does
+                            returndata.clear();
+                            trace.push(Ev::Static);
+                            stack.push(Word::from_u64(1));
+                            continue;
+                        }
+                    }
                 } else if to == Word::from_u64(2) {
                     Word::from_be_bytes(crate::hash::sha256(&input))
                 } else if to == Word::from_u64(3) {

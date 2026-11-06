@@ -328,3 +328,35 @@ fn precompile_arguments_are_typed() {
         assert!(err.to_string().contains(want), "{want}: {err}");
     }
 }
+
+#[test]
+fn ecrecover_of_an_invalid_signature_is_zero_after_a_query() {
+    // A query leaves its answer in the word the precompile would write; an invalid
+    // signature writes nothing, and must still recover the zero address
+    let src = r#"
+import "std/crypto";
+interface Echo is {
+  view function peek(v : uint) : uint;
+}
+external view function after(const e : Echo; const v : uint) : address is {
+  const _ : uint := query e.peek(v);
+} with Crypto.ecrecover(bytes32(v), 27, bytes32(0), bytes32(0))
+external pure function alone(const v : uint) : address is Crypto.ecrecover(bytes32(v), 27, bytes32(0), bytes32(0))
+"#;
+    install_mocks();
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    for sig in ["after(address,uint256)", "alone(uint256)"] {
+        let args: Vec<Word> = if sig.starts_with("after") {
+            vec![Word::from_u64(0xcd), Word::from_u64(0x1234)]
+        } else {
+            vec![Word::from_u64(0x1234)]
+        };
+        let out = super::call(&runtime, sig, &args);
+        assert!(!out.reverted, "{sig} reverted: {}", pretty(&out.returndata));
+        assert_eq!(
+            out.returndata,
+            Word::from_u64(0).to_be_bytes().to_vec(),
+            "{sig}"
+        );
+    }
+}
