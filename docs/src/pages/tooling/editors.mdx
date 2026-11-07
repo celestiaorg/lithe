@@ -22,6 +22,10 @@ The script installs the Recur bundle into `~/.recur/bundles/Lithe`. For VS Code 
 
 In VS Code and Cursor, the `lithe.path` setting names the compiler to run, `lithe` by default. Set it to an absolute path when the editor can't find `lithe` on its `PATH`, or to try a compiler built from source, such as `target/release/lithe`. Recur runs `lithe lsp` from the `PATH`.
 
+## When errors appear
+
+On every edit, the server checks the file without compiling it, about 50 ms after you stop typing. Type errors, lint findings, and quick fixes come from this check. Errors that only the code generator finds, such as a contract with no entrypoints or one too large to deploy, appear when you save: the server then builds the open files in [fast mode](/tooling/cli#build-flags) in the background. The next edit drops that build and clears its errors until you save again.
+
 ## Other editors
 
 An editor that speaks the Language Server Protocol can run `lithe lsp` itself: the server reads stdin and writes stdout. An editor that reads TextMate grammars can highlight Lithe with `extensions/lithe.tmLanguage.json`.
