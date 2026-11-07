@@ -882,6 +882,10 @@ struct Rec {
     literals: Vec<(Vec<u8>, Word)>,
     peer_built: Vec<(String, Vec<u8>)>,
     tail_blobs: Vec<(Word, Vec<u32>)>,
+    /// Error head this body allocated or wrote. The revert helper reads that region.
+    revert_head: Option<i32>,
+    /// Data, literals, peers, and tail blobs already embedded when this body was compiled.
+    embed: u64,
     revert_or: u64,
     return_sites: usize,
     log_sites: usize,
@@ -951,6 +955,8 @@ pub(super) struct BodyBefore {
     entries: usize,
     bytes_rep: Option<(usize, u32)>,
     dyn_key: Option<(u32, i32)>,
+    revert_head: Option<i32>,
+    embed: u64,
 }
 
 impl<'a> Gen<'a> {
@@ -1008,6 +1014,13 @@ impl<'a> Gen<'a> {
             entries: self.entry_labels.len(),
             bytes_rep: self.bytes_rep,
             dyn_key: self.dyn_key,
+            revert_head: self.revert_head,
+            embed: embed_hash(
+                &self.data,
+                &self.literals,
+                &self.peer_built,
+                &self.tail_blobs,
+            ),
         }
     }
 
@@ -1043,10 +1056,15 @@ impl<'a> Gen<'a> {
         {
             return;
         }
-        if self.data[..before.data.len()]
-            .iter()
-            .zip(&before.data)
-            .any(|((w, _, _), have)| w != have)
+        if before.revert_head.is_some() && self.revert_head != before.revert_head {
+            return;
+        }
+        if embed_hash(
+            &self.data[..before.data.len()],
+            &before.literals,
+            &before.peer_built,
+            &self.tail_blobs[..before.tail_blobs],
+        ) != before.embed
         {
             return;
         }
@@ -1091,6 +1109,20 @@ impl<'a> Gen<'a> {
                 anchors.push((label, anchor.clone()));
             }
         }
+        let revert_head = {
+            let head_used = |addr: i32| {
+                let want = region_index(addr);
+                let same = |a: i32| region_index(a) == want;
+                notes.iter().any(|(a, _, _)| same(*a))
+                    || funcs.iter().any(|(_, func)| {
+                        func.code
+                            .iter()
+                            .any(|inst| matches!(inst, Inst::Mem(a) if same(*a as i32)))
+                    })
+            };
+            self.revert_head
+                .filter(|&addr| before.revert_head.is_none() || head_used(addr))
+        };
         let notes = notes
             .into_iter()
             .filter(|(addr, _, _)| region_index(*addr).is_some_and(|s| s < before.space0))
@@ -1136,6 +1168,8 @@ impl<'a> Gen<'a> {
             literals,
             peer_built,
             tail_blobs: self.tail_blobs[before.tail_blobs..].to_vec(),
+            revert_head,
+            embed: before.embed,
             revert_or: self.revert_kinds & !before.revert_kinds,
             return_sites: self.return_sites - before.return_sites,
             log_sites: self.log_sites - before.log_sites,
@@ -1156,9 +1190,9 @@ impl<'a> Gen<'a> {
     /// Installs a remembered body. Plan bits that do not reach it (frames, sink, held
     /// duplicates, abandon, forwarded constants, a static heap) are not part of the key.
     ///
-    /// simplify: reuse stops when a helper label or a region allocated earlier in this
-    /// emit no longer lines up. Remap those too if later bodies still miss after an early
-    /// outline flip.
+    /// simplify: reuse stops when a helper label, an earlier region, the error head, or
+    /// the embedded-data prefix no longer lines up. Remap those too if a one-knob plan
+    /// still recompiles bodies that only differ there.
     pub(super) fn recall_body(&mut self, key: &FuncKey) -> bool {
         let Some(memo) = self.body_memo.clone() else {
             return false;
@@ -1172,6 +1206,15 @@ impl<'a> Gen<'a> {
         else {
             return false;
         };
+        if embed_hash(
+            &self.data,
+            &self.literals,
+            &self.peer_built,
+            &self.tail_blobs,
+        ) != rec.embed
+        {
+            return false;
+        }
         if self.fixed_spaces != rec.fixed {
             return false;
         }
@@ -1343,6 +1386,18 @@ impl<'a> Gen<'a> {
         let (Some(cache_words), Some(leaf_words)) = (cache_words, leaf_words) else {
             return false;
         };
+        let revert_head = match rec.revert_head {
+            Some(addr) => {
+                let Some(addr) = map_addr(&addr) else {
+                    return false;
+                };
+                if self.revert_head.is_some_and(|have| have != addr) {
+                    return false;
+                }
+                Some(addr)
+            }
+            None => None,
+        };
         self.next_label += rec.label_count;
         self.spaces.extend(rec.spaces.iter().cloned());
         self.return_sites += rec.return_sites;
@@ -1386,6 +1441,9 @@ impl<'a> Gen<'a> {
         self.tail_blobs.extend(rec.tail_blobs);
         if let Some(rep) = rec.bytes_rep {
             self.bytes_rep.get_or_insert(rep);
+        }
+        if let Some(addr) = revert_head {
+            self.revert_head = Some(addr);
         }
         #[cfg(test)]
         BODY_RECALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1463,6 +1521,41 @@ fn reaching_bits(gen: &Gen, idx: usize) -> u64 {
         func.hash(&mut hasher);
         plan.outline.contains(&func).hash(&mut hasher);
         plan.specialize.contains(&func).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn embed_hash(
+    data: &[(Word, Vec<u8>, String)],
+    literals: &HashMap<Vec<u8>, Word>,
+    peers: &HashMap<String, Vec<u8>>,
+    tails: &[(Word, Vec<u32>)],
+) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.len().hash(&mut hasher);
+    for (marker, bytes, name) in data {
+        marker.hash(&mut hasher);
+        bytes.hash(&mut hasher);
+        name.hash(&mut hasher);
+    }
+    let mut keys: Vec<&Vec<u8>> = literals.keys().collect();
+    keys.sort();
+    keys.len().hash(&mut hasher);
+    for key in keys {
+        key.hash(&mut hasher);
+        literals[key].hash(&mut hasher);
+    }
+    let mut names: Vec<&String> = peers.keys().collect();
+    names.sort();
+    names.len().hash(&mut hasher);
+    for name in names {
+        name.hash(&mut hasher);
+        peers[name].hash(&mut hasher);
+    }
+    tails.len().hash(&mut hasher);
+    for (marker, marks) in tails {
+        marker.hash(&mut hasher);
+        marks.hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -1694,9 +1787,16 @@ fn apply_map<K: Eq + Hash + Clone, V: Clone>(map: &mut HashMap<K, V>, delta: &Ma
 #[cfg(test)]
 mod memo_tests {
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
+
+    fn gate() -> std::sync::MutexGuard<'static, ()> {
+        static GATE: Mutex<()> = Mutex::new(());
+        GATE.lock().unwrap_or_else(|err| err.into_inner())
+    }
 
     #[test]
     fn release_search_reuses_outlined_bodies() {
+        let _gate = gate();
         super::BODY_RECALLS.store(0, std::sync::atomic::Ordering::Relaxed);
         let src = "\
 storage is record { n : uint; }\n\
@@ -1721,5 +1821,121 @@ external function c(const x : uint) is { storage.n := mix(mix(x)) + mix(x); }\n\
             super::BODY_RECALLS.load(std::sync::atomic::Ordering::Relaxed) > 0,
             "an outlined body should be reused when a plan flips a knob that does not reach it"
         );
+    }
+
+    const RAISES: &str = "\
+error UnknownKey of string;\n\
+storage is record { n : uint; }\n\
+function boom(const s : string) is {\n\
+  const pad : string := \"abcdefghijklmnopqrstuvwxyz0123456789\";\n\
+  storage.n := pad.length;\n\
+  fail UnknownKey(s);\n\
+}\n\
+pure function mix(const x : uint) : uint is\n\
+  x + x + x + x + x + x + x + x + 1\n\
+external function a(const x : uint; const s : string) raises UnknownKey is {\n\
+  boom(s);\n\
+  storage.n := mix(x);\n\
+}\n\
+external function b(const x : uint; const s : string) raises UnknownKey is {\n\
+  boom(s);\n\
+  storage.n := mix(mix(x));\n\
+}\n\
+";
+
+    fn program(src: &str) -> (crate::check::Checked, crate::split::Shape) {
+        let sources = crate::Sources::memory([("t.lithe", src)]);
+        let prog = crate::modules::load(&sources, Path::new("t.lithe"))
+            .unwrap_or_else(|err| panic!("{err}"));
+        let checked = crate::check::check(prog, crate::EvmVersion::default())
+            .unwrap_or_else(|err| panic!("{err}"));
+        let shape = crate::split::Shape {
+            opts: crate::Options::default(),
+            ..crate::split::Shape::default()
+        };
+        (checked, shape)
+    }
+
+    fn emit(
+        checked: &crate::check::Checked,
+        shape: &crate::split::Shape,
+        plan: super::super::Plan,
+        memo: Option<Arc<Mutex<super::BodyMemo>>>,
+        seed: bool,
+    ) -> (
+        Vec<crate::asm::Inst>,
+        Vec<(crate::word::Word, Vec<u8>, String)>,
+        Option<i32>,
+    ) {
+        let mut g =
+            super::super::Gen::new(checked, plan, shape).unwrap_or_else(|err| panic!("{err}"));
+        g.body_memo = memo;
+        g.imm_consts = super::super::init_constants(checked, shape);
+        if seed {
+            let marker = g.data_marker();
+            g.data.push((marker, b"seed-blob".to_vec(), String::new()));
+        }
+        g.emit().unwrap_or_else(|err| panic!("{err}"));
+        (g.code, g.data, g.revert_head)
+    }
+
+    #[test]
+    fn recalled_raise_matches_a_fresh_emit() {
+        let _gate = gate();
+        let (checked, shape) = program(RAISES);
+        let mut scout = super::super::Gen::new(&checked, super::super::Plan::default(), &shape)
+            .unwrap_or_else(|err| panic!("{err}"));
+        scout.imm_consts = super::super::init_constants(&checked, &shape);
+        scout.emit().unwrap_or_else(|err| panic!("{err}"));
+        let plan = scout.plan();
+        let boom = checked
+            .prog
+            .funcs
+            .iter()
+            .position(|f| f.name == "boom")
+            .expect("boom");
+        assert!(
+            plan.outline.contains(&boom),
+            "boom has to be outlined for the memo to replay it"
+        );
+
+        let memo = Arc::new(Mutex::new(super::BodyMemo::default()));
+        let recorded = emit(
+            &checked,
+            &shape,
+            plan.clone(),
+            Some(Arc::clone(&memo)),
+            false,
+        );
+        assert!(
+            !recorded.1.is_empty(),
+            "boom should embed its long error string"
+        );
+        let mut frames = plan.clone();
+        frames.frames = true;
+        let before = super::BODY_RECALLS.load(std::sync::atomic::Ordering::Relaxed);
+        let replayed = emit(&checked, &shape, frames.clone(), Some(memo), false);
+        assert!(
+            super::BODY_RECALLS.load(std::sync::atomic::Ordering::Relaxed) > before,
+            "frames is not part of the key, so the outlined raise is replayed"
+        );
+        let fresh = emit(&checked, &shape, frames, None, false);
+        assert_eq!(replayed.2, fresh.2, "revert head");
+        assert_eq!(replayed.1, fresh.1, "data");
+        assert_eq!(replayed.0, fresh.0, "code");
+
+        let memo = Arc::new(Mutex::new(super::BodyMemo::default()));
+        let _ = emit(
+            &checked,
+            &shape,
+            plan.clone(),
+            Some(Arc::clone(&memo)),
+            false,
+        );
+        let seeded = emit(&checked, &shape, plan.clone(), Some(memo), true);
+        let truth = emit(&checked, &shape, plan, None, true);
+        assert_eq!(seeded.2, truth.2, "seeded revert head");
+        assert_eq!(seeded.1, truth.1, "seeded data");
+        assert_eq!(seeded.0, truth.0, "seeded code");
     }
 }

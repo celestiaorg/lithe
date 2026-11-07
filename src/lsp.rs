@@ -33,20 +33,35 @@ struct Doc {
     codegen: Option<lithe::Error>,
 }
 
-#[cfg(test)]
-static SAVE_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+/// Per server. Tests pass their own so parallel `cargo test` does not share a clock.
+#[derive(Clone)]
+struct Pace {
+    debounce: Duration,
+    save_delay: Duration,
+    diag: Option<std::sync::Arc<AtomicU64>>,
+}
 
-#[cfg(test)]
-static CHANGE_DEBOUNCE_MS: AtomicU64 = AtomicU64::new(50);
-
-#[cfg(test)]
-static LAST_DIAG_NS: AtomicU64 = AtomicU64::new(0);
+fn pace() -> Pace {
+    Pace {
+        debounce: Duration::from_millis(50),
+        save_delay: Duration::ZERO,
+        diag: None,
+    }
+}
 
 /// Answers messages until `exit` or the end of input, and returns the exit status.
 ///
 /// This thread reads frames. Another thread analyzes them, and a save has its own worker.
 /// `didChange` waits 50 ms so a burst of keystrokes checks once.
 fn serve<W: Write + Send + 'static>(input: &mut impl BufRead, output: W) -> (i32, W) {
+    serve_at(input, output, pace())
+}
+
+fn serve_at<W: Write + Send + 'static>(
+    input: &mut impl BufRead,
+    output: W,
+    pace: Pace,
+) -> (i32, W) {
     let docs = std::sync::Arc::new(Mutex::new(HashMap::<String, Doc>::new()));
     let generation = std::sync::Arc::new(AtomicU64::new(0));
     let output = std::sync::Arc::new(Mutex::new(output));
@@ -57,7 +72,8 @@ fn serve<W: Write + Send + 'static>(input: &mut impl BufRead, output: W) -> (i32
         let generation = std::sync::Arc::clone(&generation);
         let output = std::sync::Arc::clone(&output);
         let cache = std::sync::Arc::clone(&cache);
-        move || save_worker(save_rx, &docs, &generation, &output, &cache)
+        let pace = pace.clone();
+        move || save_worker(save_rx, &docs, &generation, &output, &cache, pace)
     });
     let (tx, rx) = mpsc::channel();
     let analysis = thread::spawn({
@@ -66,7 +82,8 @@ fn serve<W: Write + Send + 'static>(input: &mut impl BufRead, output: W) -> (i32
         let output = std::sync::Arc::clone(&output);
         let cache = std::sync::Arc::clone(&cache);
         let save_tx = save_tx.clone();
-        move || worker(rx, &docs, &generation, &output, &cache, &save_tx)
+        let pace = pace.clone();
+        move || worker(rx, &docs, &generation, &output, &cache, &save_tx, pace)
     });
     while let Some(msg) = read(input) {
         let exit = msg.get("method").and_then(Json::str) == Some("exit");
@@ -85,31 +102,24 @@ fn serve<W: Write + Send + 'static>(input: &mut impl BufRead, output: W) -> (i32
     (code, output)
 }
 
-fn debounce() -> Duration {
-    #[cfg(test)]
-    let ms = CHANGE_DEBOUNCE_MS.load(Ordering::Relaxed);
-    #[cfg(not(test))]
-    let ms = 50;
-    Duration::from_millis(ms)
-}
-
 fn flush_changes<W: Write + Send>(
     pending: &mut Vec<String>,
     docs: &Mutex<HashMap<String, Doc>>,
     output: &Mutex<W>,
     cache: &lithe::ModuleCache,
+    pace: &Pace,
 ) {
     for uri in pending.drain(..) {
-        #[cfg(test)]
-        let started = Instant::now();
+        let started = pace.diag.is_some().then(Instant::now);
         let mut docs = docs.lock().unwrap();
         let Some(doc) = docs.get_mut(&uri) else {
             continue;
         };
         apply_frontend(&uri, doc, cache);
         publish(output, &uri, doc);
-        #[cfg(test)]
-        LAST_DIAG_NS.store(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        if let (Some(slot), Some(started)) = (&pace.diag, started) {
+            slot.store(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
     }
 }
 
@@ -120,6 +130,7 @@ fn worker<W: Write + Send>(
     output: &Mutex<W>,
     cache: &lithe::ModuleCache,
     saved: &mpsc::Sender<u64>,
+    pace: Pace,
 ) -> i32 {
     let mut shutdown = false;
     let mut pending: Vec<String> = Vec::new();
@@ -138,13 +149,13 @@ fn worker<W: Write + Send>(
                 Ok(msg) => Some(msg),
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => {
-                    flush_changes(&mut pending, docs, output, cache);
+                    flush_changes(&mut pending, docs, output, cache, &pace);
                     return 1;
                 }
             }
         };
         let Some(msg) = msg else {
-            flush_changes(&mut pending, docs, output, cache);
+            flush_changes(&mut pending, docs, output, cache, &pace);
             deadline = None;
             continue;
         };
@@ -176,9 +187,9 @@ fn worker<W: Write + Send>(
                     pending.remove(i);
                 }
                 pending.push(uri.to_string());
-                let wait = debounce();
+                let wait = pace.debounce;
                 if wait.is_zero() {
-                    flush_changes(&mut pending, docs, output, cache);
+                    flush_changes(&mut pending, docs, output, cache, &pace);
                     deadline = None;
                 } else {
                     deadline = Some(Instant::now() + wait);
@@ -187,7 +198,7 @@ fn worker<W: Write + Send>(
             continue;
         }
         if !pending.is_empty() {
-            flush_changes(&mut pending, docs, output, cache);
+            flush_changes(&mut pending, docs, output, cache, &pace);
             deadline = None;
         }
         let text = (method == "textDocument/didOpen")
@@ -496,14 +507,11 @@ fn save_worker<W: Write + Send>(
     generation: &AtomicU64,
     output: &Mutex<W>,
     cache: &lithe::ModuleCache,
+    pace: Pace,
 ) {
     while let Ok(job) = rx.recv() {
-        #[cfg(test)]
-        {
-            let ms = SAVE_DELAY_MS.load(Ordering::Relaxed);
-            if ms > 0 {
-                thread::sleep(std::time::Duration::from_millis(ms));
-            }
+        if !pace.save_delay.is_zero() {
+            thread::sleep(pace.save_delay);
         }
         let snap: Vec<(String, String, bool)> = {
             let docs = docs.lock().unwrap();
@@ -1391,8 +1399,12 @@ mod tests {
     }
 
     fn session(messages: &[String]) -> (i32, Vec<String>) {
+        session_at(messages, pace())
+    }
+
+    fn session_at(messages: &[String], pace: Pace) -> (i32, Vec<String>) {
         let input = messages.concat();
-        let (code, output) = serve(&mut input.as_bytes(), Vec::new());
+        let (code, output) = serve_at(&mut input.as_bytes(), Vec::new(), pace);
         let output = String::from_utf8(output).unwrap();
         let bodies = output
             .split("Content-Length: ")
@@ -1490,20 +1502,17 @@ mod tests {
             quote(&uri),
             quote(broken)
         ));
-        SAVE_DELAY_MS.store(200, Ordering::Relaxed);
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                SAVE_DELAY_MS.store(0, Ordering::Relaxed);
-            }
-        }
-        let _reset = Reset;
-        let (_, bodies) = session(&[
-            open(&uri, text),
-            saved(&uri),
-            change,
-            frame(r#"{"jsonrpc":"2.0","method":"exit"}"#),
-        ]);
+        let mut pace = pace();
+        pace.save_delay = Duration::from_millis(200);
+        let (_, bodies) = session_at(
+            &[
+                open(&uri, text),
+                saved(&uri),
+                change,
+                frame(r#"{"jsonrpc":"2.0","method":"exit"}"#),
+            ],
+            pace,
+        );
         std::fs::remove_dir_all(&dir).unwrap();
         let diags: Vec<_> = bodies
             .iter()
@@ -2164,7 +2173,6 @@ pure function inc(const x : uint) : uint is x + 1\n\
 external function bump(const x : uint) is { storage.n := inc(x); }\n";
         std::fs::write(&path, text).unwrap();
         let uri = format!("file://{}", path.display());
-        CHANGE_DEBOUNCE_MS.store(0, Ordering::Relaxed);
         let (_, bodies) = session(&[
             frame(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#),
             open(&uri, text),
@@ -2180,7 +2188,6 @@ external function bump(const x : uint) is { storage.n := inc(x); }\n";
                 quote(&uri)
             )),
         ]);
-        CHANGE_DEBOUNCE_MS.store(50, Ordering::Relaxed);
         std::fs::remove_dir_all(&dir).unwrap();
         let reply = |id: u32| {
             bodies
@@ -2210,9 +2217,10 @@ external function bump(const x : uint) is { storage.n := inc(x); }\n";
                 quote(text)
             ))
         };
-        CHANGE_DEBOUNCE_MS.store(200, Ordering::Relaxed);
+        let mut slow = pace();
+        slow.debounce = Duration::from_millis(200);
         let broken = text.clone() + "\nnope\n";
-        let (_, coalesced) = session(&[open(&uri, &text), change(&broken), change(&text)]);
+        let (_, coalesced) = session_at(&[open(&uri, &text), change(&broken), change(&text)], slow);
         let diags: Vec<_> = coalesced
             .iter()
             .filter(|b| b.contains("publishDiagnostics"))
@@ -2223,20 +2231,20 @@ external function bump(const x : uint) is { storage.n := inc(x); }\n";
             "the later text is what was checked: {}",
             diags[1]
         );
-        CHANGE_DEBOUNCE_MS.store(0, Ordering::Relaxed);
-        LAST_DIAG_NS.store(0, Ordering::Relaxed);
-        let (_, timed) = session(&[open(&uri, &text), change(&(text.clone() + "\n"))]);
-        CHANGE_DEBOUNCE_MS.store(50, Ordering::Relaxed);
+        let diag = std::sync::Arc::new(AtomicU64::new(0));
+        let mut fast = pace();
+        fast.debounce = Duration::ZERO;
+        fast.diag = Some(std::sync::Arc::clone(&diag));
+        let (_, timed) = session_at(&[open(&uri, &text), change(&(text.clone() + "\n"))], fast);
         assert!(
             timed.iter().any(|b| b.contains("publishDiagnostics")),
             "{timed:?}"
         );
-        let ms = LAST_DIAG_NS.load(Ordering::Relaxed) / 1_000_000;
-        let limit = if cfg!(debug_assertions) { 2_000 } else { 20 };
+        let ms = diag.load(Ordering::Relaxed) / 1_000_000;
         assert!(ms > 0, "diagnostics timer did not run");
         assert!(
-            ms <= limit,
-            "diagnostics on erc20_full took {ms} ms (limit {limit})"
+            ms <= 20,
+            "diagnostics on erc20_full took {ms} ms (limit 20)"
         );
     }
 
