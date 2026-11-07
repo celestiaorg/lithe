@@ -38,7 +38,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 
 ### Phase 3 — block IR, one-shot stack scheduling, linear passes
 
-- [ ] **3.1** CFG over `Vec<Inst>` and per-block worklist rewrites. Byte-identical in both modes.
+- [x] **3.1** CFG over `Vec<Inst>` and per-block worklist rewrites. Byte-identical in both modes. See the measurements below.
 - [ ] **3.2** `peephole` and `schedule` per block. Delete the 500-round loop. Byte-identical.
 - [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%.
 - [ ] **3.4** `outline` on the block IR.
@@ -213,3 +213,26 @@ Codegen errors on save, using a contract with no entrypoints: `didOpen` publishe
 Extension: `npm ci` in `extensions/vscode` installs `vscode-languageclient` 9.0.1. `code --extensions-dir <tmp> --list-extensions` lists `lithe.lithe@0.1.0` from a copy of the folder. `extensions/vscode/syntaxes/lithe.tmLanguage.json` is byte-identical to `extensions/lithe.tmLanguage.json` (`scopeName` `source.lithe`, matching `package.json`). Opening a window was not possible on this headless box, so in-editor highlighting and the client's activation were not observed. The protocol run above covers what the client relies on from the server.
 
 Docs: `editors.mdx` has a "When errors appear" section covering diagnostics on edit and codegen errors on save.
+
+## 3.1 Block CFG
+
+Plan: add `asm::blocks::Blocks`, a block list with labels resolved to block ids, `succ`/`preds` (one edge per pushed label or table entry, plus fallthrough), and a serializer. Move `prune_labels`, `remove_dead`, `thread_jumps`, `dedup_blocks`, `merge_tails`, `rotate_loops`, `rotate_exits`, and `hoist` onto it. They edit block bodies in place or move whole blocks; none splices the global stream. Proof: byte-identical output from every pass call, then the Release and Fast snapshots.
+
+A block starts at its labels, or after an exit, and runs to the next exit or label. So every label heads a block, and only the first block or dead code has no label. `JUMPI` does not end a block: the stream passes treat a run through a `JUMPI` as one unit, and keeping that shape is what makes them byte-identical. `remove_dead` becomes "drop every unlabelled block but the first". The `dedup_blocks`/`merge_tails` segments are the blocks that end in an exit. `merge_tails` counts calls with `preds`. `hoist` and `rotate_exits` reorder `Vec<Block>`. `rotate_exits` no longer clones the whole stream for each candidate once it is past byte 0xff. Each pass still takes `&mut Vec<Inst>`, so `track::pass` carries marks exactly as before. When nothing is tracked, `optimize` runs prune, dead, and thread on one `Blocks` per round.
+
+Equivalence: during development, every call of each new pass was asserted equal (code and `changed` flag) to the old stream implementation over the whole lib suite (550 tests, including both snapshot modes). The oracle was then removed with the old code. `tests/snapshots/bytecode.json` is unchanged.
+
+Timing (`target/fast`, `LITHE_THREADS=1`, cache off, best of 3, parent commit vs this one):
+
+| target | mode | optimize old → new | backend old → new |
+|---|---|---:|---:|
+| erc20_full | release | 339 → 388 ms | 1813 → 1868 ms |
+| erc20_full | fast | 12.6 → 13.5 ms | 42.1 → 42.4 ms |
+| uniswap_v2_pair | release | 59.9 → 66.2 ms | 347 → 353 ms |
+| uniswap_v2_pair | fast | 5.0 → 5.8 ms | 21.4 → 22.0 ms |
+| ladder 64 | fast | 81 → 90 ms | 119 → 129 ms |
+| ladder 128 | fast | 481 → 523 ms | 607 → 648 ms |
+
+**This slice is 10–15% slower in `optimize`.** It is a representation change, and the 500-round loop still converts stream → blocks → stream around `clean`, `dedup_blocks`, and `merge_tails` every round. Per-pass timing on ladder 128 puts nearly all of the extra time in those conversions. The pass bodies cost the same as before. `merge_tails` is 75% of `optimize` in both versions: its pairwise tail comparison within same-ending groups is quadratic. 3.2 should keep one `Blocks` across the whole round, with `peephole`, `dup_constants`, and `schedule` per block, and serialize once at the end of `optimize`. That removes the conversions. `merge_tails` should then group tails by a hash of suffixes rather than compare all pairs. `rotate_loops` still scans every block per loop head, as the stream version scanned every instruction (marked `simplify:`); a label → referencing-block index would make it linear.
+
+Tests: `cargo test` (lib, bin, and integration), `LITHE_VERIFY=1` snapshot, `LITHE_FUZZ_STEPS=2000` differential, `cargo clippy --all-targets -D warnings`, `cargo fmt --check`. New unit test `asm::blocks::tests::splits_links_and_writes_back` covers the split, the serializer, `succ`/`preds`, and prune + dead.
