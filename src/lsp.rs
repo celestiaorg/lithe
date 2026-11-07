@@ -7,8 +7,10 @@ use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Mutex};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::Mutex;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use lithe::{Index, Kind, Span};
 
@@ -17,7 +19,7 @@ pub fn run() -> ! {
     std::process::exit(code)
 }
 
-const CAPABILITIES: &str = r#"{"capabilities":{"textDocumentSync":{"openClose":true,"change":1,"save":true},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"completionProvider":{"triggerCharacters":["."]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentFormattingProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix"]}},"serverInfo":{"name":"lithe"}}"#;
+const CAPABILITIES: &str = r#"{"capabilities":{"textDocumentSync":{"openClose":true,"change":1,"save":true},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"renameProvider":true,"workspaceSymbolProvider":true,"completionProvider":{"triggerCharacters":["."]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentFormattingProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix"]}},"serverInfo":{"name":"lithe"}}"#;
 
 struct Doc {
     text: String,
@@ -31,26 +33,68 @@ struct Doc {
     codegen: Option<lithe::Error>,
 }
 
-#[cfg(test)]
-static SAVE_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+/// Per server. Tests pass their own so parallel `cargo test` does not share a clock.
+#[derive(Clone)]
+struct Pace {
+    debounce: Duration,
+    save_delay: Duration,
+    diag: Option<std::sync::Arc<AtomicU64>>,
+}
+
+fn pace() -> Pace {
+    Pace {
+        debounce: Duration::from_millis(50),
+        save_delay: Duration::ZERO,
+        diag: None,
+    }
+}
 
 /// Answers messages until `exit` or the end of input, and returns the exit status.
+///
+/// This thread reads frames. Another thread analyzes them, and a save has its own worker.
+/// `didChange` waits 50 ms so a burst of keystrokes checks once.
 fn serve<W: Write + Send + 'static>(input: &mut impl BufRead, output: W) -> (i32, W) {
+    serve_at(input, output, pace())
+}
+
+fn serve_at<W: Write + Send + 'static>(
+    input: &mut impl BufRead,
+    output: W,
+    pace: Pace,
+) -> (i32, W) {
     let docs = std::sync::Arc::new(Mutex::new(HashMap::<String, Doc>::new()));
     let generation = std::sync::Arc::new(AtomicU64::new(0));
     let output = std::sync::Arc::new(Mutex::new(output));
     let cache = std::sync::Arc::new(lithe::ModuleCache::new());
-    let (tx, rx) = mpsc::channel();
-    let worker = thread::spawn({
+    let (save_tx, save_rx) = mpsc::channel();
+    let saver = thread::spawn({
         let docs = std::sync::Arc::clone(&docs);
         let generation = std::sync::Arc::clone(&generation);
         let output = std::sync::Arc::clone(&output);
         let cache = std::sync::Arc::clone(&cache);
-        move || save_worker(rx, &docs, &generation, &output, &cache)
+        let pace = pace.clone();
+        move || save_worker(save_rx, &docs, &generation, &output, &cache, pace)
     });
-    let code = serve_loop(input, &docs, &generation, &output, &cache, &tx);
+    let (tx, rx) = mpsc::channel();
+    let analysis = thread::spawn({
+        let docs = std::sync::Arc::clone(&docs);
+        let generation = std::sync::Arc::clone(&generation);
+        let output = std::sync::Arc::clone(&output);
+        let cache = std::sync::Arc::clone(&cache);
+        let save_tx = save_tx.clone();
+        let pace = pace.clone();
+        move || worker(rx, &docs, &generation, &output, &cache, &save_tx, pace)
+    });
+    while let Some(msg) = read(input) {
+        let exit = msg.get("method").and_then(Json::str) == Some("exit");
+        if tx.send(msg).is_err() || exit {
+            break;
+        }
+    }
     drop(tx);
-    worker.join().unwrap();
+    let code = analysis.join().unwrap();
+    drop(save_tx);
+    saver.join().unwrap();
     let Ok(output) = std::sync::Arc::try_unwrap(output) else {
         panic!("save worker dropped its output");
     };
@@ -58,29 +102,109 @@ fn serve<W: Write + Send + 'static>(input: &mut impl BufRead, output: W) -> (i32
     (code, output)
 }
 
-fn serve_loop<W: Write + Send>(
-    input: &mut impl BufRead,
+fn flush_changes<W: Write + Send>(
+    pending: &mut Vec<String>,
+    docs: &Mutex<HashMap<String, Doc>>,
+    output: &Mutex<W>,
+    cache: &lithe::ModuleCache,
+    pace: &Pace,
+) {
+    for uri in pending.drain(..) {
+        let started = pace.diag.is_some().then(Instant::now);
+        let mut docs = docs.lock().unwrap();
+        let Some(doc) = docs.get_mut(&uri) else {
+            continue;
+        };
+        apply_frontend(&uri, doc, cache);
+        publish(output, &uri, doc);
+        if let (Some(slot), Some(started)) = (&pace.diag, started) {
+            slot.store(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
+    }
+}
+
+fn worker<W: Write + Send>(
+    rx: mpsc::Receiver<Json>,
     docs: &Mutex<HashMap<String, Doc>>,
     generation: &AtomicU64,
     output: &Mutex<W>,
     cache: &lithe::ModuleCache,
     saved: &mpsc::Sender<u64>,
+    pace: Pace,
 ) -> i32 {
     let mut shutdown = false;
-    while let Some(msg) = read(input) {
+    let mut pending: Vec<String> = Vec::new();
+    let mut deadline = None;
+    loop {
+        let msg = if pending.is_empty() {
+            match rx.recv() {
+                Ok(msg) => Some(msg),
+                Err(_) => return 1,
+            }
+        } else {
+            let wait = deadline
+                .map(|at: Instant| at.saturating_duration_since(Instant::now()))
+                .unwrap_or(Duration::ZERO);
+            match rx.recv_timeout(wait) {
+                Ok(msg) => Some(msg),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => {
+                    flush_changes(&mut pending, docs, output, cache, &pace);
+                    return 1;
+                }
+            }
+        };
+        let Some(msg) = msg else {
+            flush_changes(&mut pending, docs, output, cache, &pace);
+            deadline = None;
+            continue;
+        };
         let method = msg.get("method").and_then(Json::str).unwrap_or("");
         let params = msg.get("params");
         let doc = params.and_then(|p| p.get("textDocument"));
         let uri = doc.and_then(|d| d.get("uri")).and_then(Json::str);
-        let text = match method {
-            "textDocument/didOpen" => doc.and_then(|d| d.get("text")),
-            "textDocument/didChange" => params
+        if method == "textDocument/didChange" {
+            let text = params
                 .and_then(|p| p.get("contentChanges"))
                 .and_then(Json::last)
-                .and_then(|change| change.get("text")),
-            _ => None,
+                .and_then(|change| change.get("text"))
+                .and_then(Json::str);
+            if let (Some(uri), Some(text)) = (uri, text) {
+                generation.fetch_add(1, Ordering::AcqRel);
+                {
+                    let mut docs = docs.lock().unwrap();
+                    let doc = docs.entry(uri.to_string()).or_insert(Doc {
+                        text: String::new(),
+                        index: None,
+                        lints: Vec::new(),
+                        error: None,
+                        codegen: None,
+                    });
+                    doc.text = text.to_string();
+                    doc.codegen = None;
+                }
+                if let Some(i) = pending.iter().position(|have| have == uri) {
+                    pending.remove(i);
+                }
+                pending.push(uri.to_string());
+                let wait = pace.debounce;
+                if wait.is_zero() {
+                    flush_changes(&mut pending, docs, output, cache, &pace);
+                    deadline = None;
+                } else {
+                    deadline = Some(Instant::now() + wait);
+                }
+            }
+            continue;
         }
-        .and_then(Json::str);
+        if !pending.is_empty() {
+            flush_changes(&mut pending, docs, output, cache, &pace);
+            deadline = None;
+        }
+        let text = (method == "textDocument/didOpen")
+            .then(|| doc.and_then(|d| d.get("text")))
+            .flatten()
+            .and_then(Json::str);
         match method {
             "initialize" => reply(&mut *output.lock().unwrap(), &msg, CAPABILITIES),
             "shutdown" => {
@@ -88,7 +212,7 @@ fn serve_loop<W: Write + Send>(
                 reply(&mut *output.lock().unwrap(), &msg, "null");
             }
             "exit" => return if shutdown { 0 } else { 1 },
-            "textDocument/didOpen" | "textDocument/didChange" => {
+            "textDocument/didOpen" => {
                 if let (Some(uri), Some(text)) = (uri, text) {
                     generation.fetch_add(1, Ordering::AcqRel);
                     let mut docs = docs.lock().unwrap();
@@ -171,6 +295,26 @@ fn serve_loop<W: Write + Send>(
                     found.as_deref().unwrap_or("[]"),
                 );
             }
+            "textDocument/rename" => match rename_request(docs, uri, params) {
+                Rename::Edit(edit) => reply(&mut *output.lock().unwrap(), &msg, &edit),
+                Rename::Reject => send(
+                    &mut *output.lock().unwrap(),
+                    &format!(
+                        r#"{{"jsonrpc":"2.0","id":{},"error":{{"code":-32602,"message":"cannot rename this name"}}}}"#,
+                        id(&msg)
+                    ),
+                ),
+                Rename::None => reply(&mut *output.lock().unwrap(), &msg, "null"),
+            },
+            "workspace/symbol" => {
+                let query = params
+                    .and_then(|p| p.get("query"))
+                    .and_then(Json::str)
+                    .unwrap_or("");
+                let docs = docs.lock().unwrap();
+                let found = workspace_symbols(&docs, query);
+                reply(&mut *output.lock().unwrap(), &msg, &found);
+            }
             "" => {}
             _ if msg.get("id").is_some() => send(
                 &mut *output.lock().unwrap(),
@@ -183,7 +327,162 @@ fn serve_loop<W: Write + Send>(
             _ => {}
         }
     }
-    1
+}
+
+enum Rename {
+    None,
+    Reject,
+    Edit(String),
+}
+
+fn rename_request(
+    docs: &Mutex<HashMap<String, Doc>>,
+    uri: Option<&str>,
+    params: Option<&Json>,
+) -> Rename {
+    let Some((uri, params)) = uri.zip(params) else {
+        return Rename::None;
+    };
+    let Some(new_name) = params.get("newName").and_then(Json::str) else {
+        return Rename::Reject;
+    };
+    if !is_ident(new_name) {
+        return Rename::Reject;
+    }
+    let docs = docs.lock().unwrap();
+    let Some(doc) = docs.get(uri) else {
+        return Rename::None;
+    };
+    let Some(index) = doc.index.as_ref() else {
+        return Rename::None;
+    };
+    let Some((line, col)) = params.get("position").and_then(|p| position(&doc.text, p)) else {
+        return Rename::None;
+    };
+    let Some(r) = index.at(0, &doc.text, line, col) else {
+        return Rename::None;
+    };
+    let def_id = r.def;
+    let def = &index.defs[def_id];
+    if matches!(def.kind, Kind::Builtin | Kind::Keyword)
+        || def
+            .at
+            .is_some_and(|at| index.files.get(at.file).is_some_and(|f| f.std.is_some()))
+    {
+        return Rename::Reject;
+    }
+    let def_name = def.name.clone();
+    let decl = def.at;
+    let spans: Vec<lithe::Span> = index.references(def_id).map(|r| r.at).chain(decl).collect();
+    let mut seen = Vec::new();
+    let mut by_uri: Vec<(String, Vec<String>)> = Vec::new();
+    for at in spans {
+        if seen.contains(&(at.file, at.line, at.col, at.len)) {
+            continue;
+        }
+        let Some(file) = index.files.get(at.file) else {
+            continue;
+        };
+        if file.std.is_some() {
+            continue;
+        }
+        let (edit_uri, text) = if at.file == 0 {
+            (uri.to_string(), doc.text.as_str())
+        } else {
+            (file_uri(Path::new(&file.path)), file.text.as_str())
+        };
+        if at.file == 0
+            && !index.live(
+                &doc.text,
+                &lithe::Ref {
+                    at,
+                    def: def_id,
+                    hover: None,
+                },
+            )
+        {
+            continue;
+        }
+        let Some(have) = span_text(text, at) else {
+            continue;
+        };
+        if have != def_name {
+            continue;
+        }
+        seen.push((at.file, at.line, at.col, at.len));
+        let edit = format!(
+            r#"{{"range":{},"newText":{}}}"#,
+            range(text, at),
+            quote(new_name)
+        );
+        if let Some((_, edits)) = by_uri.iter_mut().find(|(u, _)| u == &edit_uri) {
+            edits.push(edit);
+        } else {
+            by_uri.push((edit_uri, vec![edit]));
+        }
+    }
+    let changes: Vec<String> = by_uri
+        .iter()
+        .map(|(uri, edits)| format!(r#"{}:[{}]"#, quote(uri), edits.join(",")))
+        .collect();
+    Rename::Edit(format!(r#"{{"changes":{{{}}}}}"#, changes.join(",")))
+}
+
+fn is_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c.is_ascii_alphabetic() => {
+            chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+        }
+        _ => false,
+    }
+}
+
+fn span_text(text: &str, at: lithe::Span) -> Option<&str> {
+    let line = text.split('\n').nth(at.line.saturating_sub(1) as usize)?;
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let start = at.col.saturating_sub(1) as usize;
+    line.get(start..start + at.len as usize)
+}
+
+fn workspace_symbols(docs: &HashMap<String, Doc>, query: &str) -> String {
+    let query = query.to_ascii_lowercase();
+    let mut uris: Vec<&String> = docs.keys().collect();
+    uris.sort();
+    let mut items = Vec::new();
+    for uri in uris {
+        let Some(doc) = docs.get(uri) else {
+            continue;
+        };
+        let Some(index) = &doc.index else {
+            continue;
+        };
+        for d in 0..index.defs.len() {
+            if !outline(index, &doc.text, d) {
+                continue;
+            }
+            let def = &index.defs[d];
+            if !query.is_empty() && !def.name.to_ascii_lowercase().contains(&query) {
+                continue;
+            }
+            let Some(at) = def.at else {
+                continue;
+            };
+            let container = def
+                .parent
+                .and_then(|p| index.defs.get(p))
+                .map(|p| format!(r#","containerName":{}"#, quote(&p.name)))
+                .unwrap_or_default();
+            items.push(format!(
+                r#"{{"name":{},"kind":{},"location":{{"uri":{},"range":{}}}{container}}}"#,
+                quote(&def.name),
+                symbol_kind(def.kind),
+                quote(uri),
+                range(&doc.text, at),
+            ));
+        }
+    }
+    format!("[{}]", items.join(","))
 }
 
 fn apply_frontend(uri: &str, doc: &mut Doc, cache: &lithe::ModuleCache) {
@@ -208,14 +507,11 @@ fn save_worker<W: Write + Send>(
     generation: &AtomicU64,
     output: &Mutex<W>,
     cache: &lithe::ModuleCache,
+    pace: Pace,
 ) {
     while let Ok(job) = rx.recv() {
-        #[cfg(test)]
-        {
-            let ms = SAVE_DELAY_MS.load(Ordering::Relaxed);
-            if ms > 0 {
-                thread::sleep(std::time::Duration::from_millis(ms));
-            }
+        if !pace.save_delay.is_zero() {
+            thread::sleep(pace.save_delay);
         }
         let snap: Vec<(String, String, bool)> = {
             let docs = docs.lock().unwrap();
@@ -1103,8 +1399,12 @@ mod tests {
     }
 
     fn session(messages: &[String]) -> (i32, Vec<String>) {
+        session_at(messages, pace())
+    }
+
+    fn session_at(messages: &[String], pace: Pace) -> (i32, Vec<String>) {
         let input = messages.concat();
-        let (code, output) = serve(&mut input.as_bytes(), Vec::new());
+        let (code, output) = serve_at(&mut input.as_bytes(), Vec::new(), pace);
         let output = String::from_utf8(output).unwrap();
         let bodies = output
             .split("Content-Length: ")
@@ -1202,20 +1502,17 @@ mod tests {
             quote(&uri),
             quote(broken)
         ));
-        SAVE_DELAY_MS.store(200, Ordering::Relaxed);
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                SAVE_DELAY_MS.store(0, Ordering::Relaxed);
-            }
-        }
-        let _reset = Reset;
-        let (_, bodies) = session(&[
-            open(&uri, text),
-            saved(&uri),
-            change,
-            frame(r#"{"jsonrpc":"2.0","method":"exit"}"#),
-        ]);
+        let mut pace = pace();
+        pace.save_delay = Duration::from_millis(200);
+        let (_, bodies) = session_at(
+            &[
+                open(&uri, text),
+                saved(&uri),
+                change,
+                frame(r#"{"jsonrpc":"2.0","method":"exit"}"#),
+            ],
+            pace,
+        );
         std::fs::remove_dir_all(&dir).unwrap();
         let diags: Vec<_> = bodies
             .iter()
@@ -1863,6 +2160,98 @@ mod tests {
             bodies[3].contains(r#""newText":"storage is record { n : uint; }"#),
             "{}",
             bodies[3]
+        );
+    }
+
+    #[test]
+    fn renames_a_name_and_lists_workspace_symbols() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-rename-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.lithe");
+        let text = "storage is record { n : uint; }\n\
+pure function inc(const x : uint) : uint is x + 1\n\
+external function bump(const x : uint) is { storage.n := inc(x); }\n";
+        std::fs::write(&path, text).unwrap();
+        let uri = format!("file://{}", path.display());
+        let (_, bodies) = session(&[
+            frame(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#),
+            open(&uri, text),
+            frame(
+                r#"{"jsonrpc":"2.0","id":1,"method":"workspace/symbol","params":{"query":"inc"}}"#,
+            ),
+            frame(&format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"textDocument/rename","params":{{"textDocument":{{"uri":{}}},"position":{{"line":1,"character":14}},"newName":"plus"}}}}"#,
+                quote(&uri)
+            )),
+            frame(&format!(
+                r#"{{"jsonrpc":"2.0","id":3,"method":"textDocument/rename","params":{{"textDocument":{{"uri":{}}},"position":{{"line":1,"character":14}},"newName":"1bad"}}}}"#,
+                quote(&uri)
+            )),
+        ]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let reply = |id: u32| {
+            bodies
+                .iter()
+                .find(|b| b.starts_with(&format!(r#"{{"jsonrpc":"2.0","id":{id},"#)))
+                .unwrap_or_else(|| panic!("no reply {id}: {bodies:?}"))
+        };
+        assert!(reply(0).contains("renameProvider"));
+        assert!(reply(1).contains(r#""name":"inc""#), "{}", reply(1));
+        let edit = reply(2);
+        assert!(edit.contains(r#""newText":"plus""#), "{edit}");
+        assert_eq!(edit.matches(r#""newText":"plus""#).count(), 2, "{edit}");
+        assert!(reply(3).contains("cannot rename this name"), "{}", reply(3));
+    }
+
+    #[test]
+    fn did_change_coalesces_and_erc20_full_diagnostics_are_fast() {
+        let path = std::env::current_dir()
+            .unwrap()
+            .join("bench/erc20_full.lithe");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let uri = format!("file://{}", path.display());
+        let change = |text: &str| {
+            frame(&format!(
+                r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":{},"version":2}},"contentChanges":[{{"text":{}}}]}}}}"#,
+                quote(&uri),
+                quote(text)
+            ))
+        };
+        let mut slow = pace();
+        slow.debounce = Duration::from_millis(200);
+        let broken = text.clone() + "\nnope\n";
+        let (_, coalesced) = session_at(&[open(&uri, &text), change(&broken), change(&text)], slow);
+        let diags: Vec<_> = coalesced
+            .iter()
+            .filter(|b| b.contains("publishDiagnostics"))
+            .collect();
+        assert_eq!(diags.len(), 2, "open plus one coalesced change: {diags:?}");
+        assert!(
+            !diags[1].contains("unknown name"),
+            "the later text is what was checked: {}",
+            diags[1]
+        );
+        // The best of a few runs, so a loaded machine's scheduling noise does not count.
+        let mut best = u64::MAX;
+        for _ in 0..5 {
+            let diag = std::sync::Arc::new(AtomicU64::new(0));
+            let mut fast = pace();
+            fast.debounce = Duration::ZERO;
+            fast.diag = Some(std::sync::Arc::clone(&diag));
+            let (_, timed) = session_at(&[open(&uri, &text), change(&(text.clone() + "\n"))], fast);
+            assert!(
+                timed.iter().any(|b| b.contains("publishDiagnostics")),
+                "{timed:?}"
+            );
+            let ns = diag.load(Ordering::Relaxed);
+            assert!(ns > 0, "diagnostics timer did not run");
+            best = best.min(ns);
+        }
+        let ms = best as f64 / 1e6;
+        let limit = if cfg!(debug_assertions) { 60.0 } else { 20.0 };
+        assert!(
+            ms <= limit,
+            "diagnostics on erc20_full took {ms:.1} ms (limit {limit} ms)"
         );
     }
 

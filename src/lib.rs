@@ -546,7 +546,12 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
         failed
     };
     if let Some((index, lints)) = cache.with_checked(&root, fp, opts.evm, |checked| {
-        let lints = lint::lint_source(src, path, units.clone()).unwrap_or_default();
+        let reuse = if opts.evm == EvmVersion::default() {
+            checked
+        } else {
+            &[]
+        };
+        let lints = lint::lint_source(src, path, units.clone(), reuse).unwrap_or_default();
         let index = (!checked.is_empty()).then(|| index::build(&root_s, src, checked));
         (index, lints)
     }) {
@@ -587,7 +592,12 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
     }
     let all_checked = checked.len() == units.len();
     let lints = if all_checked {
-        lint::lint_source(src, path, units).unwrap_or_default()
+        let reuse = if opts.evm == EvmVersion::default() {
+            &checked[..]
+        } else {
+            &[]
+        };
+        lint::lint_source(src, path, units, reuse).unwrap_or_default()
     } else {
         Vec::new()
     };

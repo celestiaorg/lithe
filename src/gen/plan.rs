@@ -152,6 +152,9 @@ impl<'a> Gen<'a> {
                 then: None,
             },
             untested_hooks: HashSet::new(),
+            body_memo: None,
+            fixed_spaces: 0,
+            mem_notes: None,
         };
         // Immutables are never in memory, so the image has no words for them.
         let leaves =
@@ -232,6 +235,7 @@ impl<'a> Gen<'a> {
         g.base64_tbl = g.region(Region::Base64, 0);
         g.owners = g.find_owners();
         g.untested_hooks = g.find_untested_hooks();
+        g.fixed_spaces = g.spaces.len();
         Ok(g)
     }
 
@@ -284,6 +288,9 @@ impl<'a> Gen<'a> {
 
     /// Records a use of `addr` that reaches memory through arithmetic on another address.
     pub(super) fn note_mem(&mut self, addr: i32) {
+        if let Some(notes) = &mut self.mem_notes {
+            notes.push((addr, self.func_ctx, self.shared));
+        }
         let ix = (addr >> REGION_SHIFT) as usize - 1;
         let off = (addr & ((1 << REGION_SHIFT) - 1)) as u32;
         let user = self.region_user();
