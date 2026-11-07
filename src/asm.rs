@@ -14,8 +14,12 @@ use crate::error;
 use crate::word::Word;
 use crate::Error;
 
+mod blocks;
 pub(crate) mod marks;
 pub(crate) mod track;
+
+use blocks::{dedup_blocks, merge_tails, prune_labels, remove_dead, thread_jumps};
+pub(crate) use blocks::{hoist, rotate_exits, rotate_loops};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Inst {
@@ -153,11 +157,15 @@ const TAIL_GAS: f64 = 12.0;
 pub(crate) fn optimize(code: &mut Vec<Inst>) {
     for _ in 0..MAX_ROUNDS {
         let mut changed = false;
-        changed |= track::pass(code, prune_labels);
-        changed |= track::pass(code, remove_dead);
-        changed |= track::pass(code, thread_jumps);
+        if track::on() {
+            changed |= track::pass(code, prune_labels);
+            changed |= track::pass(code, remove_dead);
+            changed |= track::pass(code, thread_jumps);
+        } else {
+            changed |= blocks::clean(code);
+        }
         changed |= track::pass(code, peephole);
-        changed |= track::pass(code, |c| dedup_blocks(c));
+        changed |= track::pass(code, dedup_blocks);
         changed |= track::pass(code, |c| dup_constants(c));
         if !changed {
             changed |= track::pass(code, merge_tails);
@@ -573,165 +581,12 @@ fn referenced(code: &[Inst]) -> FxHashSet<u32> {
     out
 }
 
-fn rename(code: &mut [Inst], map: &FxHashMap<u32, u32>) {
-    track::note(|t| t.renamed.extend(map.iter().map(|(a, b)| (*a, *b))));
-    let follow = |l: &mut u32| {
-        let mut to = *l;
-        let mut hops = 0;
-        while let Some(next) = map.get(&to) {
-            if *next == to || hops > 64 {
-                break;
-            }
-            to = *next;
-            hops += 1;
-        }
-        *l = to;
-    };
-    for inst in code.iter_mut() {
-        match inst {
-            PushLabel(l) => follow(l),
-            Table(t) => t.iter_mut().filter(|l| **l != 0).for_each(follow),
-            _ => {}
-        }
-    }
-}
-
-/// Drops labels nothing jumps to and folds runs of labels into one.
-fn prune_labels(code: &mut Vec<Inst>) -> bool {
-    let mut changed = false;
-    let mut map: FxHashMap<u32, u32> = FxHashMap::default();
-    let mut i = 0;
-    while i < code.len() {
-        if let Label(first) = code[i] {
-            let mut j = i + 1;
-            while j < code.len() {
-                let Label(next) = code[j] else { break };
-                map.insert(next, first);
-                j += 1;
-            }
-            i = j;
-        } else {
-            i += 1;
-        }
-    }
-    if !map.is_empty() {
-        rename(code, &map);
-        let mut seen_label = false;
-        code.retain(|inst| {
-            let keep = !(matches!(inst, Label(_)) && seen_label);
-            seen_label = matches!(inst, Label(_));
-            keep
-        });
-        changed = true;
-    }
-    let refs = referenced(code);
-    let before = code.len();
-    code.retain(|inst| match inst {
-        Label(l) => refs.contains(l),
-        _ => true,
-    });
-    changed || code.len() != before
-}
-
-/// Code after an unconditional exit is unreachable until the next label.
-fn remove_dead(code: &mut Vec<Inst>) -> bool {
-    let before = code.len();
-    let mut dead = false;
-    code.retain(|inst| match inst {
-        Label(_) => {
-            dead = false;
-            true
-        }
-        _ if dead => false,
-        Op(op) if is_terminal(*op) => {
-            dead = true;
-            true
-        }
-        _ => true,
-    });
-    code.len() != before
-}
-
 /// The first non-label instruction at or after `i`.
 fn body_at(code: &[Inst], mut i: usize) -> usize {
     while i < code.len() && matches!(code[i], Label(_)) {
         i += 1;
     }
     i
-}
-
-/// Retargets jumps that land on another jump, and copies tiny exits in place of a jump.
-fn thread_jumps(code: &mut Vec<Inst>) -> bool {
-    let mut at: FxHashMap<u32, usize> = FxHashMap::default();
-    for (i, inst) in code.iter().enumerate() {
-        if let Label(l) = inst {
-            at.insert(*l, i);
-        }
-    }
-    let mut changed = false;
-    let mut i = 0;
-    while i + 1 < code.len() {
-        let (PushLabel(l), Op(jump @ (JUMP | JUMPI))) = (code[i], code[i + 1]) else {
-            i += 1;
-            continue;
-        };
-        if !at.contains_key(&l) {
-            i += 1;
-            continue;
-        }
-        // Follow jump-to-jump chains. A cycle of bare jumps stays as it is.
-        let mut to = l;
-        let mut seen = vec![l];
-        while let Some(&li) = at.get(&to) {
-            let b = body_at(code, li);
-            let (Some(PushLabel(m)), Some(Op(JUMP))) = (code.get(b), code.get(b + 1)) else {
-                break;
-            };
-            if seen.contains(m) || !at.contains_key(m) {
-                break;
-            }
-            seen.push(*m);
-            to = *m;
-        }
-        if to != l {
-            code[i] = PushLabel(to);
-            changed = true;
-        }
-        let b = body_at(code, at[&to]);
-        if jump == JUMP {
-            // A `PUSH0 PUSH0 REVERT` or `STOP` is no larger than the jump to it.
-            let mut end = b;
-            let mut bytes = 0;
-            while end < code.len() && bytes <= 3 {
-                match code[end] {
-                    Push(w) if w.is_zero() => bytes += 1,
-                    Op(op) if is_terminal(op) && op != JUMP => {
-                        bytes += 1;
-                        break;
-                    }
-                    _ => {
-                        bytes = usize::MAX;
-                        break;
-                    }
-                }
-                end += 1;
-            }
-            if end < code.len() && bytes <= 3 {
-                let copy: Vec<Inst> = code[b..=end].to_vec();
-                code.splice(i..i + 2, copy);
-                for pos in at.values_mut() {
-                    if *pos > i {
-                        *pos = *pos + (end + 1 - b) - 2;
-                    }
-                }
-                changed = true;
-                i += 1;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    changed
 }
 
 fn fold_binary(op: u8, a: Word, b: Word) -> Option<Word> {
@@ -1073,82 +928,6 @@ fn peephole(code: &mut Vec<Inst>) -> bool {
     changed
 }
 
-/// A run with no labels that ends in an unconditional exit.
-struct Segment {
-    /// Where the labels in front of it are, if any.
-    labels: std::ops::Range<usize>,
-    start: usize,
-    /// Inclusive.
-    end: usize,
-}
-
-fn segments(code: &[Inst]) -> Vec<Segment> {
-    let mut out = Vec::new();
-    let mut labels = 0;
-    let mut start = 0;
-    for (i, inst) in code.iter().enumerate() {
-        match inst {
-            Label(_) => {
-                if start != i {
-                    // Fallthrough into a label: the labels before it head a different run.
-                    labels = i;
-                }
-                start = i + 1;
-            }
-            Op(op) if is_terminal(*op) => {
-                out.push(Segment {
-                    labels: labels..start,
-                    start,
-                    end: i,
-                });
-                start = i + 1;
-                labels = start;
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-fn label_of(inst: &Inst) -> u32 {
-    let Label(l) = inst else {
-        unreachable!("only labels head a segment")
-    };
-    *l
-}
-
-/// Blocks with the same body share one copy.
-fn dedup_blocks(code: &mut [Inst]) -> bool {
-    // Bodies by length and their first and last instructions, then compared in full.
-    let mut first: FxHashMap<_, Vec<(&[Inst], u32)>> = FxHashMap::default();
-    let mut map: FxHashMap<u32, u32> = FxHashMap::default();
-    let segs = segments(code);
-    for seg in &segs {
-        if seg.labels.is_empty() || seg.start > seg.end {
-            continue;
-        }
-        let body = &code[seg.start..=seg.end];
-        let same = first
-            .entry((body.len(), body[0], code[seg.end]))
-            .or_default();
-        match same.iter().find(|(other, _)| *other == body) {
-            Some(&(_, keep)) => {
-                for l in code[seg.labels.clone()].iter().map(label_of) {
-                    if l != keep {
-                        map.insert(l, keep);
-                    }
-                }
-            }
-            None => same.push((body, label_of(&code[seg.labels.start]))),
-        }
-    }
-    if map.is_empty() {
-        return false;
-    }
-    rename(code, &map);
-    true
-}
-
 /// Replaces a pushed constant with a `DUP` of the same value already on the stack.
 fn dup_constants(code: &mut [Inst]) -> bool {
     #[derive(Clone, Copy, PartialEq)]
@@ -1217,132 +996,6 @@ fn dup_constants(code: &mut [Inst]) -> bool {
         }
     }
     changed
-}
-
-/// Two exits that end the same way share the common tail.
-fn merge_tails(code: &mut Vec<Inst>) -> bool {
-    let segs = segments(code);
-    // Only tails long enough to share need it.
-    let heat = std::cell::OnceCell::new();
-    let heat = |i: usize| heat.get_or_init(|| self::heat(code))[i];
-    let mut refs: FxHashMap<u32, usize> = FxHashMap::default();
-    for inst in code.iter() {
-        match inst {
-            PushLabel(l) => *refs.entry(*l).or_default() += 1,
-            Table(t) => entries(t).for_each(|l| *refs.entry(l).or_default() += 1),
-            _ => {}
-        }
-    }
-    // Sharing a tail puts a jump on every path into the donor. A helper's body runs on
-    // every call to it, so its tail must save a byte for each call it slows.
-    let calls = |seg: &Segment| {
-        if code[seg.end] != Op(JUMP) || matches!(code[seg.end - 1], PushLabel(_)) {
-            return 1;
-        }
-        let falls = seg.labels.start > 0
-            && !matches!(code[seg.labels.start - 1], Op(op) if is_terminal(op));
-        let jumps: usize = code[seg.labels.clone()]
-            .iter()
-            .map(|l| refs.get(&label_of(l)).copied().unwrap_or(0))
-            .sum();
-        (jumps + falls as usize).max(1)
-    };
-    // A segment ends in a one-byte exit, so a tail worth sharing is at least two long.
-    let mut by_last: FxHashMap<(Inst, Inst), Vec<usize>> = FxHashMap::default();
-    for (k, seg) in segs.iter().enumerate() {
-        if seg.start < seg.end {
-            by_last
-                .entry((code[seg.end - 1], code[seg.end]))
-                .or_default()
-                .push(k);
-        }
-    }
-    let mut pairs: Vec<(usize, usize, usize, usize)> = Vec::new();
-    let mut sizes = Vec::new();
-    for group in by_last.values() {
-        for (x, &a) in group.iter().enumerate() {
-            for &b in &group[x + 1..] {
-                let (sa, sb) = (&segs[a], &segs[b]);
-                let mut n = 0;
-                sizes.clear();
-                sizes.push(0);
-                while n < sa.end + 1 - sa.start
-                    && n < sb.end + 1 - sb.start
-                    && code[sa.end - n] == code[sb.end - n]
-                {
-                    sizes.push(sizes[n] + inst_len(&code[sa.end - n]));
-                    n += 1;
-                }
-                // The copy that takes the jump runs it where the shared tail starts, which a
-                // tail reaching back over a `JUMPI` makes hot, so each length and side is
-                // weighed: it must save a byte for each few gas it adds.
-                let mut best: Option<(f64, usize, usize, usize)> = None;
-                for m in (1..=n).rev() {
-                    let bytes = sizes[m];
-                    if bytes < MIN_TAIL_BYTES {
-                        break;
-                    }
-                    for (keep, give) in [(a, b), (b, a)] {
-                        let (k, g) = (&segs[keep], &segs[give]);
-                        let whole = m == k.end + 1 - k.start && !k.labels.is_empty();
-                        let label = if whole { 0.0 } else { heat(k.end + 1 - m) };
-                        let slower = (heat(g.end + 1 - m) * TAIL_GAS + label) / byte_gas();
-                        let saved = (bytes + 1 - MIN_TAIL_BYTES) as f64 - slower;
-                        if bytes + 1 >= MIN_TAIL_BYTES + calls(g)
-                            && saved >= 0.0
-                            && best.is_none_or(|(s, ..)| saved > s)
-                        {
-                            best = Some((saved, keep, give, m));
-                        }
-                    }
-                }
-                if let Some((_, keep, give, m)) = best {
-                    pairs.push((keep, give, m, sizes[m]));
-                }
-            }
-        }
-    }
-    // The longest tails first, ties to the earliest pair, so the output never depends on
-    // map order. A segment takes part in at most its best merge a call, which keeps the
-    // others' indices and heat as they were, and waits when that partner is taken.
-    pairs.sort_unstable_by(|x, y| y.3.cmp(&x.3).then((x.0, x.1).cmp(&(y.0, y.1))));
-    let mut used = vec![false; segs.len()];
-    let mut next = fresh_label(code);
-    // Each edit replaces a range: a tail with a jump, or nothing with a label.
-    let mut edits: Vec<(std::ops::Range<usize>, Vec<Inst>)> = Vec::new();
-    for &(a, b, n, _) in &pairs {
-        let free = !used[a] && !used[b];
-        used[a] = true;
-        used[b] = true;
-        if !free {
-            continue;
-        }
-        let (keep, give) = (&segs[a], &segs[b]);
-        let whole = n == keep.end + 1 - keep.start && !keep.labels.is_empty();
-        let label = if whole {
-            label_of(&code[keep.labels.start])
-        } else {
-            next += 1;
-            next - 1
-        };
-        edits.push((
-            give.end + 1 - n..give.end + 1,
-            vec![PushLabel(label), Op(JUMP)],
-        ));
-        if !whole {
-            let at = keep.end + 1 - n;
-            edits.push((at..at, vec![Label(label)]));
-        }
-    }
-    if edits.is_empty() {
-        return false;
-    }
-    // Later edits first, so the earlier indices stay valid.
-    edits.sort_unstable_by_key(|e| std::cmp::Reverse(e.0.start));
-    for (range, with) in edits {
-        code.splice(range, with);
-    }
-    true
 }
 
 fn fresh_label(code: &[Inst]) -> u32 {
@@ -5488,97 +5141,6 @@ fn plan_storage(
     Some(edits)
 }
 
-/// Tests each top-tested loop at its bottom, so an iteration takes one jump, not two:
-/// `top: T PUSH done JUMPI B PUSH top JUMP` becomes
-/// `PUSH test JUMP body: B test: T' PUSH body JUMPI`, where `T'` is `T` with its result
-/// negated, and the exit falls through to `done` or jumps there. The same code runs in the
-/// same order, so any straight run `T` can move.
-pub(crate) fn rotate_loops(code: &mut Vec<Inst>) {
-    let mut next = fresh_label(code);
-    let mut i = 0;
-    while i < code.len() {
-        if !matches!(code[i], Label(_)) || (i > 0 && matches!(code[i - 1], Label(_))) {
-            i += 1;
-            continue;
-        }
-        let heads = code[i..]
-            .iter()
-            .position(|inst| !matches!(inst, Label(_)))
-            .map_or(code.len(), |n| i + n);
-        let tops: Vec<u32> = code[i..heads].iter().map(label_of).collect();
-        let Some(n) = code[heads..].iter().position(|inst| {
-            !matches!(inst, Op(op) if stack_io(*op).is_some() && !is_terminal(*op)
-                && !matches!(*op, JUMPI | JUMPDEST | 0x58))
-                && !matches!(inst, Push(_) | Imm(..))
-        }) else {
-            break;
-        };
-        let jumpi = heads + n + 1;
-        let (Some(PushLabel(done)), Some(Op(JUMPI))) = (code.get(jumpi - 1), code.get(jumpi))
-        else {
-            i = heads;
-            continue;
-        };
-        let done = *done;
-        let back = (jumpi + 1..code.len().saturating_sub(1)).rev().find(|&e| {
-            matches!(code[e], PushLabel(l) if tops.contains(&l)) && code[e + 1] == Op(JUMP)
-        });
-        let Some(e) = back else {
-            i = heads;
-            continue;
-        };
-        // Only a loop: nothing outside the head and body jumps to the head or into the body.
-        let inner: FxHashSet<u32> = code[jumpi..e]
-            .iter()
-            .filter_map(|inst| match inst {
-                Label(l) => Some(*l),
-                _ => None,
-            })
-            .chain(tops.iter().copied())
-            .collect();
-        let entered = code.iter().enumerate().any(|(k, inst)| match inst {
-            PushLabel(l) => inner.contains(l) && !(jumpi..=e).contains(&k),
-            Table(t) => entries(t).any(|l| inner.contains(&l)),
-            _ => false,
-        });
-        if entered {
-            i = heads;
-            continue;
-        }
-        let (body, test) = (next, next + 1);
-        next += 2;
-        let mut bottom = vec![Label(test)];
-        bottom.extend_from_slice(&code[heads..jumpi - 1]);
-        if bottom.last() == Some(&Op(ISZERO)) {
-            bottom.pop();
-        } else {
-            bottom.push(Op(ISZERO));
-        }
-        bottom.extend([PushLabel(body), Op(JUMPI)]);
-        let falls = code[e + 2..]
-            .iter()
-            .take_while(|inst| matches!(inst, Label(_)))
-            .any(|inst| *inst == Label(done));
-        if !falls {
-            bottom.extend([PushLabel(done), Op(JUMP)]);
-        }
-        code.splice(e..e + 2, bottom);
-        if enters(&code[..i], &code[heads..jumpi - 1]) {
-            code.splice(i..jumpi + 1, [Label(body)]);
-        } else {
-            code.splice(i..jumpi + 1, [PushLabel(test), Op(JUMP), Label(body)]);
-        }
-        for inst in code.iter_mut() {
-            if matches!(inst, PushLabel(l) if tops.contains(l)) {
-                *inst = PushLabel(test);
-            }
-        }
-        // An iteration starts at the body now, with the stack the test left.
-        track::note(|t| t.renamed.extend(tops.iter().map(|&l| (l, body))));
-        i += 2;
-    }
-}
-
 /// Whether the constants pushed at the end of `before` make the loop test `t` false the
 /// first time, so the loop can fall into its body.
 fn enters(before: &[Inst], t: &[Inst]) -> bool {
@@ -5675,127 +5237,6 @@ fn plan_load(
     )?;
     edits.push((i + 2, 0, vec![Op(DUP1)]));
     Some(edits)
-}
-
-/// Drops the `ISZERO` from a branch around a block that ends in an exit:
-/// `c ISZERO PUSH skip JUMPI block skip:` becomes `c PUSH block JUMPI skip:`, and the block
-/// moves to after the next exit, where nothing falls into it. A top-tested loop's body is
-/// such a block, ending in the jump back to the test. A move that widens label pushes past
-/// what it saves is undone.
-pub(crate) fn rotate_exits(code: &mut Vec<Inst>) {
-    let mut next = fresh_label(code);
-    let mut size = None;
-    // At least the bytes before `code[j]`. Past 0xff, every label a move touches already
-    // takes two bytes, so no push widens and the move cannot grow the code.
-    let mut low = 0;
-    let mut j = 0;
-    while j + 3 < code.len() {
-        if let (Op(ISZERO), PushLabel(exit), Op(JUMPI)) = (code[j], code[j + 1], code[j + 2]) {
-            let end = code
-                .iter()
-                .position(|inst| *inst == Label(exit))
-                .unwrap_or(0);
-            let exits = end > j + 3 && matches!(code[end - 1], Op(op) if is_terminal(op));
-            let after = code[end..]
-                .iter()
-                .position(|inst| matches!(inst, Op(op) if is_terminal(*op)));
-            if let (true, Some(after)) = (exits, after) {
-                let mut rotated = code.clone();
-                let mut moved = vec![Label(next)];
-                moved.extend(rotated.drain(j + 3..end));
-                let at = after + j + 4;
-                rotated.splice(at..at, moved);
-                rotated.splice(j..j + 3, [PushLabel(next), Op(JUMPI)]);
-                let len = |c: &[Inst]| assemble(c).map_or(usize::MAX, |c| c.len());
-                if low > 0xff || len(&rotated) <= *size.get_or_insert_with(|| len(code)) {
-                    size = None;
-                    *code = rotated;
-                    next += 1;
-                }
-            }
-        }
-        low += match code[j] {
-            Label(_) => 0,
-            PushLabel(_) => 2,
-            inst => inst_len(&inst),
-        };
-        j += 1;
-    }
-}
-
-/// Moves the most-jumped-to standalone blocks to just after the first exit, where their
-/// labels fit in one byte. A standalone block starts after an exit and ends in one, so
-/// nothing falls into it or out of it.
-pub(crate) fn hoist(code: &mut Vec<Inst>) {
-    let Some(first_exit) = code
-        .iter()
-        .position(|inst| matches!(inst, Op(op) if is_terminal(*op)))
-    else {
-        return;
-    };
-    let insert = first_exit + 1;
-    let before: usize = code[..insert].iter().map(inst_len_wide).sum();
-    if before >= 0xff {
-        return;
-    }
-    let mut refs: FxHashMap<u32, usize> = FxHashMap::default();
-    for inst in code.iter() {
-        if let PushLabel(l) = inst {
-            *refs.entry(*l).or_default() += 1;
-        }
-    }
-    // (start, end inclusive, references to its labels, bytes)
-    let mut blocks: Vec<(usize, usize, usize, usize)> = Vec::new();
-    let mut i = insert;
-    while i < code.len() {
-        let detached =
-            matches!(code[i], Label(_)) && matches!(code[i - 1], Op(op) if is_terminal(op));
-        if !detached {
-            i += 1;
-            continue;
-        }
-        let Some(len) = code[i..]
-            .iter()
-            .position(|inst| matches!(inst, Op(op) if is_terminal(*op)))
-        else {
-            break;
-        };
-        let end = i + len;
-        let mut hits = 0;
-        let mut bytes = 0;
-        for inst in &code[i..=end] {
-            if let Label(l) = inst {
-                hits += refs.get(l).copied().unwrap_or(0);
-            }
-            bytes += inst_len_wide(inst);
-        }
-        blocks.push((i, end, hits, bytes));
-        i = end + 1;
-    }
-    blocks.sort_by(|a, b| (b.2 * a.3).cmp(&(a.2 * b.3)).then(a.0.cmp(&b.0)));
-    let mut at = before;
-    let mut picked: Vec<(usize, usize)> = Vec::new();
-    for &(start, end, hits, bytes) in &blocks {
-        // Its first label must land below 256 for the move to pay.
-        if hits < 2 || at >= 0xff {
-            continue;
-        }
-        picked.push((start, end));
-        at += bytes;
-    }
-    if picked.is_empty() {
-        return;
-    }
-    let mut moved: Vec<Inst> = Vec::new();
-    for &(start, end) in &picked {
-        moved.extend_from_slice(&code[start..=end]);
-    }
-    let mut drop: Vec<(usize, usize)> = picked.clone();
-    drop.sort_by_key(|e| std::cmp::Reverse(e.0));
-    for (start, end) in drop {
-        code.drain(start..=end);
-    }
-    code.splice(insert..insert, moved);
 }
 
 /// Bytes an instruction takes when labels need two bytes.
