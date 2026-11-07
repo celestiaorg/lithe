@@ -139,7 +139,7 @@ fn lint_file(path: &Path, fix: bool) -> Result<(String, bool), Error> {
     let allow = crate::config::find(&own)?.allow;
     let mut findings = suppress(
         &src,
-        findings_at(&src, &own_s, &label, units(&own)?)?,
+        findings_at(&src, &own_s, &label, units(&own)?, &[])?,
         &allow,
         &label,
     );
@@ -151,7 +151,7 @@ fn lint_file(path: &Path, fix: bool) -> Result<(String, bool), Error> {
                 let fresh = std::fs::read_to_string(path).unwrap_or(edited);
                 findings = suppress(
                     &fresh,
-                    findings_at(&fresh, &own_s, &label, units(&own)?)?,
+                    findings_at(&fresh, &own_s, &label, units(&own)?, &[])?,
                     &allow,
                     &label,
                 );
@@ -177,14 +177,19 @@ pub struct Lint {
 }
 
 /// What `lithe lint` reports for `src`, the unsaved text of `path`, whose contracts check
-/// as `units`.
-pub(crate) fn lint_source(src: &str, path: &Path, units: Vec<Program>) -> Result<Vec<Lint>, Error> {
+/// as `units`. `checked` holds those units already checked for the default EVM, or is empty.
+pub(crate) fn lint_source(
+    src: &str,
+    path: &Path,
+    units: Vec<Program>,
+    checked: &[Checked],
+) -> Result<Vec<Lint>, Error> {
     let own = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let own_s = own.display().to_string();
     let allow = crate::config::find(&own)
         .map(|config| config.allow)
         .unwrap_or_default();
-    let findings = findings_at(src, &own_s, &own_s, units)?;
+    let findings = findings_at(src, &own_s, &own_s, units, checked)?;
     Ok(suppress(src, findings, &allow, &own_s)
         .into_iter()
         .map(|f| Lint {
@@ -404,21 +409,29 @@ fn findings_at(
     own: &str,
     label: &str,
     units: Vec<Program>,
+    checked: &[Checked],
 ) -> Result<Vec<Finding>, Error> {
     let uses = parse::parse(src)?.uses;
     let mut findings = Vec::new();
     // An import is used when this file names something through it.
     let mut used = HashSet::new();
-    for unit in units {
+    for (i, unit) in units.into_iter().enumerate() {
         let key = (unit.origin.clone(), unit.contract_name.clone());
         if let Some(scope) = unit.scopes.scope(&key) {
             used.extend(scope.used.iter().copied());
         }
         findings.extend(unused_modules(src, label, &unit)?);
-        let checked = check::check_in(unit, false, crate::EvmVersion::default())?;
+        let fresh;
+        let checked = match checked.get(i) {
+            Some(checked) => checked,
+            None => {
+                fresh = check::check_in(unit, false, crate::EvmVersion::default())?;
+                &fresh
+            }
+        };
         let mut acc = Acc::default();
-        collect(&checked, own, &mut acc);
-        findings.extend(finish(&checked, src, own, label, &acc));
+        collect(checked, own, &mut acc);
+        findings.extend(finish(checked, src, own, label, &acc));
     }
     for (k, use_) in uses.iter().enumerate() {
         if used.contains(&k) {
@@ -1618,7 +1631,7 @@ external function go() is {
                 modules::split_units(modules::load(&Sources::memory([(path, src)]), path).unwrap());
             suppress(
                 src,
-                findings_at(src, "m.lithe", "m.lithe", units).unwrap(),
+                findings_at(src, "m.lithe", "m.lithe", units, &[]).unwrap(),
                 &[],
                 "m.lithe",
             )

@@ -836,6 +836,8 @@ fn eager_queries<'e>(e: &'e Expr, called: &mut bool, out: &mut Vec<(u32, u32, &'
 #[derive(Default)]
 pub(super) struct BodyMemo {
     map: HashMap<BodyKey, Rec>,
+    #[cfg(test)]
+    hits: usize,
 }
 
 #[cfg(test)]
@@ -846,6 +848,7 @@ pub(super) static BODY_RECALLS: std::sync::atomic::AtomicUsize =
 struct BodyKey {
     func: usize,
     direct: bool,
+    reading: bool,
     crossed: bool,
     known: Vec<Option<[u64; 4]>>,
     bits: u64,
@@ -884,6 +887,10 @@ struct Rec {
     tail_blobs: Vec<(Word, Vec<u32>)>,
     /// Error head this body allocated or wrote. The revert helper reads that region.
     revert_head: Option<i32>,
+    /// Early queries known when this body was compiled; its queries may load their buffers.
+    hoisted0: HashMap<(u32, u32), i32>,
+    /// Early queries this body issued or reissued.
+    hoisted: Vec<((u32, u32), i32)>,
     /// Data, literals, peers, and tail blobs already embedded when this body was compiled.
     embed: u64,
     revert_or: u64,
@@ -956,6 +963,7 @@ pub(super) struct BodyBefore {
     bytes_rep: Option<(usize, u32)>,
     dyn_key: Option<(u32, i32)>,
     revert_head: Option<i32>,
+    hoisted: HashMap<(u32, u32), i32>,
     embed: u64,
 }
 
@@ -1015,6 +1023,7 @@ impl<'a> Gen<'a> {
             bytes_rep: self.bytes_rep,
             dyn_key: self.dyn_key,
             revert_head: self.revert_head,
+            hoisted: self.hoisted.clone(),
             embed: embed_hash(
                 &self.data,
                 &self.literals,
@@ -1169,6 +1178,13 @@ impl<'a> Gen<'a> {
             peer_built,
             tail_blobs: self.tail_blobs[before.tail_blobs..].to_vec(),
             revert_head,
+            hoisted: self
+                .hoisted
+                .iter()
+                .filter(|(at, buf)| before.hoisted.get(*at) != Some(*buf))
+                .map(|(at, buf)| (*at, *buf))
+                .collect(),
+            hoisted0: before.hoisted,
             embed: before.embed,
             revert_or: self.revert_kinds & !before.revert_kinds,
             return_sites: self.return_sites - before.return_sites,
@@ -1215,7 +1231,9 @@ impl<'a> Gen<'a> {
         {
             return false;
         }
-        if self.fixed_spaces != rec.fixed {
+        // simplify: any early query issued since recording declines the hit. Compare only
+        // the positions this body's queries sit at if contracts with early queries need reuse.
+        if self.fixed_spaces != rec.fixed || self.hoisted != rec.hoisted0 {
             return false;
         }
         let need_mid = rec.notes.iter().any(|(addr, _, _)| {
@@ -1383,7 +1401,14 @@ impl<'a> Gen<'a> {
             .iter()
             .map(|(addr, word)| Some((map_addr(addr)?, *word)))
             .collect();
-        let (Some(cache_words), Some(leaf_words)) = (cache_words, leaf_words) else {
+        let hoisted: Option<Vec<((u32, u32), i32)>> = rec
+            .hoisted
+            .iter()
+            .map(|(at, buf)| Some((*at, map_addr(buf)?)))
+            .collect();
+        let (Some(cache_words), Some(leaf_words), Some(hoisted)) =
+            (cache_words, leaf_words, hoisted)
+        else {
             return false;
         };
         let revert_head = match rec.revert_head {
@@ -1445,8 +1470,12 @@ impl<'a> Gen<'a> {
         if let Some(addr) = revert_head {
             self.revert_head = Some(addr);
         }
+        self.hoisted.extend(hoisted);
         #[cfg(test)]
-        BODY_RECALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        {
+            BODY_RECALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            memo.lock().unwrap_or_else(|err| err.into_inner()).hits += 1;
+        }
         true
     }
 
@@ -1454,6 +1483,7 @@ impl<'a> Gen<'a> {
         BodyKey {
             func: key.0,
             direct: key.1,
+            reading: self.reading,
             crossed: key.2,
             known: key.3.clone(),
             bits: reaching_bits(self, key.0),
@@ -1913,10 +1943,15 @@ external function b(const x : uint; const s : string) raises UnknownKey is {\n\
         );
         let mut frames = plan.clone();
         frames.frames = true;
-        let before = super::BODY_RECALLS.load(std::sync::atomic::Ordering::Relaxed);
-        let replayed = emit(&checked, &shape, frames.clone(), Some(memo), false);
+        let replayed = emit(
+            &checked,
+            &shape,
+            frames.clone(),
+            Some(Arc::clone(&memo)),
+            false,
+        );
         assert!(
-            super::BODY_RECALLS.load(std::sync::atomic::Ordering::Relaxed) > before,
+            memo.lock().unwrap_or_else(|err| err.into_inner()).hits > 0,
             "frames is not part of the key, so the outlined raise is replayed"
         );
         let fresh = emit(&checked, &shape, frames, None, false);
