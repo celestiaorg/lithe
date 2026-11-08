@@ -339,8 +339,10 @@ impl Blocks {
         }
         // Only tails long enough to share need it.
         let heat = std::cell::OnceCell::new();
-        let heat =
-            |k: usize, j: usize| heat.get_or_init(|| self::heat(&serialize(blocks)))[start[k] + j];
+        let heat = |k: usize, j: usize| {
+            let (heat, at) = heat.get_or_init(|| stream_heat(blocks));
+            heat[at[start[k] + j] as usize]
+        };
         let preds = std::cell::OnceCell::new();
         // Sharing a tail puts a jump on every path into the donor. A helper's body runs on
         // every call to it, so its tail must save a byte for each call it slows.
@@ -771,6 +773,49 @@ fn serialize(blocks: &[Block]) -> Vec<Inst> {
         code.extend_from_slice(&b.body);
     }
     code
+}
+
+thread_local! {
+    static LAST_HEAT: std::cell::RefCell<(Vec<Inst>, Vec<f64>)> = Default::default();
+}
+
+/// `heat` of the stream `blocks` write, and where each instruction finds its value in it.
+/// `flow` reads only labels, label pushes, tables, and the exits and `JUMPI`s that end its
+/// blocks, so it runs on that skeleton with each run of other instructions standing as one,
+/// and the last skeleton's heat is reused when it recurs.
+fn stream_heat(blocks: &[Block]) -> (Vec<f64>, Vec<u32>) {
+    let mut skel = Vec::new();
+    let mut at = Vec::with_capacity(blocks.iter().map(|b| b.labels.len() + b.body.len()).sum());
+    for b in blocks {
+        skel.extend(b.labels.iter().map(|&l| Label(l)));
+        at.extend((skel.len() - b.labels.len()) as u32..skel.len() as u32);
+        let mut plain = false;
+        for &inst in &b.body {
+            let kept = match inst {
+                PushLabel(_) | Table(_) => true,
+                Op(op) => is_terminal(op) || op == JUMPI,
+                _ => false,
+            };
+            if kept || !plain {
+                skel.push(if kept { inst } else { Op(ISZERO) });
+            }
+            plain = !kept;
+            at.push(skel.len() as u32 - 1);
+        }
+    }
+    let heat = LAST_HEAT.with(|last| {
+        let mut last = last.borrow_mut();
+        if last.0 != skel {
+            last.1 = heat(&skel);
+            last.0 = skel;
+        }
+        last.1.clone()
+    });
+    if super::verify() {
+        let out: Vec<f64> = at.iter().map(|&k| heat[k as usize]).collect();
+        assert_eq!(out, super::heat(&serialize(blocks)), "skeleton heat");
+    }
+    (heat, at)
 }
 
 /// What can stand in a loop test: straight code with no jump.

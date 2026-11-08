@@ -42,6 +42,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **3.1** CFG over `Vec<Inst>` and per-block worklist rewrites. Byte-identical in both modes. See the measurements below.
 - [x] **3.2** `peephole` and `schedule` per block. Byte-identical in both modes. The 500-round bound stays, and the dirty-set was measured and dropped. See the measurements below.
 - [x] **3.2b** Cheaper `merge_tails`/`heat`, byte-identical. Ladder 128 `optimize` 414 → 250–279 ms. erc20_full and uniswap_v2_pair release are still above their pre-3.1 cost. See below.
+- [x] **3.2b(ii)** `heat` on the block skeleton, with a skeleton-keyed `flow` cache. Byte-identical. Goal missed; the measured floor is recorded below.
 - [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%.
 - [ ] **3.4** `outline` on the block IR.
 - [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×.
@@ -66,7 +67,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **6.1** Process startup. Measured; not taken.
 - [x] **6.2** Assembler width fixpoint. It already is one, and candidate cost is already cached. Nothing taken.
 - [x] **6.3** Memoize constant keccak. Measured; not taken.
-- [x] **6.4** Incremental `heat` / `flow`. Measured; not taken. 3.2b took the exact whole-pass cuts instead.
+- [x] **6.4** Incremental `heat` / `flow`. Taken in 3.2b(ii) as a skeleton-keyed `flow` cache; it hits on about 5% of calls.
 - [ ] **6.5** `--timings`, and CI that fails when erc20_full Fast compile exceeds 2× the recorded baseline.
 
 ## 0.2b baseline
@@ -343,6 +344,36 @@ Proof:
 - `cargo test --profile fast`: 552 lib + 25 bin + 1, all green, including `rounds_on_blocks_match_the_stream`.
 - `LITHE_FUZZ_STEPS=2000` differential green.
 - `cargo clippy --all-targets -- -D warnings` clean.
+
+## 3.2b(ii) `heat` on the block skeleton
+
+Plan: stop re-serializing for `heat`, and reuse `flow` when the structure it reads is unchanged. Both are exact. Proof: both snapshots, `rounds_on_blocks_match_the_stream`, and the `LITHE_FUZZ_STEPS=2000` differential.
+
+What changed (`asm::blocks::stream_heat`):
+- **No `serialize`.** `merge_tails` builds a skeleton straight from `blocks`. With `sum` off, `flow` reads only labels, label pushes, tables, and the exits and `JUMPI`s that end its blocks, and an instruction's heat is its flow-block's weight. So each run of other instructions becomes one placeholder, which keeps flow-block boundaries and the "`PushLabel` right before the jump" test. Each instruction maps to its skeleton slot.
+- **Skeleton-keyed cache.** A per-thread copy of the last skeleton and its heat. A hit requires the whole skeleton to be equal, not just a hash, so the cached vector is reused only for the exact input that made it.
+- **Check.** Under `LITHE_VERIFY` (or `asm::VERIFY`), every call asserts that the mapped heat equals `heat(&serialize(blocks))`. That covers the whole `LITHE_VERIFY=1` suite and both snapshot-under-verify tests. During development the assert ran on every call of erc20_full and uniswap_v2_pair release.
+
+Measured (`target/fast`, `LITHE_THREADS=1`, cache off, min of 7 alternating runs against the parent build, machine load 19–47 from other sessions):
+
+| target | parent | this | pre-3.1 goal |
+|---|---:|---:|---:|
+| erc20_full release `optimize` | 381.5 ms | 375.9 ms | 339 ms |
+| uniswap_v2_pair release `optimize` | 65.9 ms | 66.0 ms | 59.9 ms |
+
+Inside one erc20_full compile, `heat` over all 1890 `merge_tails` calls (including `outline`'s): 87 ms before, 84 ms after, with skeleton building included. The skeleton is about 36% of the stream (1475 vs 4094 instructions on average). The cache hits 89 of 1890 calls. `merge_tails` runs only in a round where nothing else changed, and the previous merge has just changed the labels and jumps, so a repeated skeleton is rare.
+
+**Floor: about 376 ms / 66 ms. The goal is missed.** `flow`'s cost is per block, not per instruction, and no single phase holds the 37 ms gap. Split of `flow` over one erc20_full compile (temporary timers): starts 8, label map 11, successors 11, cold fixpoint 6.5, DFS 9, preds 5, indeg 3, entry walk 23 ms. Heat is called once per merge round. Getting under 339 ms needs fewer `merge_tails` calls, by merging more per call (3.4, which changes bytes), or the per-span `peephole` overrun (≈95 ms) recovered. Neither fits under the byte-identical constraint here.
+
+Gates at this head:
+- `cargo test --locked` (dev profile): 552 lib + 25 bin + 1, green.
+- `LITHE_VERIFY=1 cargo test --locked`: 552 lib + 25 bin + 1, green.
+- `tests/snapshots/bytecode.json` unchanged (Release and Fast, plus under verify). `rounds_on_blocks_match_the_stream` and `incremental_analyses_agree_with_fresh_ones` green.
+- `LITHE_FUZZ_STEPS=2000` differential: 5 tests green.
+- Playground `cargo build --release --locked` (wasm32-unknown-unknown): builds.
+- `cargo fmt --check` clean in the root and in `playground`. `cargo clippy --all-targets --locked -- -D warnings` clean.
+
+The 2.5 `LITHE_TIME` frontend lap now reports codegen as its own `build=` phase. On the uncached path `check=` used to include it. On the cached path it was not timed at all. Repeated marks of the same phase add up.
 
 ## 6.1–6.4 Evaluated
 

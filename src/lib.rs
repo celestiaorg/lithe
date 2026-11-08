@@ -559,9 +559,11 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
         lap.mark("index");
         (index, lints)
     }) {
+        let error = build_error(&units, failed);
+        lap.mark("build");
         lap.report();
         return Analysis {
-            error: build_error(&units, failed),
+            error,
             lints,
             index,
         };
@@ -573,6 +575,7 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
         cache.note_check();
         match check::check_in(unit.clone(), false, opts.evm) {
             Ok(unit_checked) => {
+                lap.mark("check");
                 if codegen && failed.is_none() {
                     failed = match build(&sources, path, unit, &name, &opts) {
                         Err(err)
@@ -587,6 +590,7 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
                             .find(|w| w.contains("the limit is"))
                             .map(|w| size_warning(&w)),
                     };
+                    lap.mark("build");
                 }
                 checked.push(unit_checked);
             }
@@ -621,7 +625,7 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
     }
 }
 
-/// The frontend's phases, printed when `LITHE_TIME` is set.
+/// The frontend's phases, printed when `LITHE_TIME` is set. Repeated marks of a phase add up.
 struct Lap(Option<(std::time::Instant, Vec<(&'static str, std::time::Duration)>)>);
 
 impl Lap {
@@ -631,7 +635,10 @@ impl Lap {
 
     fn mark(&mut self, phase: &'static str) {
         if let Some((at, laps)) = &mut self.0 {
-            laps.push((phase, at.elapsed()));
+            match laps.iter_mut().find(|(p, _)| *p == phase) {
+                Some((_, d)) => *d += at.elapsed(),
+                None => laps.push((phase, at.elapsed())),
+            }
             *at = std::time::Instant::now();
         }
     }
