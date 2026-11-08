@@ -444,8 +444,8 @@ impl Blocks {
             }
         }
         // The longest tails first, ties to the earliest pair, so the output never depends on
-        // map order. A block takes part in at most its best merge a call, which keeps the
-        // others' indices and heat as they were, and waits when that partner is taken.
+        // map order. A block takes part in at most one merge a call, the best whose partner is
+        // still free, which keeps the others' indices and heat as they were.
         pairs.sort_unstable_by(|x, y| y.3.cmp(&x.3).then((x.0, x.1).cmp(&(y.0, y.1))));
         let mut used = vec![false; blocks.len()];
         let mut next = self.fresh_label();
@@ -453,12 +453,11 @@ impl Blocks {
         let mut split: Vec<Option<(usize, u32)>> = vec![None; blocks.len()];
         let mut gives: Vec<(usize, usize, u32)> = Vec::new();
         for &(a, b, n, _) in &pairs {
-            let free = !used[a] && !used[b];
-            used[a] = true;
-            used[b] = true;
-            if !free {
+            if used[a] || used[b] {
                 continue;
             }
+            used[a] = true;
+            used[b] = true;
             let keep = &blocks[a];
             let whole = n == keep.body.len() && !keep.labels.is_empty();
             let label = if whole {
