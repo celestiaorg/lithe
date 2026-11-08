@@ -40,8 +40,8 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 
 - [x] **3.1** CFG over `Vec<Inst>` and per-block worklist rewrites. Byte-identical in both modes. See the measurements below.
 - [x] **3.2** `peephole` and `schedule` per block. Byte-identical in both modes. The 500-round bound stays, and the dirty-set was measured and dropped. See the measurements below.
-- [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. **Not done; handoff below.**
-- [x] **3.4** `outline` no longer O(n²): call sites are written in one pass instead of one splice each. It stays on the stream. Byte-identical. See the measurements below.
+- [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c (see the handoff below). **3.3a landed in part; 3.3b and 3.3c are not done.**
+- [ ] **3.4** `outline` on the block IR. **Partly done:** call sites are written in one pass instead of one splice each, which removes the per-site splice term. `outline` stays on the stream, and each round is still O(n), so the whole loop is O(rounds × n). Byte-identical. See the measurements below.
 - [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×.
 
 ### Phase 4 — parallelism inside one build
@@ -321,9 +321,56 @@ Suggested split:
 
 Stack-too-deep cannot occur today either: every local has a memory home, and promotion rewrites a load or store only when the value is within 16 items (`d < 16` in `promote_region`/`hold`). Otherwise the access stays on the home. `docs/src/pages/guide/architecture.mdx` explains this.
 
+## 3.3a Region search per word
+
+Plan: make the greedy's rounds search only what the last round changed, keeping the bytes identical. Proof: old and new binaries emit the same bytes, plus both snapshots, `LITHE_VERIFY=1`, and the 2000-step differential.
+
+What changed (`src/asm.rs`):
+
+- **No whole-stream scan in `promote_region`.** Candidates come from each tracked word's stores in `Uses` and from the loops the word is used in. `RegionPlans::best` keeps each word's best region: its saving, its entry, and its place in the old scan order, so ties still go to the candidate the scan met first. A word is searched again only if the round changed it:
+  - one of its plans was dropped or must be rechecked;
+  - it has a use in the code `Runs::update` rescanned, or in the code that was replaced;
+  - it is used in a loop that was found again, or in a loop whose head is in the rescanned code.
+
+  Words with a known best go first and set a floor. The other words are searched in order of the most they could save (`3 + 2·loads + stores`), and the search stops once that falls below the floor. A word with nothing at or above a floor is remembered as such, and reused while the floor is no lower.
+- **Straight promotions no longer clear `RegionPlans`.** They update it like a region does (`applied` with the words they changed). `alias_copies` reads its candidates from `Uses` instead of scanning the stream.
+- **`RegionPlans.plans` is keyed by id in a map.** `applied` was walking one list per instruction id (about 24 500 on ladder 128) to update about 60 plans.
+- **Oracle.** Under `LITHE_VERIFY`, each round also searches every word from scratch and asserts the same winner. The existing per-plan asserts still run.
+
+Equivalence: `lithe compile --fast` and `--release` of every `bench/`, `examples/`, and `fuzz/` file, plus ladders 16, 64, and 128, give the same stdout from the parent binary and this one (211 files × 2 modes). `tests/snapshots/bytecode.json` is unchanged. Ladder rounds are unchanged: 34/130/258 at N = 16/64/128.
+
+Timing: `target/fast`, Fast mode, `LITHE_THREADS=1`, cache off, `promote` sum, best of 3.
+
+| ladder | rounds | promote old → new | per round old → new |
+|---|---:|---:|---:|
+| 16 | 34 | 1.49 → 0.66 ms | 44 → 19 µs |
+| 64 | 130 | 13.8 → 6.1 ms | 106 → 47 µs |
+| 128 | 258 | 32.5 → 20.1 ms | 126 → 78 µs |
+
+**Not done: per-function `Runs`/`Uses`/`Live` arrays.** What is left of a round is linear in the stream. On ladder 128 that is about 78 µs, of which:
+
+| part | µs |
+|---|---:|
+| `LabelIndex` and `Exits` updates | 21 |
+| `Live::update` | 20 |
+| `Runs`/`Uses`/`Loops` updates | 13 |
+| `apply_edits` splicing the flat `Vec<Inst>` | 15 |
+| `RegionPlans` id rebuild | ~5 |
+
+Each of these is a shift or copy of positions after the splice, a few ns per instruction. So `promote` is still O(rounds × n), with a smaller constant: about 2× at N = 64 and 1.6× at N = 128. Per-function arrays alone would not remove this. `LabelIndex`, `Exits`, `RegionPlans` ids, and the code vector itself are absolute positions in one stream too. The fix is to give `promote` per-function code with relative positions. That is not byte-identical by construction: liveness, exits, and `reached_outside` look across functions. It belongs with 3.3b, which replaces these structures anyway.
+
+Tests: `make check` passed:
+- fmt and clippy `-D warnings`
+- `cargo test --locked` (552 lib)
+- `LITHE_VERIFY=1 cargo test`, which runs the new search oracle
+- `LITHE_FUZZ_STEPS=2000` differential
+- both snapshots
+- bench-gas
+- wasm
+
 ## 3.4 Outline without per-site splices
 
-Plan: write every call site of a round in one pass over the stream, not with one `Vec::splice` per site. Proof: old and new binaries emit the same bytes. Expected effect: the O(sites × n) term goes away.
+Plan: write every call site of a round in one pass over the stream, not with one `Vec::splice` per site. Proof: old and new binaries emit the same bytes. Expected effect: the O(sites × n) term within a round goes away.
 
 Profiling `outline_once` showed that `repeats` already refines groups of equal token runs one length at a time, with radix buckets by next token. That is the "hashed token runs" this task asked for, and it is linear in the stream times the lengths that survive. The quadratic part was the edit loop. Each of a round's call sites (511 on ladder 128) spliced the whole stream and the token arrays. That loop took 0.9 ms of a 6 ms round. Now return labels and tokens are assigned in the same order as before (last site first), and code, tokens, and sizes are rebuilt once. `outline` still runs on the flat stream. Moving it onto `Blocks` would add a conversion and save nothing: it runs once per finish, after `optimize` has already written the stream.
 
@@ -336,7 +383,9 @@ Timing, `outline+` from `LITHE_TIME`, best of 5, `target/fast`, `LITHE_THREADS=1
 | ladder 128 | 27.8 → 29.8 ms | 28.4 → 26.8 ms |
 | erc20_full | 10.6 → 10.4 ms | 482 → 478 ms |
 
-The difference is noise on these targets. `outline+` is mostly the `optimize` and `finish` that run after outlining. The change removes the asymptotic term. It does not move the headline numbers.
+The difference is noise on these targets. `outline+` is mostly the `optimize` and `finish` that run after outlining. The change removes the per-site splice term. It does not move the headline numbers.
+
+**Still quadratic.** `outline` loops `outline_once` until nothing is left, and every round does O(n) work over the whole stream: `safe_exits`, the `JUMPI` retokenisation, `flow`, prefix sizes, `repeats`, and the rebuild. The exact-copy pass (`params = false`), which Release always runs through `both`, applies only the single best outline per round. So its round count grows with the number of distinct repeated runs, and the total is O(rounds × n). Release erc20_full's ~480 ms `outline+` reflects this. Bounding the rounds or making them incremental is still open.
 
 ## Comparison with baseline.json
 
