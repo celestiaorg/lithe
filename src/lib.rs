@@ -483,16 +483,38 @@ pub fn analyze_full(path: &Path, src: &str) -> Analysis {
 impl ModuleCache {
     /// [`analyze_frontend`] using this session's parsed and checked modules.
     pub fn analyze_frontend(&self, path: &Path, src: &str) -> Analysis {
-        analyze_in(path, src, false, self)
+        analyze_in(path, src, Pass::Frontend, self).0
     }
 
     /// [`analyze_full`] using this session's parsed and checked modules.
     pub fn analyze_full(&self, path: &Path, src: &str) -> Analysis {
-        analyze_in(path, src, true, self)
+        analyze_in(path, src, Pass::Full, self).0
+    }
+
+    /// [`analyze_frontend`] without the index, and whether [`ModuleCache::index`] would
+    /// return one for `src`. An editor indexes only when it is asked a question.
+    pub fn analyze_edit(&self, path: &Path, src: &str) -> (Analysis, bool) {
+        analyze_in(path, src, Pass::Edit, self)
+    }
+
+    /// The index [`analyze_frontend`] returns for `src`, without linting it again.
+    pub fn index(&self, path: &Path, src: &str) -> Option<Index> {
+        analyze_in(path, src, Pass::Index, self).0.index
     }
 }
 
-fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Analysis {
+#[derive(Clone, Copy, PartialEq)]
+enum Pass {
+    Edit,
+    Index,
+    Frontend,
+    Full,
+}
+
+fn analyze_in(path: &Path, src: &str, pass: Pass, cache: &ModuleCache) -> (Analysis, bool) {
+    let codegen = pass == Pass::Full;
+    let lint = pass != Pass::Index;
+    let indexed = pass != Pass::Edit;
     let (mut opts, mut failed) = match build_options(path) {
         Ok(opts) => (opts, None),
         Err(err) => (Options::default(), Some(err)),
@@ -511,11 +533,14 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
     ) {
         Ok(prog) => prog,
         Err(err) => {
-            return Analysis {
-                error: Some(err),
-                lints: Vec::new(),
-                index: None,
-            }
+            return (
+                Analysis {
+                    error: Some(err),
+                    lints: Vec::new(),
+                    index: None,
+                },
+                false,
+            )
         }
     };
     lap.mark("load");
@@ -547,26 +572,34 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
         }
         failed
     };
-    if let Some((index, lints)) = cache.with_checked(&root, fp, opts.evm, |checked| {
+    if let Some((index, lints, indexable)) = cache.with_checked(&root, fp, opts.evm, |checked| {
         let reuse = if opts.evm == EvmVersion::default() {
             checked
         } else {
             &[]
         };
-        let lints = lint::lint_source(src, path, units.clone(), reuse).unwrap_or_default();
+        let lints = if lint {
+            lint::lint_source(src, path, units.clone(), reuse).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         lap.mark("lint");
-        let index = (!checked.is_empty()).then(|| index::build(&root_s, src, checked));
+        let indexable = !checked.is_empty();
+        let index = (indexed && indexable).then(|| index::build(&root_s, src, checked));
         lap.mark("index");
-        (index, lints)
+        (index, lints, indexable)
     }) {
         let error = build_error(&units, failed);
         lap.mark("build");
         lap.report();
-        return Analysis {
-            error,
-            lints,
-            index,
-        };
+        return (
+            Analysis {
+                error,
+                lints,
+                index,
+            },
+            indexable,
+        );
     }
     let mut checked = Vec::new();
     for unit in units.clone() {
@@ -601,7 +634,7 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
     }
     lap.mark("check");
     let all_checked = checked.len() == units.len();
-    let lints = if all_checked {
+    let lints = if lint && all_checked {
         let reuse = if opts.evm == EvmVersion::default() {
             &checked[..]
         } else {
@@ -612,17 +645,21 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
         Vec::new()
     };
     lap.mark("lint");
-    let index = (!checked.is_empty()).then(|| index::build(&root_s, src, &checked));
+    let indexable = !checked.is_empty();
+    let index = (indexed && indexable).then(|| index::build(&root_s, src, &checked));
     lap.mark("index");
     if all_checked {
         cache.store_checked(&root, fp, opts.evm, checked);
     }
     lap.report();
-    Analysis {
-        error: failed,
-        lints,
-        index,
-    }
+    (
+        Analysis {
+            error: failed,
+            lints,
+            index,
+        },
+        indexable,
+    )
 }
 
 /// The frontend's phases, printed when `LITHE_TIME` is set. Repeated marks of a phase add up.

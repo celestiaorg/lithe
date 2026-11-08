@@ -36,6 +36,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **2.3** Debounce `didChange` (50 ms), reader plus worker, rename, workspace symbol. Diagnostics on `bench/erc20_full.lithe` ≤ 20 ms (relaxed under `debug_assertions`). See the measurements below.
 - [x] **2.4** VS Code extension and TextMate smoke test. See the measurements below.
 - [x] **2.5** `LITHE_TIME` split of the frontend. The timed `erc20_full` test passes at its 20 ms optimized limit, with no relaxation (about 12 ms). The `Index` is still rebuilt on every edit; see below.
+- [x] **2.6** The index is built on the first request that needs it, not per edit. Diagnostics on erc20_full 12 → 6.5 ms. **The ≤ 5 ms target is missed:** `check` alone takes 5.3–5.8 ms. See below.
 
 ### Phase 3 — block IR, one-shot stack scheduling, linear passes
 
@@ -43,7 +44,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **3.2** `peephole` and `schedule` per block. Byte-identical in both modes. The 500-round bound stays, and the dirty-set was measured and dropped. See the measurements below.
 - [x] **3.2b** Cheaper `merge_tails`/`heat`, byte-identical. Ladder 128 `optimize` 414 → 250–279 ms. erc20_full and uniswap_v2_pair release are still above their pre-3.1 cost. See below.
 - [x] **3.2b(ii)** `heat` on the block skeleton, with a skeleton-keyed `flow` cache. Byte-identical. Goal missed; the measured floor (taken at machine load 19–47) is recorded below.
-- [ ] **3.2c** The rest of `optimize`'s superlinearity, as a codegen change: fewer `merge_tails` calls by merging several tails per call, and/or the per-span `peephole` overhead. Re-establish the floor under recorded low load first.
+- [x] **3.2c** Fewer `merge_tails` calls: a block whose best partner is taken now takes its next-best free pair in the same call. Codegen change. `optimize` erc20_full Release 346 → 271 ms, ladder 128 Fast 237 → 29 ms. Runtime size +0.25 %, gas +0.002 %, and every step's status is unchanged. See below.
 - [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c. **3.3a landed in part; 3.3b and 3.3c are not done** (see State).
 - [x] **3.4** `outline` without its quadratic terms. What moved: call sites are written in one pass instead of one splice each (3.4), and the exact-copy pass now takes every non-conflicting run per round, as the parameterised pass already did (3.4b), so a pass runs a handful of rounds, not one per distinct run. What did not: `outline` itself stays on the flat stream, not on `Blocks`, and `flow`/prefix sizes are recomputed each round. Final bytes unchanged in both modes; the exact pass's own output does differ on some targets (see 3.4b). See the measurements below.
 - [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×. **Not met:** 2.23× in Fast, 2.01× in Release; `optimize` is the superlinear part. Blocked on 3.2c and 3.3b (see State).
@@ -75,13 +76,15 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 
 This section is the single source of truth for what is open and what blocks what. Older sections below are dated records; where they disagree, this one wins.
 
-- **2.5 landed** (`ad6adc5`): LSP diagnostics on `bench/erc20_full.lithe` about 12 ms at the unrelaxed 20 ms limit. The ≤ 5 ms Phase 3 target is owed by 2.6 (lazy `Index`).
-- **3.2b/3.2b(ii) landed** (`f34c8a8`), goal missed under byte-identity; the remaining `optimize` superlinearity (`merge_tails` call count, per-span `peephole`) is **3.2c, open**, gated as a codegen change.
+- **2.5 landed** (`ad6adc5`): LSP diagnostics on `bench/erc20_full.lithe` about 12 ms at the unrelaxed 20 ms limit.
+- **2.6 in this branch:** the index is lazy and diagnostics take about 6.5 ms. The ≤ 5 ms target is missed because `check` (5.3–5.8 ms) is the floor. Reaching it is Phase 5 frontend work (interner, spans, fewer clones), not more LSP work.
+- **3.2b/3.2b(ii) landed** (`f34c8a8`), goal missed under byte-identity.
+- **3.2c in this branch:** `merge_tails` merges every free pair per call. Both targets are met (erc20_full Release `optimize` 271 ms against 339 ms before 3.1; ladder 128 Fast 29 ms against 359 ms). The per-span `peephole` overhead was not touched.
 - **3.4b landed** (`fc4921d`), final bytes unchanged.
 - **3.3b not started.** `promote` is still O(rounds × n) after 3.3a: labels, exits, liveness, runs and the code vector are absolute positions in one stream. 3.3b gives `promote` per-function code with relative positions, then a per-function CFG scheduler behind a plan knob. It is a codegen change, gated by the 5000-step differential, the prove tests, a regenerated snapshot and bench-gas outcomes identical with totals within 1 %.
 - **3.3c blocked on 3.3b**: the greedy `promote` stays until the scheduler wins or ties on every benchmark plan.
 - **4.1 blocked on 3.3b**: `promote`/`optimize` work across functions on one shared stream; `parallel_map` still parallelises plan candidates only.
-- **3.5 blocked on 3.2c and 3.3b**: re-run the ladder and record the 439→1735 and 1735→3463 ratios once both land.
+- **3.5 blocked on 3.3b** (3.2c is in): re-run the ladder and record the 439→1735 and 1735→3463 ratios once both land.
 - **Final comparison table** below is a mid-branch snapshot; regenerate it once the steps above land.
 
 ## 0.2b baseline
