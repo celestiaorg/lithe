@@ -40,8 +40,8 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 
 - [x] **3.1** CFG over `Vec<Inst>` and per-block worklist rewrites. Byte-identical in both modes. See the measurements below.
 - [x] **3.2** `peephole` and `schedule` per block. Byte-identical in both modes. The 500-round bound stays, and the dirty-set was measured and dropped. See the measurements below.
-- [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%.
-- [ ] **3.4** `outline` on the block IR.
+- [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c (see the handoff below). **3.3a landed in part; 3.3b and 3.3c are not done.**
+- [ ] **3.4** `outline` on the block IR. **Partly done:** call sites are written in one pass instead of one splice each, which removes the per-site splice term. `outline` stays on the stream, and each round is still O(n), so the whole loop is O(rounds × n). Byte-identical. See the measurements below.
 - [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×.
 
 ### Phase 4 — parallelism inside one build
@@ -285,3 +285,181 @@ Tests: `make check`:
 - playground wasm build
 
 New unit test `asm::blocks::tests::rounds_on_blocks_match_the_stream`: one `peephole` pass and the full rounds, blocks against the stream.
+
+## 3.3 Stack scheduler: handoff
+
+Not landed. The current `asm::promote` was measured first, to find out what a replacement has to beat and where its time goes (`target/fast`, `LITHE_THREADS=1`, ladder in Fast mode, temporary timers since removed):
+
+| ladder | insts | rounds | promote | per round: region search | per round: incremental updates |
+|---|---:|---:|---:|---:|---:|
+| 16 | 3233 | 34 | 0.8 ms | 10 µs | 12 µs |
+| 64 | 12694 | 130 | 9.0 ms | 36 µs | 32 µs |
+| 128 | 25302 | 258 | 33 ms | 71 µs | 55 µs |
+
+Each round applies one promotion, the best in the whole program. So the number of rounds grows with the number of functions, and every round scans the whole stream: it is quadratic. On ladder 128, promote is 34 ms of a 500 ms backend. `optimize` is 373 ms, so 3.2b, not promote, decides 3.5. On Release `erc20_full`, promote is 0.9 s of 2.4 s, summed over 97 emits.
+
+Why it was not replaced in one step:
+
+- `promote` is not one algorithm. It is several strategies tuned against the plan search:
+  - holding a value within a straight run
+  - holding a value over a region across branches and loops
+  - `consume` (`plan.tight`)
+  - `hold_dups`
+  - `sink`
+  - `abandon`
+  - alias copies
+  - `sink_exits`
+
+  The Release search turns these knobs per candidate. A fresh value-numbering scheduler with RPO layouts has to match all of them within 1% total gas and size over 127 targets. The gas side also needs every one of the 45 `bench_gas` suites to keep its outcomes. That means measuring and tuning over many full gate runs, not writing one patch.
+- A per-function batch of the current greedy is no shortcut either. Applying the best region of every function in one round is not byte-identical, because a region's edits can create new candidates that beat the next one in line. So it needs the same gas gate as a full scheduler, for a smaller payoff.
+
+Suggested split:
+
+1. **3.3a** Make the current greedy linear, byte-identical. Keep a heap of candidate bounds, keyed by the stable ids `RegionPlans` already maps across edits, so each round re-plans only the candidates its splice touched. The heap replaces the whole-stream `for i in 0..code.len()` scan in `promote_region`. Also give `Runs`/`Uses`/`Live::update` per-function arrays, so a splice shifts only its own function.
+2. **3.3b** A scheduler for one function, behind a plan knob, so the search can compare it with the greedy by cost model on each candidate. Then gate it with the 1% budget, differential at 5000 steps, and the prove tests.
+3. **3.3c** Remove the greedy once 3.3b wins or ties everywhere.
+
+Stack-too-deep cannot occur today either: every local has a memory home, and promotion rewrites a load or store only when the value is within 16 items (`d < 16` in `promote_region`/`hold`). Otherwise the access stays on the home. `docs/src/pages/guide/architecture.mdx` explains this.
+
+## 3.3a Region search per word
+
+Plan: make the greedy's rounds search only what the last round changed, keeping the bytes identical. Proof: old and new binaries emit the same bytes, plus both snapshots, `LITHE_VERIFY=1`, and the 2000-step differential.
+
+What changed (`src/asm.rs`):
+
+- **No whole-stream scan in `promote_region`.** Candidates come from each tracked word's stores in `Uses` and from the loops the word is used in. `RegionPlans::best` keeps each word's best region: its saving, its entry, and its place in the old scan order, so ties still go to the candidate the scan met first. A word is searched again only if the round changed it:
+  - one of its plans was dropped or must be rechecked;
+  - it has a use in the code `Runs::update` rescanned, or in the code that was replaced;
+  - it is used in a loop that was found again, or in a loop whose head is in the rescanned code.
+
+  Words with a known best go first and set a floor. The other words are searched in order of the most they could save (`3 + 2·loads + stores`), and the search stops once that falls below the floor. A word with nothing at or above a floor is remembered as such, and reused while the floor is no lower.
+- **Straight promotions no longer clear `RegionPlans`.** They update it like a region does (`applied` with the words they changed). `alias_copies` reads its candidates from `Uses` instead of scanning the stream.
+- **`RegionPlans.plans` is keyed by id in a map.** `applied` was walking one list per instruction id (about 24 500 on ladder 128) to update about 60 plans.
+- **Oracle.** Under `LITHE_VERIFY`, each round also searches every word from scratch and asserts the same winner. The existing per-plan asserts still run.
+
+Equivalence: `lithe compile --fast` and `--release` of every `bench/`, `examples/`, and `fuzz/` file, plus ladders 16, 64, and 128, give the same stdout from the parent binary and this one (211 files × 2 modes). `tests/snapshots/bytecode.json` is unchanged. Ladder rounds are unchanged: 34/130/258 at N = 16/64/128.
+
+Timing: `target/fast`, Fast mode, `LITHE_THREADS=1`, cache off, `promote` sum, best of 3.
+
+| ladder | rounds | promote old → new | per round old → new |
+|---|---:|---:|---:|
+| 16 | 34 | 1.49 → 0.66 ms | 44 → 19 µs |
+| 64 | 130 | 13.8 → 6.1 ms | 106 → 47 µs |
+| 128 | 258 | 32.5 → 20.1 ms | 126 → 78 µs |
+
+**Not done: per-function `Runs`/`Uses`/`Live` arrays.** What is left of a round is linear in the stream. On ladder 128 that is about 78 µs, of which:
+
+| part | µs |
+|---|---:|
+| `LabelIndex` and `Exits` updates | 21 |
+| `Live::update` | 20 |
+| `Runs`/`Uses`/`Loops` updates | 13 |
+| `apply_edits` splicing the flat `Vec<Inst>` | 15 |
+| `RegionPlans` id rebuild | ~5 |
+
+Each of these is a shift or copy of positions after the splice, a few ns per instruction. So `promote` is still O(rounds × n), with a smaller constant: about 2× at N = 64 and 1.6× at N = 128. Per-function arrays alone would not remove this. `LabelIndex`, `Exits`, `RegionPlans` ids, and the code vector itself are absolute positions in one stream too. The fix is to give `promote` per-function code with relative positions. That is not byte-identical by construction: liveness, exits, and `reached_outside` look across functions. It belongs with 3.3b, which replaces these structures anyway.
+
+Tests: `make check` passed:
+- fmt and clippy `-D warnings`
+- `cargo test --locked` (552 lib)
+- `LITHE_VERIFY=1 cargo test`, which runs the new search oracle
+- `LITHE_FUZZ_STEPS=2000` differential
+- both snapshots
+- bench-gas
+- wasm
+
+## 3.4 Outline without per-site splices
+
+Plan: write every call site of a round in one pass over the stream, not with one `Vec::splice` per site. Proof: old and new binaries emit the same bytes. Expected effect: the O(sites × n) term within a round goes away.
+
+Profiling `outline_once` showed that `repeats` already refines groups of equal token runs one length at a time, with radix buckets by next token. That is the "hashed token runs" this task asked for, and it is linear in the stream times the lengths that survive. The quadratic part was the edit loop. Each of a round's call sites (511 on ladder 128) spliced the whole stream and the token arrays. That loop took 0.9 ms of a 6 ms round. Now return labels and tokens are assigned in the same order as before (last site first), and code, tokens, and sizes are rebuilt once. `outline` still runs on the flat stream. Moving it onto `Blocks` would add a conversion and save nothing: it runs once per finish, after `optimize` has already written the stream.
+
+Equivalence: `lithe compile --fast` and `--release` on every `bench/`, `examples/`, and `fuzz/` file, plus ladders 64 and 128, produce identical stdout from the parent binary and this one (254 compiles plus 4 ladder builds). `tests/snapshots/bytecode.json` is unchanged.
+
+Timing, `outline+` from `LITHE_TIME`, best of 5, `target/fast`, `LITHE_THREADS=1`, old → new:
+
+| target | fast | release |
+|---|---:|---:|
+| ladder 128 | 27.8 → 29.8 ms | 28.4 → 26.8 ms |
+| erc20_full | 10.6 → 10.4 ms | 482 → 478 ms |
+
+The difference is noise on these targets. `outline+` is mostly the `optimize` and `finish` that run after outlining. The change removes the per-site splice term. It does not move the headline numbers.
+
+**Still quadratic.** `outline` loops `outline_once` until nothing is left, and every round does O(n) work over the whole stream: `safe_exits`, the `JUMPI` retokenisation, `flow`, prefix sizes, `repeats`, and the rebuild. The exact-copy pass (`params = false`), which Release always runs through `both`, applies only the single best outline per round. So its round count grows with the number of distinct repeated runs, and the total is O(rounds × n). Release erc20_full's ~480 ms `outline+` reflects this. Bounding the rounds or making them incremental is still open.
+
+## Comparison with baseline.json
+
+Commit `9ec81c7` plus 3.4, measured on 2026-11-07. 3.2b, 3.3, 3.5, and phases 4–6 are not in this tree, so this table records the branch at this point. It is not the end of the program; re-run it when those land. `target/release/lithe` on 16 cores, `python3 scripts/bench_compile.py`, cache off. Fast rows use the same script with `--bin` pointing at a wrapper that passes `--fast` instead of `--release`, and `--skip-gas`. Wall-clock time includes process startup. **R** is Release, **F** is Fast; `(1)` is `LITHE_THREADS=1` and `(16)` is every core. "base" is `baseline.json` (v0.4.0, `796fdfe`).
+
+- The Release run started while sibling builds were finishing. The ladder and large rows have wall ≈ CPU (for example, erc20_full 1.848 s wall vs 1.85 s CPU). Small Release rows under about 20 ms have startup noise of several milliseconds.
+- The first Fast run was discarded: load average was 50 and wall was twice CPU. It was re-run once the load average dropped below 6.
+
+| target | lines | base R ms (1) | R ms (1) | R ms (16) | F ms (1) | F ms (16) | base R runtime | R runtime | F runtime |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `bench/base64.lithe` | 14 | 7.6 | 15.0 | 15.7 | 7.0 | 7.3 | 891 | 891 | 874 |
+| `bench/book.lithe` | 35 | 11.7 | 21.3 | 22.4 | 10.2 | 12.0 | 1160 | 1160 | 1091 |
+| `bench/codec.lithe` | 69 | 52.2 | 91.9 | 67.0 | 20.6 | 20.6 | 2596 | 2596 | 2645 |
+| `bench/collections.lithe` | 43 | 15.3 | 16.4 | 14.7 | 8.0 | 8.6 | 627 | 627 | 636 |
+| `bench/counter.lithe` | 48 | 7.3 | 8.6 | 9.4 | 8.0 | 7.5 | 198 | 198 | 198 |
+| `bench/date_time.lithe` | 57 | 70.7 | 81.7 | 65.0 | 9.4 | 11.3 | 1166 | 1166 | 1152 |
+| `bench/deployers.lithe` | 69 | 64.1 | 71.6 | 54.8 | 12.5 | 12.3 | 1503 | 1503 | 1554 |
+| `bench/dialer.lithe` | 52 | 18.1 | 21.1 | 24.5 | 11.8 | 11.6 | 1401 | 1401 | 1383 |
+| `bench/env.lithe` | 16 | 5.1 | 7.7 | 7.7 | 7.5 | 7.9 | 81 | 81 | 81 |
+| `bench/erc1155.lithe` | 158 | 590.0 | 698.5 | 290.1 | 31.0 | 32.7 | 5013 | 5013 | 4736 |
+| `bench/erc20.lithe` | 99 | 121.2 | 133.6 | 70.4 | 16.3 | 14.5 | 2244 | 2244 | 2042 |
+| `bench/erc20_full.lithe` | 183 | 1731.9 | 1848.4 | 623.9 | 57.7 | 56.5 | 7382 | 7382 | 7425 |
+| `bench/erc4626.lithe` | 24 | 226.0 | 245.8 | 107.8 | 21.2 | 19.8 | 2884 | 2884 | 3120 |
+| `bench/erc6909.lithe` | 68 | 159.2 | 181.5 | 87.9 | 17.4 | 19.2 | 3326 | 3326 | 3273 |
+| `bench/erc721.lithe` | 119 | 159.2 | 180.5 | 96.8 | 20.0 | 20.4 | 3074 | 3074 | 3054 |
+| `bench/erc721_full.lithe` | 176 | 503.4 | 590.5 | 225.1 | 32.3 | 34.4 | 5640 | 5640 | 5664 |
+| `bench/exchange.lithe` | 51 | 9.8 | 12.0 | 11.4 | 9.2 | 8.2 | 417 | 417 | 442 |
+| `bench/executor.lithe` | 115 | 16.3 | 24.9 | 17.1 | 10.0 | 8.1 | 807 | 807 | 822 |
+| `bench/fixed_point.lithe` | 60 | 98.7 | 111.9 | 66.1 | 23.1 | 22.9 | 2831 | 2831 | 2918 |
+| `bench/flash_borrower.lithe` | 55 | 15.6 | 16.8 | 16.1 | 11.4 | 11.4 | 822 | 822 | 871 |
+| `bench/layout.lithe` | 64 | 7.0 | 8.6 | 8.4 | 8.6 | 9.4 | 705 | 705 | 705 |
+| `bench/lists.lithe` | 68 | 18.9 | 18.7 | 20.1 | 11.0 | 10.7 | 1624 | 1624 | 1599 |
+| `bench/logs.lithe` | 42 | 6.9 | 8.2 | 7.9 | 7.0 | 7.2 | 277 | 277 | 305 |
+| `bench/loops.lithe` | 84 | 13.3 | 16.7 | 14.1 | 9.0 | 9.0 | 871 | 871 | 874 |
+| `bench/math.lithe` | 24 | 6.5 | 7.5 | 6.6 | 8.0 | 7.7 | 424 | 424 | 424 |
+| `bench/names.lithe` | 58 | 15.2 | 17.1 | 20.8 | 12.3 | 11.8 | 1312 | 1312 | 1289 |
+| `bench/numerics.lithe` | 43 | 39.7 | 41.3 | 36.7 | 18.1 | 16.8 | 1679 | 1679 | 1702 |
+| `bench/overloads.lithe` | 73 | 17.4 | 20.5 | 17.0 | 8.1 | 8.8 | 458 | 458 | 449 |
+| `bench/ownable_roles.lithe` | 54 | 27.6 | 28.6 | 23.1 | 9.9 | 9.6 | 952 | 952 | 975 |
+| `bench/profile.lithe` | 26 | 8.6 | 9.1 | 10.3 | 9.2 | 9.4 | 586 | 586 | 584 |
+| `bench/reasons.lithe` | 80 | 10.8 | 12.4 | 10.9 | 8.9 | 7.8 | 844 | 844 | 845 |
+| `bench/receiver.lithe` | 40 | 11.3 | 9.5 | 11.8 | 9.8 | 8.8 | 454 | 454 | 473 |
+| `bench/receiver1155.lithe` | 76 | 18.8 | 17.1 | 15.4 | 9.7 | 9.1 | 926 | 926 | 944 |
+| `bench/records.lithe` | 125 | 31.8 | 28.5 | 26.3 | 13.1 | 11.5 | 1508 | 1508 | 1508 |
+| `bench/registry.lithe` | 68 | 13.9 | 14.9 | 13.1 | 11.1 | 9.1 | 1034 | 1034 | 1028 |
+| `bench/relay.lithe` | 42 | 24.3 | 24.6 | 26.4 | 16.6 | 15.9 | 1886 | 1886 | 1828 |
+| `bench/safe_erc20.lithe` | 29 | 11.7 | 11.6 | 12.3 | 9.0 | 9.5 | 543 | 543 | 543 |
+| `bench/selectors.lithe` | 46 | 10.6 | 9.7 | 10.4 | 7.9 | 6.5 | 399 | 399 | 449 |
+| `bench/shapes.lithe` | 86 | 17.9 | 18.9 | 18.1 | 11.6 | 12.8 | 1306 | 1306 | 1340 |
+| `bench/solady_erc1155.lithe` | 249 | 91.7 | 96.1 | 62.5 | 19.9 | 17.6 | 2707 | 2707 | 2630 |
+| `bench/solady_erc20.lithe` | 176 | 40.2 | 40.2 | 27.8 | 12.5 | 11.7 | 1395 | 1395 | 1402 |
+| `bench/solady_erc721.lithe` | 241 | 67.6 | 74.1 | 48.9 | 19.4 | 15.9 | 2110 | 2110 | 2151 |
+| `bench/staking.lithe` | 239 | 104.5 | 114.7 | 62.9 | 12.8 | 15.8 | 2486 | 2486 | 2177 |
+| `bench/strings.lithe` | 70 | 17.2 | 18.7 | 17.9 | 14.8 | 13.3 | 1724 | 1724 | 1695 |
+| `bench/tally.lithe` | 58 | 6.2 | 6.7 | 6.8 | 5.5 | 5.5 | 439 | 439 | 439 |
+| `bench/texts.lithe` | 127 | 69.6 | 76.6 | 69.4 | 24.3 | 27.4 | 4105 | 4105 | 3911 |
+| `bench/token.lithe` | 70 | 11.4 | 11.3 | 10.5 | 8.1 | 8.5 | 357 | 357 | 397 |
+| `bench/traits.lithe` | 45 | 8.3 | 9.1 | 8.7 | 11.3 | 8.4 | 468 | 468 | 468 |
+| `bench/uniswap_v2_factory.lithe` | 97 | 349.1 | 360.2 | 155.3 | 33.5 | 33.3 | 6038 | 6038 | 6213 |
+| `bench/uniswap_v2_pair.lithe` | 529 | 338.6 | 347.4 | 151.6 | 31.7 | 32.1 | 5073 | 5073 | 5201 |
+| `bench/vault.lithe` | 75 | 7.8 | 9.2 | 9.3 | 10.0 | 8.6 | 387 | 387 | 400 |
+| `scaling/n16.lithe` | 439 | 34.5 | 35.2 | 29.9 | 21.9 | 22.8 | 2549 | 2549 | 2549 |
+| `scaling/n32.lithe` | 871 | 80.0 | 80.1 | 58.7 | 44.8 | 42.8 | 4774 | 4774 | 4774 |
+| `scaling/n64.lithe` | 1735 | 261.6 | 252.9 | 175.8 | 118.9 | 118.8 | 9231 | 9231 | 9231 |
+| `scaling/n128.lithe` | 3463 | 1122.9 | 1006.2 | 706.0 | 495.0 | 485.4 | 18126 | 18126 | 18126 |
+| `scaling/n256.lithe` | 6919 | 7407.3 | 4966.5 | 4118.6 | 2754.7 | 2755.8 | 42512 | 42512 | 42512 |
+| **examples (71 targets)** | | 6195 | 6415 | 3076 | 862 | 858 | 85979 | 85979 | 87238 |
+| **all (127 targets)** | | 20409 | 18623 | 11000 | 5044 | 5020 | 252311 | 252311 | 253359 |
+
+
+Release bytecode and gas are identical to the baseline. All 45 `bench_gas` suites have identical outcomes. Total gas is 68 120 141 → 68 120 141, deploy gas 28 276 660 → 28 276 660, and suite runtime bytes 105 876 → 105 876. Every target's Release runtime size matches `baseline.json`. Fast is 0.4% larger in total runtime (252 311 → 253 359 bytes over all 127 targets). Its gas is in the 1.2 table.
+
+Headlines against the prompt's targets:
+- erc20_full in Fast: 1731.9 ms → **57.7 ms** (target ≤ 60 ms after Phase 1; ≤ 15 ms after Phase 3 is not met yet).
+- All 127 targets, one thread: 20.4 s Release baseline → 18.6 s Release, 11.0 s Release on 16 threads, and **5.0 s Fast**.
+- Ladder in Fast, per-line cost from 439 to 1735 lines: 21.9 ms / 439 = 50 µs/line → 118.9 ms / 1735 = 69 µs/line, a ratio of **1.37×**. From 1735 to 3463 lines it is 143 µs/line, a ratio of 2.1×. So scaling is still superlinear past 1735 lines; see the 3.3 handoff, and 3.2b for `optimize`.
+- Threads only help Release. Fast is one build, so 1 vs 16 threads is the same within noise. Phase 4 is what would change that.

@@ -1668,18 +1668,38 @@ fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, entries: &[u32], params: b
         .enumerate()
         .flat_map(|(c, o)| o.picked.iter().map(move |&s| (s, c)))
         .collect();
-    // Edit the later sites first so the earlier indices stay valid.
+    // Return labels and tokens are numbered from the last site back, then the code is
+    // rebuilt once.
     sites.sort_unstable_by(|a, b| b.cmp(a));
-    for (s, c) in sites {
-        let o = &chosen[c];
-        let ret = label;
-        label += 1;
-        let mut call: Vec<Inst> = o.params.iter().rev().map(|&j| code[s + j]).collect();
-        call.insert(if o.takes > 0 { call.len() } else { 0 }, PushLabel(ret));
-        call.extend([PushLabel(helpers[c]), Op(JUMP), Label(ret)]);
-        code.splice(s..s + o.len, call.iter().copied());
-        t.splice(s..s + o.len, &call);
+    let calls: Vec<(usize, usize, Vec<Inst>, Vec<u32>)> = sites
+        .into_iter()
+        .map(|(s, c)| {
+            let o = &chosen[c];
+            let ret = label;
+            label += 1;
+            let mut call: Vec<Inst> = o.params.iter().rev().map(|&j| code[s + j]).collect();
+            call.insert(if o.takes > 0 { call.len() } else { 0 }, PushLabel(ret));
+            call.extend([PushLabel(helpers[c]), Op(JUMP), Label(ret)]);
+            let tok = call.iter().map(|inst| t.of(inst)).collect();
+            (s, o.len, call, tok)
+        })
+        .collect();
+    let old = std::mem::take(code);
+    let old_tok = std::mem::take(&mut t.tok);
+    let old_bytes = std::mem::take(&mut t.bytes);
+    let mut prev = 0;
+    for (s, len, call, tok) in calls.into_iter().rev() {
+        code.extend_from_slice(&old[prev..s]);
+        t.tok.extend_from_slice(&old_tok[prev..s]);
+        t.bytes.extend_from_slice(&old_bytes[prev..s]);
+        t.bytes.extend(call.iter().map(inst_len));
+        code.extend(call);
+        t.tok.extend(tok);
+        prev = s + len;
     }
+    code.extend_from_slice(&old[prev..]);
+    t.tok.extend_from_slice(&old_tok[prev..]);
+    t.bytes.extend_from_slice(&old_bytes[prev..]);
     let from = code.len();
     if !matches!(code.last(), Some(Op(op)) if is_terminal(*op)) {
         code.push(Op(STOP));
@@ -2024,7 +2044,8 @@ impl Loops {
 
     /// The loops of `code`, which `sp` made of the code these are the loops of, where `gone`
     /// was, from its labels and uses: loops whose labels the change holds or refers to are
-    /// found again, and the words of those whose code it touched.
+    /// found again, and the words of those whose code it touched. Returns the words of the
+    /// loops found again, before and after.
     fn update(
         &mut self,
         code: &[Inst],
@@ -2032,7 +2053,7 @@ impl Loops {
         uses: &Uses,
         sp: Splice,
         gone: &[Inst],
-    ) {
+    ) -> Vec<u32> {
         let mut touched: FxHashSet<u32> = FxHashSet::default();
         for inst in gone.iter().chain(&code[sp.lo..sp.new_hi]) {
             match inst {
@@ -2043,7 +2064,14 @@ impl Loops {
                 _ => {}
             }
         }
-        self.0.retain(|h| !touched.contains(&h.2));
+        let mut words_of = Vec::new();
+        self.0.retain(|h| {
+            let keep = !touched.contains(&h.2);
+            if !keep {
+                words_of.extend_from_slice(&h.3);
+            }
+            keep
+        });
         for (s, back, _, words) in &mut self.0 {
             let inside = *s < sp.old_hi.max(sp.lo + 1) && *back > sp.lo;
             *s = sp.moved(*s);
@@ -2052,12 +2080,16 @@ impl Loops {
                 *words = Self::words(uses, *s, *back);
             }
         }
-        self.0.extend(
-            touched
-                .into_iter()
-                .filter_map(|l| Self::head(labels, uses, l)),
-        );
+        let found: Vec<_> = touched
+            .into_iter()
+            .filter_map(|l| Self::head(labels, uses, l))
+            .collect();
+        for h in &found {
+            words_of.extend_from_slice(&h.3);
+        }
+        self.0.extend(found);
         self.0.sort_unstable_by_key(|h| h.0);
+        words_of
     }
 }
 
@@ -3433,7 +3465,26 @@ pub(crate) fn promote(
                     runs.update(code, calls, exits, sp, std::mem::take(&mut spare));
                 spare = std::mem::replace(&mut runs, new);
                 uses.update(code, tracked, sp);
-                loops.update(code, &labels, &uses, sp, &gone);
+                let refound = loops.update(code, &labels, &uses, sp, &gone);
+                // A region's candidates change with the uses and runs of its word, and with
+                // the loops it is used in and the straight code before their heads.
+                let used = |inst: &Inst| match inst {
+                    Mem(a) => Some(*a),
+                    _ => None,
+                };
+                let near = loops
+                    .0
+                    .iter()
+                    .filter(|h| scanned.contains(&h.0) || h.0 == scanned.end)
+                    .flat_map(|h| h.3.iter().copied());
+                plans.forget(
+                    code[scanned.clone()]
+                        .iter()
+                        .chain(&gone)
+                        .filter_map(used)
+                        .chain(refound)
+                        .chain(near),
+                );
                 let mut at: Vec<usize> = scanned
                     .filter(|&i| matches!((code[i], code.get(i + 1)), (Mem(w), Some(Op(MSTORE))) if tracked(w)))
                     .collect();
@@ -3535,7 +3586,6 @@ pub(crate) fn promote(
             let promoted = track::pass(code, |code| {
                 promote_region(
                     code,
-                    tracked,
                     calls,
                     exits,
                     &live,
@@ -3563,7 +3613,7 @@ pub(crate) fn promote(
             continue;
         }
         any = true;
-        plans.clear();
+        plans.applied(&edits, &words);
         let sp = Splice::of(&edits, code.len());
         let gone = code[sp.lo..sp.old_hi].to_vec();
         track::pass(code, |c| apply_edits(c, edits));
@@ -3738,7 +3788,6 @@ fn plan_promotion(
 #[allow(clippy::too_many_arguments)]
 fn promote_region(
     code: &mut Vec<Inst>,
-    tracked: &dyn Fn(u32) -> bool,
     calls: &Calls,
     exits: &FxHashSet<u32>,
     live: &Live,
@@ -3756,7 +3805,7 @@ fn promote_region(
     }
     // A copy read where it came from costs nothing to hold, where a region holding it
     // would keep a second item in step each time the store runs.
-    if let Some((sp, a, gone)) = alias_copies(code, tracked, calls, exits, labels) {
+    if let Some((sp, a, gone)) = alias_copies(code, calls, exits, labels, uses) {
         plans.clear();
         return Promoted::Region(sp, a, gone);
     }
@@ -3766,7 +3815,7 @@ fn promote_region(
     }
     // Where each tracked word is loaded and stored bounds what a region can save.
     let uses = &uses.words;
-    let mut best: Option<(Entry, u32, i64)> = None;
+    let mut known = std::mem::take(&mut plans.best);
     // What a region from `start` could save at most beyond its entry: each later load of
     // its word becomes a `DUP`, a byte shorter, and each store a `SWAP` and `POP`.
     let rest = |a: u32, start: usize| {
@@ -3774,99 +3823,108 @@ fn promote_region(
         uses.get(&a)
             .map_or(0, |(loads, stores)| 2 * after(loads) + after(stores))
     };
-    // The saving that beats every candidate so far, as the candidates go in order.
-    let beats = |best: &Option<(Entry, u32, i64)>| best.map_or(0, |b| b.2);
-    let mut consider = |best: &mut Option<(Entry, u32, i64)>, entry: Entry, a: u32, bound: i64| {
-        let start = match entry {
-            Entry::Store(i, _) | Entry::StoreUnder(i) => i + 2,
-            Entry::Load(s) => s,
-        };
-        // No plan saves more than this bound, and plans only keep what saves.
-        if !verify() && bound <= beats(best) {
-            return;
-        }
-        let (id, kind) = plans.key(entry);
-        let slot = plans.find(id, kind, a);
-        let saved = match slot.ok().map(|k| &mut plans.plans[id as usize][k].2) {
-            Some(plan) if !plan.recheck => plan.saved,
-            plan => {
-                if bound <= beats(best) {
-                    return;
-                }
-                let same = |plan: &&mut RegionPlan| {
-                    plan.reads
-                        .iter()
-                        .all(|&(at, read)| live.after(code, at, a) == read)
-                };
-                match plan.filter(same) {
-                    Some(plan) => {
-                        plan.recheck = false;
-                        plan.saved
+    // One word's candidates are searched in order for the first that saves the most, and at
+    // least `floor`: a candidate below that cannot win, so one whose bound is below it is
+    // never planned. The saving a candidate must beat is the best so far, or `floor - 1`.
+    type Best = Option<(Entry, i64, Order)>;
+    let beats = |best: &Best, floor: i64| best.map_or(0, |b| b.1).max(floor - 1);
+    let mut consider =
+        |best: &mut Best, floor: i64, entry: Entry, a: u32, bound: i64, order: Order| {
+            let beats = |best: &Best| beats(best, floor);
+            let start = match entry {
+                Entry::Store(i, _) | Entry::StoreUnder(i) => i + 2,
+                Entry::Load(s) => s,
+            };
+            // No plan saves more than this bound, and plans only keep what saves.
+            if !verify() && bound <= beats(best) {
+                return;
+            }
+            let (id, kind) = plans.key(entry);
+            let slot = plans.find(id, kind, a);
+            let saved = match slot
+                .ok()
+                .map(|k| &mut plans.plans.get_mut(&id).expect("found")[k].2)
+            {
+                Some(plan) if !plan.recheck => plan.saved,
+                plan => {
+                    if bound <= beats(best) {
+                        return;
                     }
-                    None => {
-                        let mut trace = Trace {
-                            reach: start,
-                            reads: Vec::new(),
-                            also: Vec::new(),
-                        };
-                        let saved = plan_region(
-                            code, entry, a, calls, exits, live, labels, abandon, &mut trace, false,
-                        )
-                        .map(|r| r.saved);
-                        let plan = RegionPlan {
-                            saved,
-                            from: entry.at().saturating_sub(1),
-                            to: trace.reach + 4,
-                            reads: trace.reads,
-                            also: trace.also,
-                            recheck: false,
-                        };
-                        plans.put(id, kind, a, slot, plan);
-                        saved
+                    let same = |plan: &&mut RegionPlan| {
+                        plan.reads
+                            .iter()
+                            .all(|&(at, read)| live.after(code, at, a) == read)
+                    };
+                    match plan.filter(same) {
+                        Some(plan) => {
+                            plan.recheck = false;
+                            plan.saved
+                        }
+                        None => {
+                            let mut trace = Trace {
+                                reach: start,
+                                reads: Vec::new(),
+                                also: Vec::new(),
+                            };
+                            let saved = plan_region(
+                                code, entry, a, calls, exits, live, labels, abandon, &mut trace,
+                                false,
+                            )
+                            .map(|r| r.saved);
+                            let plan = RegionPlan {
+                                saved,
+                                from: entry.at().saturating_sub(1),
+                                to: trace.reach + 4,
+                                reads: trace.reads,
+                                also: trace.also,
+                                recheck: false,
+                            };
+                            plans.put(id, kind, a, slot, plan);
+                            saved
+                        }
                     }
                 }
+            };
+            assert!(
+                !verify() || saved.is_none_or(|s| s > 0 && s <= bound),
+                "bound"
+            );
+            if verify() {
+                let fresh = plan_region(
+                    code,
+                    entry,
+                    a,
+                    calls,
+                    exits,
+                    live,
+                    labels,
+                    abandon,
+                    &mut Trace::default(),
+                    false,
+                );
+                assert_eq!(saved, fresh.map(|r| r.saved), "cached region plan");
+            }
+            assert!(
+                !verify()
+                    || bound == {
+                        let (entry_saved, from) = match entry {
+                            Entry::Store(i, under) => (3 - i64::from(under), i + 2),
+                            Entry::StoreUnder(i) => (3, i + 2),
+                            Entry::Load(s) => (-3, s),
+                        };
+                        entry_saved + rest(a, from)
+                    },
+                "bound value"
+            );
+            if let Some(saved) = saved.filter(|&s| s >= floor && best.is_none_or(|b| s > b.1)) {
+                *best = Some((entry, saved, order));
             }
         };
-        assert!(
-            !verify() || saved.is_none_or(|s| s > 0 && s <= bound),
-            "bound"
-        );
-        if verify() {
-            let fresh = plan_region(
-                code,
-                entry,
-                a,
-                calls,
-                exits,
-                live,
-                labels,
-                abandon,
-                &mut Trace::default(),
-                false,
-            );
-            assert_eq!(saved, fresh.map(|r| r.saved), "cached region plan");
-        }
-        assert!(
-            !verify()
-                || bound == {
-                    let (entry_saved, from) = match entry {
-                        Entry::Store(i, under) => (3 - i64::from(under), i + 2),
-                        Entry::StoreUnder(i) => (3, i + 2),
-                        Entry::Load(s) => (-3, s),
-                    };
-                    entry_saved + rest(a, from)
-                },
-            "bound value"
-        );
-        if let Some(saved) = saved.filter(|&s| best.is_none_or(|b| s > b.2)) {
-            *best = Some((entry, a, saved));
-        }
-    };
-    for i in 0..code.len().saturating_sub(1) {
-        let (Mem(a), Op(MSTORE)) = (code[i], code[i + 1]) else {
-            continue;
-        };
-        if tracked(a) {
+    // Word `a`'s best candidate saving at least `floor`, given the loops it is used in.
+    let mut search = |a: u32, floor: i64, in_loops: &[usize]| -> Best {
+        let mut best: Best = None;
+        let stores = uses.get(&a).map_or(&[][..], |u| &u.1[..]);
+        for &i in stores {
             // Below the values computed over it, when those are what stays in the way. A
             // function's prologue stores its arguments one by one from under its return
             // address, so each may go under the arguments stored after it.
@@ -3883,37 +3941,27 @@ fn promote_region(
             for under in 0..=(runs.depth[i] - 1 + args).clamp(0, most.min(15)) as u8 {
                 // Each item more the value sinks under costs a `SWAP`.
                 let bound = 3 - i64::from(under) + rest;
-                if !verify() && bound <= beats(&best) {
+                if !verify() && bound <= beats(&best, floor) {
                     break;
                 }
-                consider(&mut best, Entry::Store(i, under), a, bound);
+                let order = (0, i, 0, usize::from(under));
+                consider(&mut best, floor, Entry::Store(i, under), a, bound, order);
             }
             if i > 0 && code[i - 1] == Op(DUP1) {
-                consider(&mut best, Entry::StoreUnder(i), a, 3 + rest);
+                let order = (0, i, 0, 16);
+                consider(&mut best, floor, Entry::StoreUnder(i), a, 3 + rest, order);
             }
         }
-    }
-    // A loop head the word is not stored before, as a local left at its initial zero: the
-    // region loads it on the way in.
-    for (s, _, _, words) in &loops.0 {
-        let s = *s;
-        // Also from before the straight code that sets the loop up, as its counter, which
-        // the loop consumes from below anything added after it.
-        let mut entries = vec![s];
-        let mut p = s;
-        while p > 0 && s - p < 16 {
-            match code[p - 1] {
-                Label(_) => break,
-                Op(op) if op == JUMPI || is_terminal(op) => break,
-                _ => {}
-            }
-            p -= 1;
-            entries.push(p);
-        }
-        let low = *entries.last().expect("the head");
-        for &a in words {
+        // A loop head the word is not stored before, as a local left at its initial zero:
+        // the region loads it on the way in.
+        for &h in in_loops {
+            let s = loops.0[h].0;
+            // Also from before the straight code that sets the loop up, as its counter,
+            // which the loop consumes from below anything added after it.
+            let entries = loop_entries(code, s);
+            let low = *entries.last().expect("the head");
             // The earliest entry has the most uses after it.
-            if !verify() && rest(a, low) - 3 <= beats(&best) {
+            if !verify() && rest(a, low) - 3 <= beats(&best, floor) {
                 continue;
             }
             let (loads, stores) = uses
@@ -3923,7 +3971,7 @@ fn promote_region(
                 loads.partition_point(|&k| k < s),
                 stores.partition_point(|&k| k < s),
             );
-            for &p in &entries {
+            for (j, &p) in entries.iter().enumerate() {
                 while l > 0 && loads[l - 1] >= p {
                     l -= 1;
                 }
@@ -3931,11 +3979,64 @@ fn promote_region(
                     st -= 1;
                 }
                 let bound = -3 + 2 * (loads.len() - l) as i64 + (stores.len() - st) as i64;
-                consider(&mut best, Entry::Load(p), a, bound);
+                consider(&mut best, floor, Entry::Load(p), a, bound, (1, s, a, j));
             }
         }
+        best
+    };
+    // The first candidate in order that saves the most wins.
+    let wins = |x: &(i64, Order, Entry), best: &Option<(i64, Order, Entry, u32)>| {
+        best.is_none_or(|b| x.0 > b.0 || (x.0 == b.0 && x.1 < b.1))
+    };
+    let mut in_loops: FxHashMap<u32, Vec<usize>> = FxHashMap::default();
+    for (h, (_, _, _, words)) in loops.0.iter().enumerate() {
+        for &a in words {
+            in_loops.entry(a).or_default().push(h);
+        }
     }
-    let Some((entry, a, _)) = best else {
+    let in_loops = |a: u32| in_loops.get(&a).map_or(&[][..], |v| &v[..]);
+    // Words whose best is known go first, which raises the floor for the others. Those are
+    // searched most promising first, by what they could save at most.
+    let mut best: Option<(i64, Order, Entry, u32)> = None;
+    let mut todo: Vec<(i64, u32)> = Vec::new();
+    for (&a, (loads, stores)) in uses {
+        match known.get(&a) {
+            Some(WordBest { found: Some(x), .. }) => {
+                if wins(x, &best) {
+                    best = Some((x.0, x.1, x.2, a));
+                }
+            }
+            _ => todo.push((3 + 2 * loads.len() as i64 + stores.len() as i64, a)),
+        }
+    }
+    todo.sort_unstable_by(|x, y| y.cmp(x));
+    for (most, a) in todo {
+        let floor = best.map_or(1, |b| b.0);
+        if most < floor {
+            break;
+        }
+        if matches!(known.get(&a), Some(w) if w.floor <= floor) {
+            continue;
+        }
+        let found = search(a, floor, in_loops(a)).map(|(e, s, o)| (s, o, e));
+        known.insert(a, WordBest { found, floor });
+        if let Some(x) = found.filter(|x| wins(x, &best)) {
+            best = Some((x.0, x.1, x.2, a));
+        }
+    }
+    if verify() {
+        let mut all: Option<(i64, Order, Entry, u32)> = None;
+        for &a in uses.keys() {
+            if let Some((e, s, o)) = search(a, 1, in_loops(a)) {
+                if wins(&(s, o, e), &all) {
+                    all = Some((s, o, e, a));
+                }
+            }
+        }
+        assert_eq!(best, all, "region search");
+    }
+    plans.best = known;
+    let Some((_, _, entry, a)) = best else {
         return Promoted::Nothing;
     };
     let mut trace = Trace::default();
@@ -3950,9 +4051,26 @@ fn promote_region(
     });
     let sp = Splice::of(&region.edits, code.len());
     let gone = code[sp.lo..sp.old_hi].to_vec();
-    plans.applied(&region.edits, a);
+    plans.applied(&region.edits, &[a]);
     apply_edits(code, region.edits);
     Promoted::Region(sp, a, gone)
+}
+
+/// Where a region can load a word for the loop at `s`: the head, then back over the
+/// straight code before it, at most 16 places.
+fn loop_entries(code: &[Inst], s: usize) -> Vec<usize> {
+    let mut entries = vec![s];
+    let mut p = s;
+    while p > 0 && s - p < 16 {
+        match code[p - 1] {
+            Label(_) => break,
+            Op(op) if op == JUMPI || is_terminal(op) => break,
+            _ => {}
+        }
+        p -= 1;
+        entries.push(p);
+    }
+    entries
 }
 
 /// What a `plan_region` walk read: the code up to `reach`, and whether the word is read
@@ -3984,11 +4102,25 @@ struct RegionPlan {
 struct RegionPlans {
     /// By the id of the entry's instruction: the entry's kind, from `key`, the word, and
     /// the plan.
-    plans: Vec<Vec<(u8, u32, RegionPlan)>>,
+    plans: FxHashMap<u32, Vec<(u8, u32, RegionPlan)>>,
     /// Each instruction's id, kept while it stays.
     ids: Vec<u32>,
     next: u32,
     exits: FxHashSet<u32>,
+    /// Each word's best region as the last search found it: its saving, entry, and place in
+    /// the search order, or none saving at least `floor`. A word stays here until a round
+    /// changes one of its candidates, so a round searches again only the words it touched.
+    best: FxHashMap<u32, WordBest>,
+}
+
+/// Where a candidate stands in `promote_region`'s search order, which breaks ties: stores
+/// by position and then how deep they sink, then loop entries by head, word, and entry.
+type Order = (u8, usize, u32, usize);
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct WordBest {
+    found: Option<(i64, Order, Entry)>,
+    floor: i64,
 }
 
 impl RegionPlans {
@@ -3996,6 +4128,14 @@ impl RegionPlans {
     fn clear(&mut self) {
         self.plans.clear();
         self.ids.clear();
+        self.best.clear();
+    }
+
+    /// Searches the words again whose candidates a round changed.
+    fn forget(&mut self, words: impl IntoIterator<Item = u32>) {
+        for a in words {
+            self.best.remove(&a);
+        }
     }
 
     /// The id of an entry's instruction, and its kind: how many items a store sinks under,
@@ -4011,7 +4151,7 @@ impl RegionPlans {
 
     /// Where the plan for `kind` and word `a` is among the id's, in order, or would go.
     fn find(&self, id: u32, kind: u8, a: u32) -> Result<usize, usize> {
-        match self.plans.get(id as usize) {
+        match self.plans.get(&id) {
             Some(list) => list.binary_search_by(|&(k, w, _)| (k, w).cmp(&(kind, a))),
             None => Err(0),
         }
@@ -4019,18 +4159,19 @@ impl RegionPlans {
 
     /// Keeps `plan` where `find` said.
     fn put(&mut self, id: u32, kind: u8, a: u32, slot: Result<usize, usize>, plan: RegionPlan) {
-        let id = id as usize;
-        if self.plans.len() <= id {
-            self.plans.resize_with(self.next as usize, Vec::new);
-        }
+        let list = self.plans.entry(id).or_default();
         match slot {
-            Ok(k) => self.plans[id][k].2 = plan,
-            Err(k) => self.plans[id].insert(k, (kind, a, plan)),
+            Ok(k) => list[k].2 = plan,
+            Err(k) => list.insert(k, (kind, a, plan)),
         }
     }
 
-    /// Updates the plans for `edits`, the region applied for word `a`.
-    fn applied(&mut self, edits: &[(usize, usize, Vec<Inst>)], a: u32) {
+    /// Updates the plans for `edits`, which changed the loads and stores of `words` only.
+    fn applied(&mut self, edits: &[(usize, usize, Vec<Inst>)], words: &[u32]) {
+        if self.ids.is_empty() {
+            self.best.clear();
+            return;
+        }
         // In `apply_edits` order: each edit's position, the furthest any edit up to it
         // reaches, and how far code after it moves.
         let mut order: Vec<&(usize, usize, Vec<Inst>)> = edits.iter().collect();
@@ -4052,15 +4193,18 @@ impl RegionPlans {
             }
             Some(before.checked_sub(1).map_or(0, |k| reach[k].2))
         };
-        for list in &mut self.plans {
+        let mut dropped: FxHashSet<u32> = words.iter().copied().collect();
+        for list in self.plans.values_mut() {
             list.retain_mut(|(_, w, plan)| {
                 let Some(shift) = span_shift(plan.from, plan.to) else {
+                    dropped.insert(*w);
                     return false;
                 };
                 let moved = |p: usize| p.checked_add_signed(shift).expect("in the code");
                 let mut also = Vec::with_capacity(plan.also.len());
                 for &(f, t) in &plan.also {
                     let Some(s) = span_shift(f, t) else {
+                        dropped.insert(*w);
                         return false;
                     };
                     let moved = |p: usize| p.checked_add_signed(s).expect("in the code");
@@ -4072,10 +4216,35 @@ impl RegionPlans {
                 for read in &mut plan.reads {
                     read.0 = moved(read.0);
                 }
-                plan.recheck |= *w == a;
+                plan.recheck |= words.contains(w);
                 true
             });
         }
+        self.plans.retain(|_, list| !list.is_empty());
+        let moved = |p: usize| {
+            Some(
+                p.checked_add_signed(span_shift(p, p)?)
+                    .expect("in the code"),
+            )
+        };
+        self.best.retain(|a, best| {
+            if dropped.contains(a) {
+                return false;
+            }
+            let Some((_, order, entry)) = &mut best.found else {
+                return true;
+            };
+            let (Some(o), Some(at)) = (moved(order.1), moved(entry.at())) else {
+                return false;
+            };
+            order.1 = o;
+            *entry = match *entry {
+                Entry::Store(_, under) => Entry::Store(at, under),
+                Entry::StoreUnder(_) => Entry::StoreUnder(at),
+                Entry::Load(_) => Entry::Load(at),
+            };
+            true
+        });
         let mut ids = Vec::with_capacity(self.ids.len() + 16);
         let (mut next, mut g) = (0, 0);
         while g < order.len() {
@@ -4104,16 +4273,13 @@ impl RegionPlans {
 /// is left. Applies the first that converts a load.
 fn alias_copies(
     code: &mut Vec<Inst>,
-    tracked: &dyn Fn(u32) -> bool,
     calls: &Calls,
     exits: &FxHashSet<u32>,
     labels: &LabelIndex,
+    uses: &Uses,
 ) -> Option<(Splice, u32, Vec<Inst>)> {
-    for i in 1..code.len().saturating_sub(1) {
-        let (Op(DUP1), Mem(a), Op(MSTORE)) = (code[i - 1], code[i], code[i + 1]) else {
-            continue;
-        };
-        if !tracked(a) {
+    for &(i, a) in &uses.all {
+        if i == 0 || (code[i - 1], code[i + 1]) != (Op(DUP1), Op(MSTORE)) {
             continue;
         }
         if let Some((edits, seen)) = plan_alias(code, i + 2, a, calls, exits, labels) {
@@ -4415,7 +4581,7 @@ struct RegionEnd {
 /// Where a region takes its value: from a store it removes, rotating the value under that
 /// many of the stack items above it, from the item a store's `DUP1` copied, as a slot kept
 /// before `SLOAD` takes the copy, or from a load it adds before a label.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Entry {
     Store(usize, u8),
     StoreUnder(usize),
