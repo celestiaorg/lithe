@@ -339,8 +339,10 @@ impl Blocks {
         }
         // Only tails long enough to share need it.
         let heat = std::cell::OnceCell::new();
-        let heat =
-            |k: usize, j: usize| heat.get_or_init(|| self::heat(&serialize(blocks)))[start[k] + j];
+        let heat = |k: usize, j: usize| {
+            let (heat, at) = heat.get_or_init(|| stream_heat(blocks));
+            heat[at[start[k] + j] as usize]
+        };
         let preds = std::cell::OnceCell::new();
         // Sharing a tail puts a jump on every path into the donor. A helper's body runs on
         // every call to it, so its tail must save a byte for each call it slows.
@@ -369,21 +371,40 @@ impl Blocks {
             }
         }
         let mut pairs: Vec<(usize, usize, usize, usize)> = Vec::new();
-        let mut sizes = Vec::new();
-        for group in by_last.values() {
-            for (x, &a) in group.iter().enumerate() {
-                for &b in &group[x + 1..] {
-                    let (ba, bb) = (&blocks[a].body, &blocks[b].body);
-                    let mut n = 0;
-                    sizes.clear();
-                    sizes.push(0);
-                    while n < ba.len()
-                        && n < bb.len()
-                        && ba[ba.len() - 1 - n] == bb[bb.len() - 1 - n]
-                    {
-                        sizes.push(sizes[n] + inst_len(&ba[ba.len() - 1 - n]));
-                        n += 1;
+        let common = |a: usize, b: usize| {
+            let (ba, bb) = (&blocks[a].body, &blocks[b].body);
+            ba.iter()
+                .rev()
+                .zip(bb.iter().rev())
+                .take_while(|(x, y)| x == y)
+                .count()
+        };
+        for group in by_last.values().filter(|g| g.len() > 1) {
+            // Sorted by body read backwards, two exits share the least common tail of the
+            // neighbours between them.
+            let mut sorted = group.clone();
+            sorted.sort_unstable_by(|&a, &b| {
+                let key = |b: usize| blocks[b].body.iter().rev().map(order);
+                key(a).cmp(key(b))
+            });
+            let near: Vec<usize> = sorted.windows(2).map(|w| common(w[0], w[1])).collect();
+            // The bytes of each exit's last instructions, as many as it shares with any.
+            let sums: Vec<Vec<usize>> = (0..sorted.len())
+                .map(|x| {
+                    let reach = near[x.saturating_sub(1)].max(*near.get(x).unwrap_or(&0));
+                    let mut sums = vec![0];
+                    for inst in blocks[sorted[x]].body.iter().rev().take(reach) {
+                        sums.push(sums[sums.len() - 1] + inst_len(inst));
                     }
+                    sums
+                })
+                .collect();
+            for x in 0..sorted.len() {
+                let mut n = usize::MAX;
+                for y in x + 1..sorted.len() {
+                    n = n.min(near[y - 1]);
+                    let (a, b) = (sorted[x].min(sorted[y]), sorted[x].max(sorted[y]));
+                    let sizes = &sums[x];
                     // The copy that takes the jump runs it where the shared tail starts, which a
                     // tail reaching back over a `JUMPI` makes hot, so each length and side is
                     // weighed: it must save a byte for each few gas it adds.
@@ -396,6 +417,11 @@ impl Blocks {
                             break;
                         }
                         for (keep, give) in [(a, b), (b, a)] {
+                            if bytes + 1 < MIN_TAIL_BYTES + calls(give)
+                                || best.is_some_and(|(s, ..)| s >= most)
+                            {
+                                continue;
+                            }
                             let (k, g) = (&blocks[keep], &blocks[give]);
                             let whole = m == k.body.len() && !k.labels.is_empty();
                             let label = if whole {
@@ -406,10 +432,7 @@ impl Blocks {
                             let slower =
                                 (heat(give, g.body.len() - m) * TAIL_GAS + label) / byte_gas();
                             let saved = (bytes + 1 - MIN_TAIL_BYTES) as f64 - slower;
-                            if bytes + 1 >= MIN_TAIL_BYTES + calls(give)
-                                && saved >= 0.0
-                                && best.is_none_or(|(s, ..)| saved > s)
-                            {
+                            if saved >= 0.0 && best.is_none_or(|(s, ..)| saved > s) {
                                 best = Some((saved, keep, give, m));
                             }
                         }
@@ -729,11 +752,70 @@ impl Blocks {
     }
 }
 
+/// Some total order on instructions, equal exactly when they are.
+fn order(inst: &Inst) -> (u8, [u64; 4], [u32; 8]) {
+    match *inst {
+        Op(op) => (0, [op.into(), 0, 0, 0], [0; 8]),
+        Push(w) => (1, w.0, [0; 8]),
+        Label(l) => (2, [l.into(), 0, 0, 0], [0; 8]),
+        PushLabel(l) => (3, [l.into(), 0, 0, 0], [0; 8]),
+        super::Mem(m) => (4, [m.into(), 0, 0, 0], [0; 8]),
+        Table(t) => (5, [0; 4], t),
+        Imm(i, n) => (6, [i.into(), n.into(), 0, 0], [0; 8]),
+    }
+}
+
 fn serialize(blocks: &[Block]) -> Vec<Inst> {
     let len = blocks.iter().map(|b| b.labels.len() + b.body.len()).sum();
     let mut code = Vec::with_capacity(len);
-    code.extend(blocks.iter().flat_map(Block::insts));
+    for b in blocks {
+        code.extend(b.labels.iter().map(|&l| Label(l)));
+        code.extend_from_slice(&b.body);
+    }
     code
+}
+
+thread_local! {
+    static LAST_HEAT: std::cell::RefCell<(Vec<Inst>, Vec<f64>)> = Default::default();
+}
+
+/// `heat` of the stream `blocks` write, and where each instruction finds its value in it.
+/// `flow` reads only labels, label pushes, tables, and the exits and `JUMPI`s that end its
+/// blocks, so it runs on that skeleton with each run of other instructions standing as one,
+/// and the last skeleton's heat is reused when it recurs.
+fn stream_heat(blocks: &[Block]) -> (Vec<f64>, Vec<u32>) {
+    let mut skel = Vec::new();
+    let mut at = Vec::with_capacity(blocks.iter().map(|b| b.labels.len() + b.body.len()).sum());
+    for b in blocks {
+        skel.extend(b.labels.iter().map(|&l| Label(l)));
+        at.extend((skel.len() - b.labels.len()) as u32..skel.len() as u32);
+        let mut plain = false;
+        for &inst in &b.body {
+            let kept = match inst {
+                PushLabel(_) | Table(_) => true,
+                Op(op) => is_terminal(op) || op == JUMPI,
+                _ => false,
+            };
+            if kept || !plain {
+                skel.push(if kept { inst } else { Op(ISZERO) });
+            }
+            plain = !kept;
+            at.push(skel.len() as u32 - 1);
+        }
+    }
+    let heat = LAST_HEAT.with(|last| {
+        let mut last = last.borrow_mut();
+        if last.0 != skel {
+            last.1 = heat(&skel);
+            last.0 = skel;
+        }
+        last.1.clone()
+    });
+    if super::verify() {
+        let out: Vec<f64> = at.iter().map(|&k| heat[k as usize]).collect();
+        assert_eq!(out, super::heat(&serialize(blocks)), "skeleton heat");
+    }
+    (heat, at)
 }
 
 /// What can stand in a loop test: straight code with no jump.
