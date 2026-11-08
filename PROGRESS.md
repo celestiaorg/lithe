@@ -35,11 +35,13 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **2.2** Per-session module cache keyed by path, content hash, and EVM version. `std/` parsed once per process. See the measurements below.
 - [x] **2.3** Debounce `didChange` (50 ms), reader plus worker, rename, workspace symbol. Diagnostics on `bench/erc20_full.lithe` ≤ 20 ms (relaxed under `debug_assertions`). See the measurements below.
 - [x] **2.4** VS Code extension and TextMate smoke test. See the measurements below.
+- [x] **2.5** `LITHE_TIME` split of the frontend. The timed `erc20_full` test passes at its 20 ms optimized limit, with no relaxation (about 12 ms). The `Index` is still rebuilt on every edit; see below.
 
 ### Phase 3 — block IR, one-shot stack scheduling, linear passes
 
 - [x] **3.1** CFG over `Vec<Inst>` and per-block worklist rewrites. Byte-identical in both modes. See the measurements below.
 - [x] **3.2** `peephole` and `schedule` per block. Byte-identical in both modes. The 500-round bound stays, and the dirty-set was measured and dropped. See the measurements below.
+- [x] **3.2b** Cheaper `merge_tails`/`heat`, byte-identical. Ladder 128 `optimize` 414 → 250–279 ms. erc20_full and uniswap_v2_pair release are still above their pre-3.1 cost. See below.
 - [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%.
 - [ ] **3.4** `outline` on the block IR.
 - [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×.
@@ -61,10 +63,10 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 
 ### Phase 6 — evaluate and take if they pay
 
-- [ ] **6.1** Process startup.
-- [ ] **6.2** Assembler width fixpoint, if it is not already one.
-- [ ] **6.3** Memoize constant keccak.
-- [ ] **6.4** Incremental `heat` / `flow`.
+- [x] **6.1** Process startup. Measured; not taken.
+- [x] **6.2** Assembler width fixpoint. It already is one, and candidate cost is already cached. Nothing taken.
+- [x] **6.3** Memoize constant keccak. Measured; not taken.
+- [x] **6.4** Incremental `heat` / `flow`. Measured; not taken. 3.2b took the exact whole-pass cuts instead.
 - [ ] **6.5** `--timings`, and CI that fails when erc20_full Fast compile exceeds 2× the recorded baseline.
 
 ## 0.2b baseline
@@ -285,3 +287,74 @@ Tests: `make check`:
 - playground wasm build
 
 New unit test `asm::blocks::tests::rounds_on_blocks_match_the_stream`: one `peephole` pass and the full rounds, blocks against the stream.
+
+## 2.5 Diagnostics gap
+
+`analyze_in` (the frontend behind `apply_frontend`) prints `[time] frontend load=… check=… lint=… index=…` when `LITHE_TIME` is set. When the checked units come from the session cache, the `check` lap is missing from the line.
+
+Measured with `LITHE_TIME=1 cargo test --profile fast --bin lithe did_change_coalesces -- --nocapture` on 2026-11-07, load average 1–6 on 16 cores. Each line is one `apply_frontend` on `bench/erc20_full.lithe`:
+
+| phase | 2.3 entry (load 10–12) | now |
+|---|---:|---:|
+| load | 2 ms | 0.9–2.1 ms |
+| check | 15 ms | 5.8–8.6 ms |
+| lint | 14 ms (re-checked) | 0.4–0.6 ms |
+| `index::build` | 9 ms | 3.4–5.4 ms |
+
+The test passes at its unrelaxed 20 ms optimized limit, best of five, three runs out of three. The sum is about 11–13 ms. The 26–33 ms recorded in 2.3 was measured under load 10–12. The code change that mattered was the lint dedup already recorded in 2.3.
+
+**Incremental `Index` not taken.** `index::build` is one builder whose def ids, `kids`, `spelled`, and file order come from walking every unit, std included, in order. Reusing per-unit pieces would mean renumbering defs and refs across units, which risks the hover, definition, reference, and rename answers and their order that the LSP tests pin. That is a lot of risk for at most 3.5 ms, with the target already met. If Phase 3's ≤ 5 ms target needs it, the cheaper next step is to build the index lazily on the first hover or definition request, which takes it off the diagnostics path without changing any answer. Check itself (≈6 ms) is untouched.
+
+Tests: `cargo test --profile fast` (552 lib + 25 bin + 1, all green), `cargo clippy --all-targets -- -D warnings`.
+
+## 3.2b Cheaper `merge_tails` and `heat`
+
+Plan: cut the cost of `merge_tails` and its `heat` without changing a byte. Every cut has to be exact. Proof: both snapshots, `rounds_on_blocks_match_the_stream`, and the `LITHE_FUZZ_STEPS=2000` differential.
+
+What changed:
+- **`heat` was already computed at most once per call**, lazily, through a `OnceCell`. Across calls the input always differs, because some pass changed the blocks in between, so there is no exact memo to take.
+- **`flow` (asm.rs):**
+  - The loop-depth walk found each header's latches by scanning every block, which costs O(headers × blocks). It now builds the header → latches lists once. The walk's result does not depend on order.
+  - The cold-block fixpoint sweeps blocks backwards. That gives the same least fixed point of a monotone rule in fewer sweeps.
+- **`serialize`** copies each body with `extend_from_slice` instead of a flat-map iterator. On erc20_full its share of `heat` went from about 21% to about 8%.
+- **`merge_tails` pairing:**
+  - Each group of exits is sorted by its body read backwards, using `order`, a total order on `Inst` that is equal only for equal instructions. Any pair's common tail is then the least common tail of the neighbours between them. Each body's suffix byte sums are computed once, only as far as it shares with a neighbour.
+  - Pairs are still formed as (lower, higher) block index. The final sort key is total, so generation order does not matter.
+  - Singleton groups are skipped.
+  - The `calls(give)` test and the `best ≥ most` bound now come before the heat lookup. Both conditions already rejected those candidates, and heat is never negative.
+
+Per-pass split, summed over all `blocks::optimize` calls of one compile (`target/fast`, `LITHE_THREADS=1`, cache off, temporary timers). The sums include `optimize` calls inside `outline`, so they exceed the `optimize` timer:
+
+| target | clean | peephole | dedup | dup_const | merge_tails (heat) | schedule | `optimize` timer |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| erc20_full release, before | 64 | 94 | 66 | 76 | 183 (107) | 81 | 402 ms |
+| erc20_full release, after | 67 | 97 | 67 | 76 | 173 (92) | 81 | 383–403 ms |
+| uniswap_v2_pair release, before | 10.6 | 16.5 | 10.9 | 12.7 | 26.8 (17.6) | 25.2 | 77.9 ms |
+| uniswap_v2_pair release, after | 9.8 | 14.5 | 10.5 | 11.6 | 21.5 (13.1) | 21.7 | 67–69 ms |
+| ladder 128, before | 25 | 40 | 31 | 20 | 295 (102) | 7.6 | 414 ms |
+| ladder 128, after | 23 | 37 | 29 | 19 | 139 (42) | 7.6 | 250–279 ms |
+
+Ladder 128's merge_tails pairing (without heat) went from about 170 ms to about 60 ms, and its heat from 102 ms to 42 ms. Its `optimize` is now under the 359 ms goal.
+
+**Missed: erc20_full and uniswap_v2_pair release are still above their pre-3.1 `optimize` cost** (339 ms and 59.9 ms in the 3.1 entry). On these targets, heat is a whole-program `flow` that is needed on nearly every call. Its cost is the flow itself, not the serialize or the header scan. Per-span `peephole` (≈95 ms) is the other overrun. It is bounded by building each span's window, and the 3.2 dirty-set already measured slower. The `rotate_loops` label index was not taken: `rotate_loops` runs in `outline`'s finish callback, not in `optimize`'s rounds, so it is outside this split. Closing the remaining gap needs fewer rounds, by merging more per call (3.4, changes bytes), or a block-skeleton-keyed `flow` (6.4).
+
+Proof:
+- `tests/snapshots/bytecode.json` unchanged (`evm::snapshot`, Release and Fast).
+- `cargo test --profile fast`: 552 lib + 25 bin + 1, all green, including `rounds_on_blocks_match_the_stream`.
+- `LITHE_FUZZ_STEPS=2000` differential green.
+- `cargo clippy --all-targets -- -D warnings` clean.
+
+## 6.1–6.4 Evaluated
+
+Measured 2026-11-07, `target/fast`, cache off:
+
+- **6.1 Startup.** `lithe --version`: 1.5 ms min / 1.9 ms median over 50 runs, against 0.17 / 0.25 ms for `/bin/true`. That is about 1.3 ms of process start for a 47 MB unstripped binary (release is stripped). It is small next to any compile (Fast erc20_full ≈ 44 ms backend). Not taken.
+- **6.2 Assembler.** `assemble_marked` is already a least fixed point: every label push starts at one byte and widens monotonically. Candidate cost is computed once per finish (`Built.cost`), and `asm::cost` runs only twice per `outline` with `both`. Nothing to take.
+- **6.3 Keccak memo.** With a temporary counter:
+  - erc20_full release: 81 982 calls, 20.9 ms of a 1.9 s backend (1.1%).
+  - erc20_full fast: 2 923 calls, 0.75 ms of 44 ms (1.7%).
+  - uniswap_v2_pair release: 13 864 calls, 3.5 ms.
+
+  A memo pays a hash and a key allocation per call against about 250 ns of hashing. It would save well under 1%. Not taken.
+- **6.4 Incremental heat/flow.** After 3.2b, heat is 92 ms of erc20_full release (about 5% of the backend) and 42 ms of ladder 128. A block's heat depends on global structure: coldness, loop depth, and the topological order of entries. Recomputing one block would need a skeleton-keyed cache (labels, label pushes, exits, and `JUMPI` positions) and an exact invalidation argument. Not taken in this iteration. It is the next lever for erc20_full's `optimize`, after 3.4.
+

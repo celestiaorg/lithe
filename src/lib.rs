@@ -500,6 +500,7 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
     opts.opt = Opt::Fast;
     let sources = Sources::disk();
     let mut touched = Vec::new();
+    let mut lap = Lap::new();
     let prog = match modules::load_in(
         &sources,
         path,
@@ -517,6 +518,7 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
             }
         }
     };
+    lap.mark("load");
     let fp = modules::fingerprint(&touched);
     let units = modules::split_units(prog);
     let root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -552,9 +554,12 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
             &[]
         };
         let lints = lint::lint_source(src, path, units.clone(), reuse).unwrap_or_default();
+        lap.mark("lint");
         let index = (!checked.is_empty()).then(|| index::build(&root_s, src, checked));
+        lap.mark("index");
         (index, lints)
     }) {
+        lap.report();
         return Analysis {
             error: build_error(&units, failed),
             lints,
@@ -590,6 +595,7 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
             }
         }
     }
+    lap.mark("check");
     let all_checked = checked.len() == units.len();
     let lints = if all_checked {
         let reuse = if opts.evm == EvmVersion::default() {
@@ -601,14 +607,40 @@ fn analyze_in(path: &Path, src: &str, codegen: bool, cache: &ModuleCache) -> Ana
     } else {
         Vec::new()
     };
+    lap.mark("lint");
     let index = (!checked.is_empty()).then(|| index::build(&root_s, src, &checked));
+    lap.mark("index");
     if all_checked {
         cache.store_checked(&root, fp, opts.evm, checked);
     }
+    lap.report();
     Analysis {
         error: failed,
         lints,
         index,
+    }
+}
+
+/// The frontend's phases, printed when `LITHE_TIME` is set.
+struct Lap(Option<(std::time::Instant, Vec<(&'static str, std::time::Duration)>)>);
+
+impl Lap {
+    fn new() -> Self {
+        Lap(gen::timing().then(|| (std::time::Instant::now(), Vec::new())))
+    }
+
+    fn mark(&mut self, phase: &'static str) {
+        if let Some((at, laps)) = &mut self.0 {
+            laps.push((phase, at.elapsed()));
+            *at = std::time::Instant::now();
+        }
+    }
+
+    fn report(&self) {
+        if let Some((_, laps)) = &self.0 {
+            let parts: Vec<String> = laps.iter().map(|(p, d)| format!("{p}={d:?}")).collect();
+            eprintln!("[time] frontend {}", parts.join(" "));
+        }
     }
 }
 

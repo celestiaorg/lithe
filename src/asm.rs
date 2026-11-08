@@ -5868,7 +5868,8 @@ fn flow_(
     succ.first.push(succ.items.len());
     loop {
         let mut changed = false;
-        for b in 0..blocks {
+        // Backwards, since most edges go forwards: the same least fixed point in fewer sweeps.
+        for b in (0..blocks).rev() {
             let mut normal = succ[b].iter().filter(|s| !s.1).peekable();
             if !cold[b] && !open[b] && normal.peek().is_some() && normal.all(|s| cold[s.0]) {
                 cold[b] = true;
@@ -5938,11 +5939,15 @@ fn flow_(
     let mut share: Vec<Option<Vec<f64>>> = vec![None; blocks];
     let mut depth = vec![0i32; blocks];
     let mut seen = vec![usize::MAX; blocks];
-    let headers: FxHashSet<usize> = back.iter().flatten().copied().collect();
-    for &h in &headers {
+    let mut latches: FxHashMap<usize, Vec<usize>> = FxHashMap::default();
+    for (b, hs) in back.iter().enumerate() {
+        for &h in hs {
+            latches.entry(h).or_default().push(b);
+        }
+    }
+    for (h, mut work) in latches {
         seen[h] = h;
         depth[h] += 1;
-        let mut work: Vec<usize> = (0..blocks).filter(|&b| back[b].contains(&h)).collect();
         while let Some(b) = work.pop() {
             if seen[b] != h {
                 seen[b] = h;
