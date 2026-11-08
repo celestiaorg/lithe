@@ -1668,18 +1668,38 @@ fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, entries: &[u32], params: b
         .enumerate()
         .flat_map(|(c, o)| o.picked.iter().map(move |&s| (s, c)))
         .collect();
-    // Edit the later sites first so the earlier indices stay valid.
+    // Return labels and tokens are numbered from the last site back, then the code is
+    // rebuilt once.
     sites.sort_unstable_by(|a, b| b.cmp(a));
-    for (s, c) in sites {
-        let o = &chosen[c];
-        let ret = label;
-        label += 1;
-        let mut call: Vec<Inst> = o.params.iter().rev().map(|&j| code[s + j]).collect();
-        call.insert(if o.takes > 0 { call.len() } else { 0 }, PushLabel(ret));
-        call.extend([PushLabel(helpers[c]), Op(JUMP), Label(ret)]);
-        code.splice(s..s + o.len, call.iter().copied());
-        t.splice(s..s + o.len, &call);
+    let calls: Vec<(usize, usize, Vec<Inst>, Vec<u32>)> = sites
+        .into_iter()
+        .map(|(s, c)| {
+            let o = &chosen[c];
+            let ret = label;
+            label += 1;
+            let mut call: Vec<Inst> = o.params.iter().rev().map(|&j| code[s + j]).collect();
+            call.insert(if o.takes > 0 { call.len() } else { 0 }, PushLabel(ret));
+            call.extend([PushLabel(helpers[c]), Op(JUMP), Label(ret)]);
+            let tok = call.iter().map(|inst| t.of(inst)).collect();
+            (s, o.len, call, tok)
+        })
+        .collect();
+    let old = std::mem::take(code);
+    let old_tok = std::mem::take(&mut t.tok);
+    let old_bytes = std::mem::take(&mut t.bytes);
+    let mut prev = 0;
+    for (s, len, call, tok) in calls.into_iter().rev() {
+        code.extend_from_slice(&old[prev..s]);
+        t.tok.extend_from_slice(&old_tok[prev..s]);
+        t.bytes.extend_from_slice(&old_bytes[prev..s]);
+        t.bytes.extend(call.iter().map(inst_len));
+        code.extend(call);
+        t.tok.extend(tok);
+        prev = s + len;
     }
+    code.extend_from_slice(&old[prev..]);
+    t.tok.extend_from_slice(&old_tok[prev..]);
+    t.bytes.extend_from_slice(&old_bytes[prev..]);
     let from = code.len();
     if !matches!(code.last(), Some(Op(op)) if is_terminal(*op)) {
         code.push(Op(STOP));

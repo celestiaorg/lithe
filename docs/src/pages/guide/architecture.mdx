@@ -1,0 +1,48 @@
+---
+title: "Compiler architecture"
+description: "How Lithe turns source into EVM bytecode: the passes, the block IR, stack promotion, and why a Lithe program can never hit stack-too-deep."
+---
+
+# Compiler architecture
+
+Lithe is one Rust crate. A build runs these stages in order:
+
+```
+lex → parse → check → gen → promote → optimize → outline → assemble
+```
+
+| stage | source | what it does |
+|---|---|---|
+| lex, parse | `src/lex.rs`, `src/parse.rs` | turns text into a syntax tree |
+| check | `src/check/` | resolves names and types and checks the language's rules. Every build runs every check, in every mode |
+| gen | `src/gen/` | writes instructions straight from the checked tree. Every local variable gets a 32-byte word of EVM memory, its *home* |
+| promote | `asm::promote` | moves memory words onto the stack where that is cheaper and safe |
+| optimize | `asm::optimize`, `src/asm/blocks.rs` | simplifies the code on the block IR until nothing changes |
+| outline | `asm::outline` | moves repeated instruction runs into shared helpers when that saves more bytes than the calls cost in gas |
+| assemble | `asm::assemble` | picks push widths, places labels, writes bytes |
+
+In a [release build](/tooling/cli), `gen` searches over code generation plans: which functions to inline, which constants to forward, and similar choices. A fast build runs the first plan once. Both kinds of build run the same checks and passes, so they differ only in gas and size. Results, reverts, logs, and storage effects are always the same.
+
+## The block IR
+
+The instruction stream is cut into blocks (`asm::blocks::Blocks`). A block starts at its labels, or right after an instruction that ends execution or jumps away. It runs up to the next such instruction or label. Every label heads exactly one block. A pushed label is an edge to the block that label heads, and a block that does not end in a jump or an exit falls through into the next one. Each block knows its successors and predecessors.
+
+The optimizer's passes work on this structure. They edit blocks in place or move whole blocks, never splicing the whole stream. These passes include removing dead code, threading jumps, merging identical blocks and identical tails, peephole rewrites, and instruction scheduling. The stream is written out once, at the end of `optimize`.
+
+## Stack promotion
+
+Since every local starts in memory, the code `gen` writes is correct but slow: each read is an `MLOAD` and each write an `MSTORE`. `promote` keeps a word on the stack instead when only one function or body uses it and its address never escapes. A load becomes a `DUP`, a store becomes a `SWAP` and `POP`, and a store that nothing reads is dropped. It holds values within straight runs and across branches and loops. Every path into a label must agree on where the value sits.
+
+Each candidate is priced with the same gas and byte cost model the rest of the backend uses (`asm::gas`, `byte_gas`), not by building the program to measure it. Every rewrite is checked against a model of the stack, and a word that cannot be held safely stays in memory.
+
+## Why stack-too-deep cannot occur
+
+The EVM can only reach the top 16 stack items: `DUP1`–`DUP16` copy one of them, `SWAP1`–`SWAP16` exchange one with the top. Compilers that keep every local on the stack fail when a function needs more than that. Solidity's "stack too deep" is this error.
+
+Lithe never needs a local to be on the stack:
+
+1. **Every local has a memory home.** `gen` places every local in memory, so the unpromoted program is always valid however many locals a function has.
+2. **Promotion only rewrites an access it can reach.** A load becomes `DUP(d+1)` only when the value sits at depth `d < 16`. If any access to the word would fall out of reach, that word is not held over that stretch of code. Its loads and stores stay `MLOAD` and `MSTORE` on its home, which is always valid.
+3. **Helpers obey the same limit.** The outliner refuses a helper that would take or leave more than 16 items, or whose arguments would sit deeper than 16.
+
+So reach can only make the code more or less optimized, never invalid. A function with a hundred locals compiles. Its busiest words live on the stack and the rest stay in memory.

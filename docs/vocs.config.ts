@@ -12,6 +12,7 @@ const guide = [
       { text: "The transition model", link: "/guide/transition-model" },
       { text: "Coming from Solidity", link: "/guide/coming-from-solidity" },
       { text: "Bytecode size and gas", link: "/guide/performance" },
+      { text: "Compiler architecture", link: "/guide/architecture" },
     ],
   },
   {
