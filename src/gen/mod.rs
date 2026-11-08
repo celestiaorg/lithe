@@ -171,6 +171,8 @@ const REGION_SHIFT: u32 = 16;
 /// Counts and CPU time of the backend's phases, kept only when `LITHE_TIME` is set.
 pub(crate) static EMITS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FINISHES: AtomicUsize = AtomicUsize::new(0);
+/// Rounds `asm::promote` took, summed over every emit.
+pub(crate) static PROMOTE_ROUNDS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EMIT_NS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static PROMOTE_NS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static OPT_NS: AtomicU64 = AtomicU64::new(0);

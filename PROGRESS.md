@@ -45,7 +45,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **3.2b** Cheaper `merge_tails`/`heat`, byte-identical. Ladder 128 `optimize` 414 → 250–279 ms. erc20_full and uniswap_v2_pair release are still above their pre-3.1 cost. See below.
 - [x] **3.2b(ii)** `heat` on the block skeleton, with a skeleton-keyed `flow` cache. Byte-identical. Goal missed; the measured floor (taken at machine load 19–47) is recorded below.
 - [x] **3.2c** Fewer `merge_tails` calls: a block whose best partner is taken now takes its next-best free pair in the same call. Codegen change. `optimize` erc20_full Release 346 → 271 ms, ladder 128 Fast 237 → 29 ms. Runtime size +0.25 %, gas +0.002 %, and every step's status is unchanged. See below.
-- [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c. **3.3a landed in part; 3.3b and 3.3c are not done** (see State).
+- [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c. **3.3a landed in part. 3.3b(i) is done and measured but not taken: per-function `promote` is sound and 2.8× faster on the ladder, but costs +4.1 % Fast / +4.6 % Release runtime size, four times the 1 % budget.** The round counter that step asked to report is in. See below.
 - [x] **3.4** `outline` without its quadratic terms. What moved: call sites are written in one pass instead of one splice each (3.4), and the exact-copy pass now takes every non-conflicting run per round, as the parameterised pass already did (3.4b), so a pass runs a handful of rounds, not one per distinct run. What did not: `outline` itself stays on the flat stream, not on `Blocks`, and `flow`/prefix sizes are recomputed each round. Final bytes unchanged in both modes; the exact pass's own output does differ on some targets (see 3.4b). See the measurements below.
 - [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×. **Not met:** 2.23× in Fast, 2.01× in Release; `optimize` is the superlinear part. Blocked on 3.2c and 3.3b (see State).
 
@@ -81,7 +81,7 @@ This section is the single source of truth for what is open and what blocks what
 - **3.2b/3.2b(ii) landed** (`f34c8a8`), goal missed under byte-identity.
 - **3.2c in this branch:** `merge_tails` merges every free pair per call. Both targets are met (erc20_full Release `optimize` 271 ms against 339 ms before 3.1; ladder 128 Fast 29 ms against 359 ms). The per-span `peephole` overhead was not touched.
 - **3.4b landed** (`fc4921d`), final bytes unchanged.
-- **3.3b not started.** `promote` is still O(rounds × n) after 3.3a: labels, exits, liveness, runs and the code vector are absolute positions in one stream. 3.3b gives `promote` per-function code with relative positions, then a per-function CFG scheduler behind a plan knob. It is a codegen change, gated by the 5000-step differential, the prove tests, a regenerated snapshot and bench-gas outcomes identical with totals within 1 %.
+- **3.3b(i) measured, not taken.** `promote` now reports its round count (`promote_rounds` in the harness): 34/130/258 rounds at ladder N = 16/64/128, so rounds grow with function count and every round scans the whole stream. A per-function split of `promote` was built and proved sound (5000-step differential, full suite, both snapshots) and is 2.8× faster (ladder 128 Fast `promote` 49 → 17 ms), but it grows runtime size **+4.1 % Fast / +4.6 % Release**, four times the 1 % budget, because regions no longer span a function boundary. Reverted. 3.3b(ii) needs the plan's spill-at-the-part-edge instead of excluding cross-part words.
 - **3.3c blocked on 3.3b**: the greedy `promote` stays until the scheduler wins or ties on every benchmark plan.
 - **4.1 blocked on 3.3b**: `promote`/`optimize` work across functions on one shared stream; `parallel_map` still parallelises plan candidates only.
 - **3.5 blocked on 3.3b** (3.2c is in): re-run the ladder and record the 439→1735 and 1735→3463 ratios once both land.
@@ -489,6 +489,37 @@ Tests: `make check` passed:
 - both snapshots
 - bench-gas
 - wasm
+
+## 3.3b(i) Per-function `promote`: sound, faster, over budget
+
+Plan: give `promote` per-function code with relative positions, so a splice shifts only its own function; add a from-scratch oracle per part; report the ladder-128 `promote` time and round count. Proof: `LITHE_FUZZ_STEPS=5000` differential, both snapshots, the prove tests, and the size/gas budget.
+
+**The round counter that step asked for is in, and it is the reason the task exists.** `asm::promote` returns `(changed, rounds)`, `gen::PROMOTE_ROUNDS` sums it, and the `[time]` line carries it. `scripts/bench_compile.py` parses it as `promote_rounds` (its `--self-check` covers the new field). Rounds grow with function count, and every round scans the whole stream:
+
+| ladder | lines | rounds | `promote`, Fast |
+|---|---:|---:|---:|
+| 16 | 439 | 34 | 2.6 ms |
+| 64 | 1735 | 130 | 15–22 ms |
+| 128 | 3463 | 258 | 50–76 ms |
+
+So `promote` is O(rounds × n) with rounds ∝ n: quadratic in the number of functions. The Release search pays this per candidate: `bench/erc20_full.lithe` Release runs 5 274 rounds over 94 emits, about 56 rounds an emit.
+
+**What was built.** `promote` splits the stream at every label `calls` names — each function compiled once, each helper — and promotes each part on its own with the old greedy, fresh-label state carried across parts so two parts cannot mint the same label. Nothing jumps into a part except through its start label, which is what makes the split well-defined. A `LITHE_VERIFY` oracle re-promotes each part from scratch and asserts the incremental result equals it. Two rules keep the parts sound:
+
+- a label another part refers to is never held across (`LabelIndex.outer`), because that part arrives at a depth this one's walk cannot see;
+- a memory word accessed in more than one part is not held on the stack at all, because a part sees only its own accesses and would drop a store the others read.
+
+**Result: it works, and it cannot land as the default.** With the cut list forced empty the refactor reproduces the baseline byte-for-byte, both modes, so the split is faithful and not what moves bytes. With every cut it is:
+
+- **Sound:** the 5000-step differential passes (`fast_matches_release`, `optimizer_preserves_behavior`, `static_heap_preserves_behavior`, `optimized_code_matches_reference`, `specialized_copies_preserve_behavior`), and so do the full suite (552 lib, 25 bin, 1 doctest) and both snapshots.
+- **Faster:** ladder `promote` Fast 49 → 17 ms at N = 128, 15 → 4.3 ms at N = 64, 2.6 → 0.45 ms at N = 16. Rounds are unchanged (34/130/258), so the win is the per-round scan shrinking from the whole stream to one part.
+- **Over budget:** runtime size grows by 3 656 bytes on 89 001 across all `bench/*.lithe`, **+4.1 % Fast / +4.6 % Release**. The 1 % gate is four times exceeded.
+
+The size loss is the regions that span two functions: a word stored in one entry and read in another can no longer be held, and a region that walked across a call into a neighbouring part now stops at the part edge. Neither safety rule causes it — disabling both leaves the size delta unchanged, and a single cut on `uniswap_v2_pair` alone still costs +5.7 % Fast. So the cost is intrinsic to cutting the stream, not a tuning problem.
+
+**Decision: not taken.** A codegen change that grows runtime code 4.6 % for a 3× `promote` win does not fit §2's budget, and `promote` is not the phase that decides 3.5 (`optimize` is). The mechanism is reverted; the round counter and the harness field stay, because every later attempt at 3.3b needs them. 3.3c stays blocked. What a real fix needs: keep every word promotable across a part boundary by spilling it to its memory home at the edge (the plan's own "spill" rule), rather than excluding it — that should recover the cross-part regions without the size loss, and it is the next thing to try.
+
+Tests run on the reverted tree (round counter and harness only): `cargo test --locked` (552 lib, 25 bin, 1 doctest, 0 failed), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, `python3 scripts/bench_compile.py --self-check`. The snapshot is unchanged, because the shipped diff changes no codegen.
 
 ## 3.4 Outline without per-site splices
 
