@@ -46,7 +46,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **3.2b(ii)** `heat` on the block skeleton, with a skeleton-keyed `flow` cache. Byte-identical. Goal missed; the measured floor (taken at machine load 19–47) is recorded below.
 - [x] **3.2c** Fewer `merge_tails` calls: a block whose best partner is taken now takes its next-best free pair in the same call. Codegen change. `optimize` erc20_full Release 346 → 271 ms, ladder 128 Fast 237 → 29 ms. Runtime size +0.25 %, gas +0.002 %, and every step's status is unchanged. See below.
 - [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c. **3.3a landed in part; 3.3b and 3.3c are not done** (see State).
-- [x] **3.4** `outline` without its quadratic terms. What moved: call sites are written in one pass instead of one splice each (3.4), and the exact-copy pass now takes every non-conflicting run per round, as the parameterised pass already did (3.4b), so a pass runs a handful of rounds, not one per distinct run. What did not: `outline` itself stays on the flat stream, not on `Blocks`, and `flow`/prefix sizes are recomputed each round. Final bytes unchanged in both modes; the exact pass's own output does differ on some targets (see 3.4b). See the measurements below.
+- [x] **3.4** `outline` without its quadratic terms. What moved: call sites are written in one pass instead of one splice each (3.4), and the exact-copy pass now takes every non-conflicting run per round, as the parameterised pass already did (3.4b), so a pass runs a handful of rounds, not one per distinct run. What did not: `outline` itself stays on the flat stream, not on `Blocks`; `flow`/prefix sizes are still recomputed each round, measured at 10–12% of the `outline_once` loop and not worth an incremental cache. Final bytes unchanged in both modes; the exact pass's own output does differ on some targets (see 3.4b). Re-verified at `3a670f0`. See the measurements below.
 - [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×. **Not met:** 2.23× in Fast, 2.01× in Release; `optimize` is the superlinear part. Blocked on 3.2c and 3.3b (see State).
 
 ### Phase 4 — parallelism inside one build
@@ -80,7 +80,7 @@ This section is the single source of truth for what is open and what blocks what
 - **2.6 in this branch:** the index is lazy and diagnostics take about 6.5 ms. The ≤ 5 ms target is missed because `check` (5.3–5.8 ms) is the floor. Reaching it is Phase 5 frontend work (interner, spans, fewer clones), not more LSP work.
 - **3.2b/3.2b(ii) landed** (`f34c8a8`), goal missed under byte-identity.
 - **3.2c in this branch:** `merge_tails` merges every free pair per call. Both targets are met (erc20_full Release `optimize` 271 ms against 339 ms before 3.1; ladder 128 Fast 29 ms against 359 ms). The per-span `peephole` overhead was not touched.
-- **3.4b landed** (`fc4921d`), final bytes unchanged.
+- **3.4b landed** (`fc4921d`), final bytes unchanged; re-verified at `3a670f0` after 3.2b/3.2c rewrote `flow_` and `merge_tails` (exact pass 0–4 rounds, 53 targets byte-identical in both modes). Incremental `flow` between rounds measured at 10–12% of the `outline_once` loop — a few tens of ms of a multi-second build; not taken (see 3.4b re-verified).
 - **3.3b not started.** `promote` is still O(rounds × n) after 3.3a: labels, exits, liveness, runs and the code vector are absolute positions in one stream. 3.3b gives `promote` per-function code with relative positions, then a per-function CFG scheduler behind a plan knob. It is a codegen change, gated by the 5000-step differential, the prove tests, a regenerated snapshot and bench-gas outcomes identical with totals within 1 %.
 - **3.3c blocked on 3.3b**: the greedy `promote` stays until the scheduler wins or ties on every benchmark plan.
 - **4.1 blocked on 3.3b**: `promote`/`optimize` work across functions on one shared stream; `parallel_map` still parallelises plan candidates only.
@@ -515,7 +515,7 @@ Plan: the exact-copy pass (`params = false`) takes every run that stays clear of
 
 `outline_once` now has one selection path for both passes: every run saving at least a quarter of the best, best first, skipping runs with a copy inside one already taken. The parameterised pass is unchanged; the exact pass loses its `best`-only branch.
 
-Rounds of the exact pass, old → new (`LITHE_THREADS=1`, Release, the finishes that run it):
+Rounds of the exact pass, old → new (`LITHE_THREADS=1`, Release, the finishes that run it), measured at `fc4921d`:
 
 | target | rounds | `outline_once` loop |
 |---|---:|---:|
@@ -525,9 +525,40 @@ Rounds of the exact pass, old → new (`LITHE_THREADS=1`, Release, the finishes 
 | ladder 128 | 6 → 2 | 6.6 → 3.0 ms |
 | ladder 256 | 8 → 3 | 19.3 → 10.2 ms |
 
-The parameterised pass already ran 2–5 rounds. With both passes bounded to a handful of rounds, `outline`'s loop is O(n) times a small constant; making `flow`/prefix sizes incremental between rounds would save at most these few milliseconds, so it was not done. Release `outline+` on erc20_full (448 → 441 ms) barely moves: the exact pass runs only in the 2 finishes with `both`, and `outline+` is dominated by the 91 parameterised finishes' `optimize` after outlining and `finish`.
+The parameterised pass already ran 2–5 rounds. With both passes bounded to a handful of rounds, `outline`'s loop is O(n) times a small constant, so the per-round O(n) terms stay and making `flow`/prefix sizes incremental was not done. Release `outline+` on erc20_full (448 → 441 ms) barely moves: the exact pass runs only in the 2 finishes with `both`, and `outline+` is dominated by the 91 parameterised finishes' `optimize` after outlining and `finish`.
 
 Bytes: `tests/snapshots/bytecode.json` is unchanged (`evm::snapshot`, both modes and under `LITHE_VERIFY`), and ladders 16/64/128/256 in Release give identical output from the old and new binaries. The exact pass's own output does change on some targets (it now outlines several runs per round), but on every target that changed program still loses to the parameterised one in `outline`'s cost comparison, so the emitted bytes are not a codegen change and the 5000-step differential and gas gate do not apply; `bench_gas` replays the identical bytecode. `cargo test --release` (552 passed), `cargo clippy --all-targets -D warnings`, `cargo fmt --check` pass.
+
+### 3.4b re-verified at `3a670f0`
+
+3.2b, 3.2b(ii), and 3.2c landed after `fc4921d` and rewrote `flow_`'s cold fixpoint and latch walk and `merge_tails`' pair selection, so both the round counts and the "incremental is not worth it" argument were re-measured at the merged head. `src/asm.rs` between `fc4921d` and `3a670f0` differs only inside `flow_` (13 lines); none of `outline_once`, `repeats`, or `outline`.
+
+Rounds and loop time of the exact pass at `3a670f0`, with the counterfactual being 3.4b's own change reverted (`chosen.truncate(1)` for `params = false` only), temporary instrumentation, `LITHE_THREADS=1`, Release, `target/fast`, one binary:
+
+| target | rounds old → new | loop old → new |
+|---|---|---:|
+| erc20_full (largest) | 7 → 2 | 5.8 → 1.8 ms |
+| erc1155 | 15 → 4 | 30.3 → 3.3 ms |
+| uniswap_v2_pair | 13 → 3 | 12.2 → 3.7 ms |
+| uniswap_v2_factory | 13 → 2 | 10.7 → 4.9 ms |
+| ladder 128 | 6 → 2 | 23.1 → 10.5 ms |
+| ladder 256 | 8 → 3 | 79.9 → 34.3 ms |
+
+The exact pass stays at 0–4 rounds, as recorded, and the parameterised pass at 2–5: the bound holds on the merged tree.
+
+Bytes: all 51 `bench/*.lithe` plus ladders 64 and 128 give identical creation and runtime output under the two selection paths, in Release **and** in Fast (53 targets, 0 differ in either mode). The counterfactual's intermediate program does differ, and it is always rejected by `outline`'s `cost` comparison, so this is still not a codegen change: snapshot unchanged, gas gate not applicable. `evm::snapshot` (both tests, including under verify) green at `3a670f0`.
+
+**Why incremental `flow` was not taken.** `outline_once` calls `flow` once per round; the other O(n) terms are the `JUMPI` retokenisation, the prefix-size build, `repeats`, and the rebuild. Measured over one full compile, summing every `outline_once` call (machine load 11–20 from sibling worktrees, so absolute times here are inflated; the share is the point):
+
+| target | `outline_once` calls | loop | `flow` | `flow` share |
+|---|---:|---:|---:|---:|
+| erc20_full | 389 | 298.6 ms | 31.9 ms | 11% |
+| erc1155 | 255 | 189.2 ms | 16.1 ms | 9% |
+| uniswap_v2_pair | 137 | 71.1 ms | 7.3 ms | 10% |
+| ladder 128 | 9 | 22.6 ms | 2.6 ms | 12% |
+| ladder 256 | 13 | 53.4 ms | 6.5 ms | 12% |
+
+Making `flow` free would save 10–12% of a loop that is itself a small part of `outline+`: in the same run, erc20_full's `outline+` was 1.13 s and its whole `outline_once` work was 0.30 s, so the ceiling is a few tens of milliseconds of a multi-second build. An incremental `flow` also needs the cross-round invalidation argument that 3.2b(ii) already found unnecessary at a 5% hit rate. Not taken, with that measurement as the justification.
 
 ## 3.5 Ladder after 3.4b
 
