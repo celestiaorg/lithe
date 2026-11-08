@@ -44,13 +44,13 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **3.2b** Cheaper `merge_tails`/`heat`, byte-identical. Ladder 128 `optimize` 414 → 250–279 ms. erc20_full and uniswap_v2_pair release are still above their pre-3.1 cost. See below.
 - [x] **3.2b(ii)** `heat` on the block skeleton, with a skeleton-keyed `flow` cache. Byte-identical. Goal missed; the measured floor (taken at machine load 19–47) is recorded below.
 - [ ] **3.2c** The rest of `optimize`'s superlinearity, as a codegen change: fewer `merge_tails` calls by merging several tails per call, and/or the per-span `peephole` overhead. Re-establish the floor under recorded low load first.
-- [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c (see the handoff below). **3.3a landed in part; 3.3b and 3.3c are not done.** 3.3b gates 3.3c, 4.1, and 3.5.
-- [x] **3.4** `outline` call sites written in one pass instead of one splice each (3.4, byte-identical). Every round of both passes now shares every run that stays clear of the better ones (3.4b), so a round count is a handful, not one per distinct run. `outline` itself stays on the flat stream; it was not moved onto `Blocks`. See the measurements below.
-- [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×. **Not met:** 2.23× in Fast, 2.01× in Release; `optimize` is the superlinear part (see 3.5 below, 3.2b, and 3.2c).
+- [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c. **3.3a landed in part; 3.3b and 3.3c are not done** (see State).
+- [x] **3.4** `outline` without its quadratic terms. What moved: call sites are written in one pass instead of one splice each (3.4), and the exact-copy pass now takes every non-conflicting run per round, as the parameterised pass already did (3.4b), so a pass runs a handful of rounds, not one per distinct run. What did not: `outline` itself stays on the flat stream, not on `Blocks`, and `flow`/prefix sizes are recomputed each round. Final bytes unchanged in both modes; the exact pass's own output does differ on some targets (see 3.4b). See the measurements below.
+- [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×. **Not met:** 2.23× in Fast, 2.01× in Release; `optimize` is the superlinear part. Blocked on 3.2c and 3.3b (see State).
 
 ### Phase 4 — parallelism inside one build
 
-- [ ] **4.1** Per-function parallel emit, schedule, and optimize. Deterministic join. Wasm stays single-threaded. Test `LITHE_THREADS=1` vs N.
+- [ ] **4.1** Per-function parallel emit, schedule, and optimize. Deterministic join. Wasm stays single-threaded. Test `LITHE_THREADS=1` vs N. Blocked on 3.3b (see State).
 - [ ] **4.2** Overlap sibling `check` and `route::abi` with codegen. Determinism test.
 
 ### Phase 5 — frontend hygiene and caching
@@ -70,6 +70,19 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **6.3** Memoize constant keccak. Measured; not taken.
 - [x] **6.4** Incremental `heat` / `flow`. Taken in 3.2b(ii) as a skeleton-keyed `flow` cache with a ~5% hit rate; goal missed, remainder moved to 3.2c.
 - [ ] **6.5** `--timings`, and CI that fails when erc20_full Fast compile exceeds 2× the recorded baseline.
+
+## State
+
+This section is the single source of truth for what is open and what blocks what. Older sections below are dated records; where they disagree, this one wins.
+
+- **2.5 landed** (`ad6adc5`): LSP diagnostics on `bench/erc20_full.lithe` about 12 ms at the unrelaxed 20 ms limit. The ≤ 5 ms Phase 3 target is owed by 2.6 (lazy `Index`).
+- **3.2b/3.2b(ii) landed** (`f34c8a8`), goal missed under byte-identity; the remaining `optimize` superlinearity (`merge_tails` call count, per-span `peephole`) is **3.2c, open**, gated as a codegen change.
+- **3.4b landed** (`fc4921d`), final bytes unchanged.
+- **3.3b not started.** `promote` is still O(rounds × n) after 3.3a: labels, exits, liveness, runs and the code vector are absolute positions in one stream. 3.3b gives `promote` per-function code with relative positions, then a per-function CFG scheduler behind a plan knob. It is a codegen change, gated by the 5000-step differential, the prove tests, a regenerated snapshot and bench-gas outcomes identical with totals within 1 %.
+- **3.3c blocked on 3.3b**: the greedy `promote` stays until the scheduler wins or ties on every benchmark plan.
+- **4.1 blocked on 3.3b**: `promote`/`optimize` work across functions on one shared stream; `parallel_map` still parallelises plan candidates only.
+- **3.5 blocked on 3.2c and 3.3b**: re-run the ladder and record the 439→1735 and 1735→3463 ratios once both land.
+- **Final comparison table** below is a mid-branch snapshot; regenerate it once the steps above land.
 
 ## 0.2b baseline
 
@@ -257,7 +270,7 @@ What changed (`src/asm/blocks.rs::optimize`, used whenever no prover marks are t
 Equivalence: during development, after every pass of every round, `b.code()` and the `changed` flag were asserted equal to the stream pass on a parallel copy. `b` was also asserted equal to `Blocks::new(&b.code())`, so the normal form holds. This ran over the whole lib suite (551 tests), plus `lithe compile --release`/`--fast` on every `bench/`, `examples/`, and `fuzz/` contract and ladders 64 and 128. The oracle was then removed. Old and new binaries emit the same bytes for all of these. `tests/snapshots/bytecode.json` is unchanged.
 
 Not done, and why:
-- **The 500-round bound.** It is still there as a guard against passes that never settle. Its output is identical as long as the bound is never reached. Rounds on ladder 128 stay at about 131 per `optimize`, because `merge_tails` applies about one merge per group per call: a block that loses to a longer pair poisons its partner. Fewer rounds means merging more per call, which changes codegen. That belongs to 3.4.
+- **The 500-round bound.** It is still there as a guard against passes that never settle. Its output is identical as long as the bound is never reached. Rounds on ladder 128 stay at about 131 per `optimize`, because `merge_tails` applies about one merge per group per call: a block that loses to a longer pair poisons its partner. Fewer rounds means merging more per call, which changes codegen. That belongs to 3.2b.
 - **The dirty-set.** A content memo of spans `peephole` had left clean was built and measured. It made `optimize` slower on every target: erc20_full release 413 → 433 ms, ladder 128 372 → 381 ms. Hashing and cloning each span cost more than rescanning it, so it was removed. Exact identity tracking would need every body edit in every pass to clear a flag. That is not worth it at `peephole`'s share.
 
 Timing (`target/fast`, `LITHE_THREADS=1`, cache off, best of 5, parent commit vs this one, `optimize` sum / backend):
@@ -423,6 +436,8 @@ Suggested split:
 2. **3.3b** A scheduler for one function, behind a plan knob, so the search can compare it with the greedy by cost model on each candidate. Then gate it with the 1% budget, differential at 5000 steps, and the prove tests.
 3. **3.3c** Remove the greedy once 3.3b wins or ties everywhere.
 
+Current status of 3.3b/3.3c is in State; this handoff is the original analysis.
+
 Stack-too-deep cannot occur today either: every local has a memory home, and promotion rewrites a load or store only when the value is within 16 items (`d < 16` in `promote_region`/`hold`). Otherwise the access stays on the home. `docs/src/pages/guide/architecture.mdx` explains this.
 
 ## 3.3a Region search per word
@@ -489,7 +504,7 @@ Timing, `outline+` from `LITHE_TIME`, best of 5, `target/fast`, `LITHE_THREADS=1
 
 The difference is noise on these targets. `outline+` is mostly the `optimize` and `finish` that run after outlining. The change removes the per-site splice term. It does not move the headline numbers.
 
-**Still quadratic.** `outline` loops `outline_once` until nothing is left, and every round does O(n) work over the whole stream: `safe_exits`, the `JUMPI` retokenisation, `flow`, prefix sizes, `repeats`, and the rebuild. At 3.4, the exact-copy pass (`params = false`), which Release always runs through `both`, applied only the single best outline per round, so its round count grew with the number of distinct repeated runs and the total was O(rounds × n). 3.4b (below) changed that: the exact pass now takes every non-conflicting run per round.
+**What remains O(n) per round.** `outline` loops `outline_once` until nothing is left, and every round does O(n) work over the whole stream: `safe_exits`, the `JUMPI` retokenisation, `flow`, prefix sizes, `repeats`, and the rebuild. At the time of 3.4, the exact-copy pass (`params = false`), which Release runs through `both`, applied only the single best outline per round, so its round count grew with the number of distinct repeated runs. 3.4b removed that: it now takes every non-conflicting run per round, so the round count is a handful and the remaining cost is those per-round O(n) terms.
 
 ## 3.4b Several exact-copy outlines per round
 
@@ -509,7 +524,7 @@ Rounds of the exact pass, old → new (`LITHE_THREADS=1`, Release, the finishes 
 
 The parameterised pass already ran 2–5 rounds. With both passes bounded to a handful of rounds, `outline`'s loop is O(n) times a small constant; making `flow`/prefix sizes incremental between rounds would save at most these few milliseconds, so it was not done. Release `outline+` on erc20_full (448 → 441 ms) barely moves: the exact pass runs only in the 2 finishes with `both`, and `outline+` is dominated by the 91 parameterised finishes' `optimize` after outlining and `finish`.
 
-Bytes: `tests/snapshots/bytecode.json` is unchanged (`evm::snapshot`, both modes and under `LITHE_VERIFY`), and ladders 16/64/128/256 in Release give identical output from the old and new binaries. On every target the exact program either comes out the same or still loses to the parameterised one in `outline`'s cost comparison, so this is not a codegen change and the 5000-step differential and gas gate do not apply; `bench_gas` replays the identical bytecode. `cargo test --release` (552 passed), `cargo clippy --all-targets -D warnings`, `cargo fmt --check` pass.
+Bytes: `tests/snapshots/bytecode.json` is unchanged (`evm::snapshot`, both modes and under `LITHE_VERIFY`), and ladders 16/64/128/256 in Release give identical output from the old and new binaries. The exact pass's own output does change on some targets (it now outlines several runs per round), but on every target that changed program still loses to the parameterised one in `outline`'s cost comparison, so the emitted bytes are not a codegen change and the 5000-step differential and gas gate do not apply; `bench_gas` replays the identical bytecode. `cargo test --release` (552 passed), `cargo clippy --all-targets -D warnings`, `cargo fmt --check` pass.
 
 ## 3.5 Ladder after 3.4b
 
@@ -599,5 +614,5 @@ Release bytecode and gas are identical to the baseline. All 45 `bench_gas` suite
 Headlines against the prompt's targets:
 - erc20_full in Fast: 1731.9 ms → **57.7 ms** (target ≤ 60 ms after Phase 1; ≤ 15 ms after Phase 3 is not met yet).
 - All 127 targets, one thread: 20.4 s Release baseline → 18.6 s Release, 11.0 s Release on 16 threads, and **5.0 s Fast**.
-- Ladder in Fast, per-line cost from 439 to 1735 lines: 21.9 ms / 439 = 50 µs/line → 118.9 ms / 1735 = 69 µs/line, a ratio of **1.37×**. From 1735 to 3463 lines it is 143 µs/line, a ratio of 2.1×. So scaling is still superlinear past 1735 lines; see the 3.3 handoff, and 3.2b for `optimize`.
+- Ladder in Fast, per-line cost from 439 to 1735 lines: 21.9 ms / 439 = 50 µs/line → 118.9 ms / 1735 = 69 µs/line, a ratio of **1.37×**. From 1735 to 3463 lines it is 143 µs/line, a ratio of 2.1×. So scaling is still superlinear past 1735 lines; see State.
 - Threads only help Release. Fast is one build, so 1 vs 16 threads is the same within noise. Phase 4 is what would change that.
