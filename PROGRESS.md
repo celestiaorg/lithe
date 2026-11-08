@@ -41,8 +41,8 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **3.1** CFG over `Vec<Inst>` and per-block worklist rewrites. Byte-identical in both modes. See the measurements below.
 - [x] **3.2** `peephole` and `schedule` per block. Byte-identical in both modes. The 500-round bound stays, and the dirty-set was measured and dropped. See the measurements below.
 - [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c (see the handoff below). **3.3a landed in part; 3.3b and 3.3c are not done.**
-- [ ] **3.4** `outline` on the block IR. **Partly done:** call sites are written in one pass instead of one splice each, which removes the per-site splice term. `outline` stays on the stream, and each round is still O(n), so the whole loop is O(rounds × n). Byte-identical. See the measurements below.
-- [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×.
+- [x] **3.4** `outline` on the block IR. Call sites are written in one pass instead of one splice each (3.4), and every round of both passes shares every run that stays clear of the better ones (3.4b), so a round count is a handful, not one per distinct run. `outline` stays on the stream. Byte-identical. See the measurements below.
+- [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×. **Not met:** 2.23× in Fast, 2.01× in Release; `optimize` is the superlinear part (see 3.5 below and 3.2b).
 
 ### Phase 4 — parallelism inside one build
 
@@ -386,6 +386,40 @@ Timing, `outline+` from `LITHE_TIME`, best of 5, `target/fast`, `LITHE_THREADS=1
 The difference is noise on these targets. `outline+` is mostly the `optimize` and `finish` that run after outlining. The change removes the per-site splice term. It does not move the headline numbers.
 
 **Still quadratic.** `outline` loops `outline_once` until nothing is left, and every round does O(n) work over the whole stream: `safe_exits`, the `JUMPI` retokenisation, `flow`, prefix sizes, `repeats`, and the rebuild. The exact-copy pass (`params = false`), which Release always runs through `both`, applies only the single best outline per round. So its round count grows with the number of distinct repeated runs, and the total is O(rounds × n). Release erc20_full's ~480 ms `outline+` reflects this. Bounding the rounds or making them incremental is still open.
+
+## 3.4b Several exact-copy outlines per round
+
+Plan: the exact-copy pass (`params = false`) takes every run that stays clear of the better ones in a round, as the parameterised pass already did, instead of only the single best. Proof: both snapshots, the ladder bytes, the full test suite. Expected effect: fewer `outline_once` rounds in Release.
+
+`outline_once` now has one selection path for both passes: every run saving at least a quarter of the best, best first, skipping runs with a copy inside one already taken. The parameterised pass is unchanged; the exact pass loses its `best`-only branch.
+
+Rounds of the exact pass, old → new (`LITHE_THREADS=1`, Release, the finishes that run it):
+
+| target | rounds | `outline_once` loop |
+|---|---:|---:|
+| erc20_full | 8 → 3, 7 → 1 | 4.1 → 2.9 ms, 0.77 → 0.39 ms |
+| uniswap_v2_factory | 13 → 2 | 2.9 → 2.0 ms |
+| erc1155 | 15 → 4, 3 → 2 | 5.1 → 2.7 ms, 0.17 → 0.19 ms |
+| ladder 128 | 6 → 2 | 6.6 → 3.0 ms |
+| ladder 256 | 8 → 3 | 19.3 → 10.2 ms |
+
+The parameterised pass already ran 2–5 rounds. With both passes bounded to a handful of rounds, `outline`'s loop is O(n) times a small constant; making `flow`/prefix sizes incremental between rounds would save at most these few milliseconds, so it was not done. Release `outline+` on erc20_full (448 → 441 ms) barely moves: the exact pass runs only in the 2 finishes with `both`, and `outline+` is dominated by the 91 parameterised finishes' `optimize` after outlining and `finish`.
+
+Bytes: `tests/snapshots/bytecode.json` is unchanged (`evm::snapshot`, both modes and under `LITHE_VERIFY`), and ladders 16/64/128/256 in Release give identical output from the old and new binaries. On every target the exact program either comes out the same or still loses to the parameterised one in `outline`'s cost comparison, so this is not a codegen change and the 5000-step differential and gas gate do not apply; `bench_gas` replays the identical bytecode. `cargo test --release` (552 passed), `cargo clippy --all-targets -D warnings`, `cargo fmt --check` pass.
+
+## 3.5 Ladder after 3.4b
+
+`python3 scripts/bench_compile.py --skip-gas --threads 1 --only scaling/nN.lithe`, cache off, `LITHE_THREADS=1`, 16 cores; Fast through a wrapper that passes `--fast`. Tree: 3.3a in part, 3.4b; 3.2b and 3.3b are not in it.
+
+| N | lines | F promote ms | F optimize ms | F µs/line (p+o) | R promote ms | R optimize ms | R µs/line (p+o) |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 16 | 439 | 0.9 | 7.6 | 19.2 | 6.0 | 9.2 | 34.5 |
+| 32 | 871 | 1.7 | 17.8 | 22.3 | 16.6 | 17.7 | 39.3 |
+| 64 | 1735 | 6.5 | 67.9 | 42.9 | 52.2 | 68.1 | 69.3 |
+| 128 | 3463 | 20.1 | 352.1 | 107.5 | 200.6 | 355.0 | 160.4 |
+| 256 | 6919 | 73.2 | 2208.2 | 329.7 | 727.9 | 2249.0 | 430.3 |
+
+Per-line `promote`+`optimize` ratio, Fast: 439→1735 **2.23×**, 1735→3463 **2.51×**, 3463→6919 3.07×. Release: 2.01×, 2.31×, 2.68×. **The 1.5× bar is not met.** The 1.37× quoted in the comparison below is per-line *wall* time (Fast wall 22.1 → 115.5 ms is 1.32× now), not `promote`+`optimize`. Fast `promote` is close to linear (2.1 → 3.7 µs/line from 439 to 1735); `optimize` is the superlinear term (17 → 20 → 39 → 102 → 319 µs/line from N = 16 to 256), and its largest pass is `merge_tails` recomputing `heat` per call (3.2b, sibling workspace). 3.4b does not move these numbers: `outline` is 10 ms of ladder 64 and 27 ms of ladder 128. Re-run this table once 3.2b and 3.3b land.
 
 ## Comparison with baseline.json
 
