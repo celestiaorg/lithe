@@ -1028,10 +1028,10 @@ const CALL_GAS: f64 = 24.0;
 
 /// Moves repeated straight-line runs into shared helpers until no run pays for its calls,
 /// then optimizes and runs `finish`. A call's gas counts against the bytes it saves, by how
-/// often `entries`, the labels entrypoints begin at, run it. Sharing exact copies one best
-/// run at a time, and sharing runs that differ in pushed constants several at a time, can
-/// each win, so with `both` both are tried and the cheaper program is kept. Without, only
-/// the second, which is the most often cheaper and by the most.
+/// often `entries`, the labels entrypoints begin at, run it. Sharing only exact copies, and
+/// also sharing runs that differ in pushed constants, can each win, so with `both` both are
+/// tried and the cheaper program is kept. Without, only the second, which is the most often
+/// cheaper and by the most. Each round shares every run that stays clear of the better ones.
 pub(crate) fn outline(
     code: &mut Vec<Inst>,
     entries: &[u32],
@@ -1489,8 +1489,8 @@ fn repeats(
     }
 }
 
-/// Shares the best run. With `params`, also shares runs that differ in pushed constants,
-/// and every other run that stays clear of the ones already taken.
+/// Shares the best run and every other run that stays clear of the ones already taken.
+/// With `params`, also runs that differ in pushed constants.
 fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, entries: &[u32], params: bool) -> bool {
     let exits = safe_exits(code);
     let jumpi = t.of(&Op(JUMPI));
@@ -1604,23 +1604,15 @@ fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, entries: &[u32], params: b
     // Ties go to the earliest run, then the shortest, then an exact copy, so the order
     // groups are visited in never matters.
     let rank = |o: &Outline| (-o.saved, o.first, o.len, o.params.len());
-    let mut best: Option<Outline> = None;
-    // With `params`, every run saving at least a quarter of the most any run saves.
+    // Every run saving at least a quarter of the most any run saves.
     let mut all = Vec::new();
     let mut top = 0;
     let mut offer = |o: Option<Outline>, starts: &[usize]| {
-        match o.filter(|o| o.saved > 0) {
-            Some(o) if params => {
-                top = top.max(o.saved);
-                all.push((o, starts.to_vec()));
-            }
-            Some(o) if best.as_ref().is_none_or(|b| rank(&o) < rank(b)) => best = Some(o),
-            _ => {}
+        if let Some(o) = o.filter(|o| o.saved > 0) {
+            top = top.max(o.saved);
+            all.push((o, starts.to_vec()));
         }
-        match &best {
-            Some(b) => b.saved,
-            None => ((top + 3) / 4).max(1),
-        }
+        ((top + 3) / 4).max(1)
     };
     repeats(code, tok, t.ids.len(), &size, |len, starts, floor| {
         offer(evaluate(len, starts, false, floor), starts)
@@ -1637,7 +1629,7 @@ fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, entries: &[u32], params: b
             offer(evaluate(len, starts, true, floor), starts)
         });
     }
-    let mut chosen: Vec<Outline> = best.into_iter().collect();
+    let mut chosen: Vec<Outline> = Vec::new();
     // Take runs best first. One with a copy in a run already taken would save a different
     // amount now, so it waits for the next round.
     all.sort_unstable_by_key(|(o, _)| rank(o));
