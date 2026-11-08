@@ -6,7 +6,8 @@
 
 use super::{
     assemble, byte_gas, enters, entries, heat, inst_len, inst_len_wide, is_terminal, stack_io,
-    track, FxHashMap, FxHashSet, Inst, ISZERO, JUMP, JUMPDEST, JUMPI, MIN_TAIL_BYTES, TAIL_GAS,
+    track, FxHashMap, FxHashSet, Inst, ISZERO, JUMP, JUMPDEST, JUMPI, MAX_ROUNDS, MIN_TAIL_BYTES,
+    TAIL_GAS,
 };
 use super::{Imm, Label, Op, Push, PushLabel, Table};
 
@@ -242,24 +243,81 @@ impl Blocks {
         changed
     }
 
+    /// `peephole` on each block, with the labels of the next, which its rewrites look at but
+    /// never take. A block that ends in a jump goes with the next, since emptying that
+    /// one can show the jump its target. Otherwise nothing reaches across, so this is
+    /// `peephole` on the stream.
+    fn peephole(&mut self) -> bool {
+        let jumps = |b: &Block| matches!(b.body[..], [.., PushLabel(_), Op(JUMP)]);
+        let blocks = &mut self.blocks;
+        // Spans whose code changed, and what replaces them.
+        let mut edits: Vec<(usize, usize, Vec<Block>)> = Vec::new();
+        let mut w = Vec::new();
+        let mut k = 0;
+        while k < blocks.len() {
+            let mut e = k;
+            while e + 1 < blocks.len() && jumps(&blocks[e]) {
+                e += 1;
+            }
+            let labels = blocks.get(e + 1).map_or(&[][..], |b| &b.labels[..]);
+            let next = labels.len();
+            w.clear();
+            w.extend(blocks[k].insts());
+            w.extend(blocks[k + 1..=e].iter().flat_map(Block::insts));
+            w.extend(labels.iter().map(|&l| Label(l)));
+            if super::peephole(&mut w) {
+                w.truncate(w.len() - next);
+                edits.push((k, e, Blocks::new(&w).blocks));
+            }
+            k = e + 1;
+        }
+        if edits.is_empty() {
+            return false;
+        }
+        let mut old = std::mem::take(blocks).into_iter();
+        let mut at = 0;
+        for (k, e, new) in edits {
+            blocks.extend(old.by_ref().take(k - at));
+            old.by_ref().take(e + 1 - k).for_each(drop);
+            blocks.extend(new);
+            at = e + 1;
+        }
+        blocks.extend(old);
+        self.tidy();
+        true
+    }
+
+    /// `dup_constants` on each block: it forgets the stack at a label and after an exit, so
+    /// this is the same as on the stream.
+    fn dup_constants(&mut self) -> bool {
+        super::dup_constants_in(self.blocks.iter_mut().map(|b| &mut b.body[..]))
+    }
+
+    /// `schedule` on each block: its straight runs hold no label or exit. A body it empties
+    /// passes its labels on.
+    fn schedule(&mut self) -> bool {
+        let exits = super::safe_exits(&self.code());
+        let mut changed = false;
+        for b in &mut self.blocks {
+            changed |= super::schedule_runs(&mut b.body, &exits);
+        }
+        if changed {
+            self.tidy();
+        }
+        changed
+    }
+
     /// Blocks with the same body share one copy.
     fn dedup_blocks(&mut self) -> bool {
-        // Bodies by length and their first and last instructions, then compared in full.
-        let mut first: FxHashMap<_, Vec<(&[Inst], u32)>> = FxHashMap::default();
+        let mut first: FxHashMap<&[Inst], u32> = FxHashMap::default();
         let mut map: FxHashMap<u32, u32> = FxHashMap::default();
         for b in &self.blocks {
             if b.labels.is_empty() || !b.exits() {
                 continue;
             }
-            let body = &b.body[..];
-            let same = first
-                .entry((body.len(), body[0], body[body.len() - 1]))
-                .or_default();
-            match same.iter().find(|(other, _)| *other == body) {
-                Some(&(_, keep)) => {
-                    map.extend(b.labels.iter().filter(|&&l| l != keep).map(|&l| (l, keep)));
-                }
-                None => same.push((body, b.labels[0])),
+            let keep = *first.entry(&b.body).or_insert(b.labels[0]);
+            if keep != b.labels[0] {
+                map.extend(b.labels.iter().filter(|&&l| l != keep).map(|&l| (l, keep)));
             }
         }
         if map.is_empty() {
@@ -269,9 +327,8 @@ impl Blocks {
         true
     }
 
-    /// Two exits that end the same way share the common tail. `code` is the stream the
-    /// blocks hold.
-    fn merge_tails(&mut self, code: &[Inst]) -> bool {
+    /// Two exits that end the same way share the common tail.
+    fn merge_tails(&mut self) -> bool {
         let blocks = &self.blocks;
         // Where each body starts in the stream, for the heat of its instructions.
         let mut start = Vec::with_capacity(blocks.len());
@@ -282,7 +339,8 @@ impl Blocks {
         }
         // Only tails long enough to share need it.
         let heat = std::cell::OnceCell::new();
-        let heat = |k: usize, j: usize| heat.get_or_init(|| self::heat(code))[start[k] + j];
+        let heat =
+            |k: usize, j: usize| heat.get_or_init(|| self::heat(&serialize(blocks)))[start[k] + j];
         let preds = std::cell::OnceCell::new();
         // Sharing a tail puts a jump on every path into the donor. A helper's body runs on
         // every call to it, so its tail must save a byte for each call it slows.
@@ -294,15 +352,20 @@ impl Blocks {
             }
             preds.get_or_init(|| self.preds())[k].len().max(1)
         };
-        // A block ends in a one-byte exit, so a tail worth sharing is at least two long.
-        let mut by_last: FxHashMap<(Inst, Inst), Vec<usize>> = FxHashMap::default();
+        // Exits that share a tail worth sharing share its shortest end of `MIN_TAIL_BYTES`.
+        let mut by_last: FxHashMap<&[Inst], Vec<usize>> = FxHashMap::default();
         for (k, b) in blocks.iter().enumerate() {
-            if b.exits() && b.body.len() > 1 {
+            if !b.exits() {
+                continue;
+            }
+            let mut bytes = 0;
+            let short = b.body.iter().rev().position(|inst| {
+                bytes += inst_len(inst);
+                bytes >= MIN_TAIL_BYTES
+            });
+            if let Some(j) = short {
                 let n = b.body.len();
-                by_last
-                    .entry((b.body[n - 2], b.body[n - 1]))
-                    .or_default()
-                    .push(k);
+                by_last.entry(&b.body[n - 1 - j..]).or_default().push(k);
             }
         }
         let mut pairs: Vec<(usize, usize, usize, usize)> = Vec::new();
@@ -324,10 +387,12 @@ impl Blocks {
                     // The copy that takes the jump runs it where the shared tail starts, which a
                     // tail reaching back over a `JUMPI` makes hot, so each length and side is
                     // weighed: it must save a byte for each few gas it adds.
+                    // Heat is never negative, so a shorter tail saves at most its bytes.
                     let mut best: Option<(f64, usize, usize, usize)> = None;
                     for m in (1..=n).rev() {
                         let bytes = sizes[m];
-                        if bytes < MIN_TAIL_BYTES {
+                        let most = (bytes + 1).saturating_sub(MIN_TAIL_BYTES) as f64;
+                        if bytes < MIN_TAIL_BYTES || best.is_some_and(|(s, ..)| s >= most) {
                             break;
                         }
                         for (keep, give) in [(a, b), (b, a)] {
@@ -744,12 +809,28 @@ fn run(code: &mut Vec<Inst>, pass: fn(&mut Blocks) -> bool) -> bool {
     changed
 }
 
-/// `prune_labels`, `remove_dead` and `thread_jumps` on one set of blocks, for code with no
-/// marks to carry between them.
-pub(super) fn clean(code: &mut Vec<Inst>) -> bool {
-    run(code, |b| {
-        b.prune_labels() | b.remove_dead() | b.thread_jumps()
-    })
+/// `optimize`'s rounds on one set of blocks, for code with no marks to carry between
+/// passes. Each pass leaves the blocks as `Blocks::new` would split its output.
+/// `optimize`'s rounds on one set of blocks, for code with no marks to carry between
+/// passes. Each pass leaves the blocks as `Blocks::new` would split its output.
+pub(super) fn optimize(code: &mut Vec<Inst>) {
+    let mut b = Blocks::new(code);
+    for _ in 0..MAX_ROUNDS {
+        let mut changed = b.prune_labels() | b.remove_dead() | b.thread_jumps();
+        changed |= b.peephole();
+        changed |= b.dedup_blocks();
+        changed |= b.dup_constants();
+        if !changed {
+            changed |= b.merge_tails();
+        }
+        if !changed {
+            changed |= b.schedule();
+        }
+        if !changed {
+            break;
+        }
+    }
+    *code = b.code();
 }
 
 pub(super) fn prune_labels(code: &mut Vec<Inst>) -> bool {
@@ -769,12 +850,7 @@ pub(super) fn dedup_blocks(code: &mut Vec<Inst>) -> bool {
 }
 
 pub(super) fn merge_tails(code: &mut Vec<Inst>) -> bool {
-    let mut blocks = Blocks::new(code);
-    let changed = blocks.merge_tails(code);
-    if changed {
-        *code = blocks.code();
-    }
-    changed
+    run(code, Blocks::merge_tails)
 }
 
 pub(crate) fn rotate_loops(code: &mut Vec<Inst>) {
@@ -793,6 +869,64 @@ pub(crate) fn hoist(code: &mut Vec<Inst>) {
 mod tests {
     use super::*;
     use crate::word::Word;
+
+    /// The rounds on the stream, pass by pass, as `optimize` runs them for the prover.
+    fn stream_optimize(code: &mut Vec<Inst>) {
+        for _ in 0..MAX_ROUNDS {
+            let mut changed = prune_labels(code) | remove_dead(code) | thread_jumps(code);
+            changed |= super::super::peephole(code);
+            changed |= dedup_blocks(code);
+            changed |= super::super::dup_constants(code);
+            if !changed {
+                changed |= merge_tails(code);
+            }
+            if !changed {
+                changed |= super::super::schedule(code);
+            }
+            if !changed {
+                return;
+            }
+        }
+    }
+
+    /// A jump whose target the next block's labels hide until a rewrite empties that
+    /// block, which the stream sees by backing up over the labels: one pass, and all.
+    #[test]
+    fn rounds_on_blocks_match_the_stream() {
+        use super::super::{POP, RETURN};
+        let w = |n| Push(Word::from_u64(n));
+        let code = vec![
+            Op(0x36),
+            PushLabel(4),
+            Op(JUMPI),
+            PushLabel(3),
+            Op(JUMP),
+            Label(1),
+            w(7),
+            Op(POP),
+            Label(2),
+            Label(3),
+            w(0),
+            w(0),
+            Op(RETURN),
+            Label(4),
+            w(5),
+            PushLabel(4),
+            Op(JUMPI),
+            PushLabel(1),
+            Op(JUMP),
+        ];
+        let mut blocks = Blocks::new(&code);
+        let mut stream = code.clone();
+        assert!(blocks.peephole());
+        assert!(super::super::peephole(&mut stream));
+        assert_eq!(blocks.code(), stream);
+        let mut blocks = code.clone();
+        optimize(&mut blocks);
+        let mut stream = code;
+        stream_optimize(&mut stream);
+        assert_eq!(blocks, stream);
+    }
 
     #[test]
     fn splits_links_and_writes_back() {

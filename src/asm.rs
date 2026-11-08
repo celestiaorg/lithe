@@ -154,16 +154,17 @@ const MIN_TAIL_BYTES: usize = 6;
 /// Gas the jump to a shared tail adds: a push, the jump, and its jumpdest.
 const TAIL_GAS: f64 = 12.0;
 
+/// Runs the passes in rounds until none changes the code. Marks for the prover are carried
+/// pass by pass on the stream; otherwise the rounds run on blocks.
 pub(crate) fn optimize(code: &mut Vec<Inst>) {
+    if !track::on() {
+        return blocks::optimize(code);
+    }
     for _ in 0..MAX_ROUNDS {
         let mut changed = false;
-        if track::on() {
-            changed |= track::pass(code, prune_labels);
-            changed |= track::pass(code, remove_dead);
-            changed |= track::pass(code, thread_jumps);
-        } else {
-            changed |= blocks::clean(code);
-        }
+        changed |= track::pass(code, prune_labels);
+        changed |= track::pass(code, remove_dead);
+        changed |= track::pass(code, thread_jumps);
         changed |= track::pass(code, peephole);
         changed |= track::pass(code, dedup_blocks);
         changed |= track::pass(code, |c| dup_constants(c));
@@ -930,6 +931,11 @@ fn peephole(code: &mut Vec<Inst>) -> bool {
 
 /// Replaces a pushed constant with a `DUP` of the same value already on the stack.
 fn dup_constants(code: &mut [Inst]) -> bool {
+    dup_constants_in([code])
+}
+
+/// `dup_constants` on each of `codes`, none of which knows the stack the others leave.
+fn dup_constants_in<'a>(codes: impl IntoIterator<Item = &'a mut [Inst]>) -> bool {
     #[derive(Clone, Copy, PartialEq)]
     enum V {
         Unknown,
@@ -943,56 +949,59 @@ fn dup_constants(code: &mut [Inst]) -> bool {
             stack.splice(0..0, std::iter::repeat_n(V::Unknown, missing));
         }
     };
-    for i in 0..code.len() {
-        let inst = code[i];
-        match inst {
-            Label(_) => stack.clear(),
-            Push(_) | PushLabel(_) | Table(_) | Imm(..) => {
-                let worth = match inst {
-                    Push(w) => !w.is_zero(),
-                    _ => true,
-                };
-                if worth {
-                    let depth = stack
-                        .iter()
-                        .rev()
-                        .take(16)
-                        .position(|v| *v == V::Known(inst));
-                    if let Some(d) = depth {
-                        code[i] = Op(DUP1 + d as u8);
-                        changed = true;
+    for code in codes {
+        stack.clear();
+        for i in 0..code.len() {
+            let inst = code[i];
+            match inst {
+                Label(_) => stack.clear(),
+                Push(_) | PushLabel(_) | Table(_) | Imm(..) => {
+                    let worth = match inst {
+                        Push(w) => !w.is_zero(),
+                        _ => true,
+                    };
+                    if worth {
+                        let depth = stack
+                            .iter()
+                            .rev()
+                            .take(16)
+                            .position(|v| *v == V::Known(inst));
+                        if let Some(d) = depth {
+                            code[i] = Op(DUP1 + d as u8);
+                            changed = true;
+                        }
                     }
+                    stack.push(V::Known(inst));
                 }
-                stack.push(V::Known(inst));
-            }
-            Mem(_) => stack.push(V::Unknown),
-            Op(op) if (0x80..=0x8f).contains(&op) => {
-                let n = (op - 0x7f) as usize;
-                pad(&mut stack, n);
-                let v = stack[stack.len() - n];
-                stack.push(v);
-            }
-            Op(op) if (0x90..=0x9f).contains(&op) => {
-                let n = (op - 0x8f) as usize;
-                pad(&mut stack, n + 1);
-                let top = stack.len() - 1;
-                stack.swap(top, top - n);
-            }
-            Op(op) if is_terminal(op) => stack.clear(),
-            Op(op) => match stack_io(op) {
-                Some((pops, pushes)) => {
-                    let keep = stack.len().saturating_sub(pops);
-                    stack.truncate(keep);
-                    for _ in 0..pushes {
-                        stack.push(V::Unknown);
+                Mem(_) => stack.push(V::Unknown),
+                Op(op) if (0x80..=0x8f).contains(&op) => {
+                    let n = (op - 0x7f) as usize;
+                    pad(&mut stack, n);
+                    let v = stack[stack.len() - n];
+                    stack.push(v);
+                }
+                Op(op) if (0x90..=0x9f).contains(&op) => {
+                    let n = (op - 0x8f) as usize;
+                    pad(&mut stack, n + 1);
+                    let top = stack.len() - 1;
+                    stack.swap(top, top - n);
+                }
+                Op(op) if is_terminal(op) => stack.clear(),
+                Op(op) => match stack_io(op) {
+                    Some((pops, pushes)) => {
+                        let keep = stack.len().saturating_sub(pops);
+                        stack.truncate(keep);
+                        for _ in 0..pushes {
+                            stack.push(V::Unknown);
+                        }
                     }
-                }
-                None => stack.clear(),
-            },
-        }
-        if stack.len() > 64 {
-            let cut = stack.len() - 64;
-            stack.drain(..cut);
+                    None => stack.clear(),
+                },
+            }
+            if stack.len() > 64 {
+                let cut = stack.len() - 64;
+                stack.drain(..cut);
+            }
         }
     }
     changed
@@ -7088,16 +7097,20 @@ fn schedule_windows(run: &[Inst]) -> Option<Vec<Inst>> {
 /// the same operations in the same order and leaves the same stack, and merges checks that
 /// raise the same data.
 fn schedule(code: &mut Vec<Inst>) -> bool {
-    let exits = safe_exits(code);
+    schedule_runs(code, &safe_exits(code))
+}
+
+/// `schedule` on code whose exits are `exits`.
+fn schedule_runs(code: &mut Vec<Inst>, exits: &FxHashSet<u32>) -> bool {
     let mut edits = Vec::new();
     let mut i = 0;
     while i < code.len() {
-        if !schedulable(code, i, &exits) {
+        if !schedulable(code, i, exits) {
             i += 1;
             continue;
         }
         let mut j = i;
-        while j < code.len() && schedulable(code, j, &exits) {
+        while j < code.len() && schedulable(code, j, exits) {
             j += 1;
         }
         if let Some(run) = schedule_run(&code[i..j]) {
