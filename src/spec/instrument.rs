@@ -1551,7 +1551,8 @@ fn exact_name(name: &str) -> String {
 
 /// The exact-arithmetic helpers, for the contract, or for module `module`.
 fn exact_helpers(module: Option<(&str, &[String])>) -> Vec<Func> {
-    let prog = crate::parse::parse(EXACT).expect("exact helpers parse");
+    let prog =
+        crate::parse::parse(EXACT, &crate::ast::Names::shared()).expect("exact helpers parse");
     let mut funcs = prog.funcs;
     for f in &mut funcs {
         f.name = exact_name(&f.name);

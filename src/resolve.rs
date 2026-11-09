@@ -2288,7 +2288,7 @@ pub(crate) fn std_index() -> &'static [(String, Cat, String)] {
             if path.ends_with(".spec.lithe") {
                 continue;
             }
-            let Ok(prog) = crate::parse::parse(src) else {
+            let Ok(prog) = crate::parse::parse(src, &crate::ast::Names::shared()) else {
                 continue;
             };
             let import = path.trim_end_matches(".lithe").to_string();

@@ -223,6 +223,8 @@ struct LoadEnv<'a> {
     cache: Option<&'a ModuleCache>,
     evm: EvmVersion,
     touched: &'a mut Vec<(PathBuf, u64)>,
+    /// The one table every file of the build interns into.
+    names: Arc<Names>,
 }
 
 fn std_programs() -> &'static Mutex<HashMap<PathBuf, Arc<Program>>> {
@@ -231,12 +233,12 @@ fn std_programs() -> &'static Mutex<HashMap<PathBuf, Arc<Program>>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn std_program(canon: &Path, src: &str) -> Result<Program, Error> {
+fn std_program(canon: &Path, src: &str, names: &Arc<Names>) -> Result<Program, Error> {
     let mut cache = std_programs().lock().unwrap_or_else(|err| err.into_inner());
     if let Some(prog) = cache.get(canon) {
         return Ok((**prog).clone());
     }
-    let prog = parse::parse(src)?;
+    let prog = parse::parse(src, names)?;
     cache.insert(canon.to_path_buf(), Arc::new(prog.clone()));
     Ok(prog)
 }
@@ -251,14 +253,14 @@ fn parse_cached(canon: &Path, src: &str, env: &mut LoadEnv) -> Result<Program, E
     let hash = content_hash(src);
     env.touched.push((canon.to_path_buf(), hash));
     if canon.starts_with(STD_ROOT) {
-        return std_program(canon, src);
+        return std_program(canon, src, &env.names);
     }
     if let Some(cache) = env.cache {
         if let Some(hit) = cache.parsed(canon, hash, env.evm) {
             return Ok((*hit).clone());
         }
     }
-    let prog = parse::parse(src)?;
+    let prog = parse::parse(src, &env.names)?;
     if let Some(cache) = env.cache {
         cache.store_parsed(canon.to_path_buf(), hash, env.evm, prog.clone());
     }
@@ -493,6 +495,7 @@ pub(crate) fn load_in(
         cache,
         evm,
         touched,
+        names: Names::shared(),
     };
     load_inner(sources, path, text, &mut Vec::new(), &mut env)
 }
@@ -581,7 +584,7 @@ fn load_inner(
         add_peer(&mut peers, peer, 1, 1).map_err(|err| err.in_file(&root.origin))?;
     }
     let unit = |own: Program| -> Result<Program, Error> {
-        let mut dst = empty();
+        let mut dst = empty(own.names.clone());
         for file in &files {
             append(&mut dst, file.prog.clone(), false)?;
         }
@@ -1094,7 +1097,7 @@ fn imply(prog: &mut Program) {
     prog.compose = ordered;
 }
 
-fn empty() -> Program {
+fn empty(names: Arc<Names>) -> Program {
     Program {
         uses: Vec::new(),
         types: Vec::new(),
@@ -1126,6 +1129,7 @@ fn empty() -> Program {
         specs: Vec::new(),
         proving: false,
         scopes: Default::default(),
+        names,
     }
 }
 
@@ -1372,5 +1376,45 @@ mod tests {
         .unwrap();
         assert_eq!(std_ids(&edited), std_n);
         assert_eq!(cache.parsed_count(), parsed_n + 1);
+    }
+
+    /// A symbol must name the same text in every file and every build, whatever order files
+    /// are parsed in: `std/` and imported files come from process-wide parse caches, so a
+    /// `Symbol` captured in one build is read in the next.
+    #[test]
+    fn a_name_has_one_symbol_across_files_and_build_orders() {
+        let left = "storage is record { count : uint; }\nexternal function a() is { storage.count := 1; }\n";
+        let right = "storage is record { count : uint; }\nexternal function b() is { storage.count := 2; }\n";
+        let sources = Sources::memory([("left.lithe", left), ("right.lithe", right)]);
+        let load_one = |path: &str| {
+            let mut touched = Vec::new();
+            load_in(
+                &sources,
+                Path::new(path),
+                None,
+                None,
+                EvmVersion::default(),
+                &mut touched,
+            )
+            .unwrap()
+        };
+        let (a, b) = (load_one("left.lithe"), load_one("right.lithe"));
+        assert!(
+            Arc::ptr_eq(&a.names, &Names::shared()),
+            "one table per process"
+        );
+        assert!(Arc::ptr_eq(&a.names, &b.names));
+        assert_eq!(a.names.intern("count"), b.names.intern("count"));
+        assert_eq!(&*a.names.get(a.names.intern("count")), "count");
+
+        // The other parse order runs on another thread and reaches the same symbols: nothing
+        // about a symbol depends on what this build parsed before it.
+        let (first, second) = std::thread::scope(|s| {
+            let back = s.spawn(|| (load_one("right.lithe"), load_one("left.lithe")));
+            let (b, a) = back.join().unwrap();
+            (a.names.intern("count"), b.names.intern("count"))
+        });
+        assert_eq!(first, second);
+        assert_eq!(first, a.names.intern("count"));
     }
 }

@@ -1,4 +1,70 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use crate::word::Word;
+
+/// An interned identifier: an index into a [`Names`] table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct Symbol(u32);
+
+/// The table every `Symbol` a program holds indexes, one per process.
+///
+/// `std/` and imported files come from process-wide parse caches, so a `Symbol` from a cached
+/// parse must name the same text in every later build, and merging files must never remap. One
+/// table also makes a symbol depend on its text alone, never on the order `emit_dir`'s parallel
+/// builds parse files in.
+///
+/// simplify: the table never shrinks, so a long language-server session keeps every identifier
+/// it has seen. Dropping entries on a content-hash miss is the upgrade if that ever matters.
+#[derive(Debug, Default)]
+pub(crate) struct Names {
+    inner: Mutex<Inner>,
+}
+
+#[derive(Debug, Default)]
+struct Inner {
+    ids: HashMap<Box<str>, Symbol>,
+    text: Vec<Arc<str>>,
+}
+
+impl Names {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The table every build interns into.
+    pub fn shared() -> Arc<Names> {
+        static SHARED: std::sync::OnceLock<Arc<Names>> = std::sync::OnceLock::new();
+        SHARED.get_or_init(|| Arc::new(Names::new())).clone()
+    }
+
+    /// The symbol for `text`, interned once per process.
+    pub fn intern(&self, text: &str) -> Symbol {
+        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(sym) = inner.ids.get(text) {
+            return *sym;
+        }
+        let sym = Symbol(inner.text.len() as u32);
+        let arc: Arc<str> = Arc::from(text);
+        inner.ids.insert(arc.as_ref().into(), sym);
+        inner.text.push(arc);
+        sym
+    }
+
+    /// How many distinct texts the table holds. Test-only: nothing reads it back yet.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        let inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        inner.text.len()
+    }
+
+    /// The text of `sym`.
+    #[allow(dead_code)] // diagnostics read names back once 5.1b holds symbols in the AST
+    pub fn get(&self, sym: Symbol) -> Arc<str> {
+        let inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        inner.text[sym.0 as usize].clone()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct Program {
@@ -55,6 +121,8 @@ pub(crate) struct Program {
     pub proving: bool,
     /// What each file of the program sees, and the canonical name of each declaration.
     pub scopes: std::sync::Arc<crate::resolve::Scopes>,
+    /// The table every `Symbol` this program holds indexes.
+    pub names: Arc<Names>,
 }
 
 /// `spec is { ... }` or `spec for f is { ... }`: claims about the program that `lithe prove`

@@ -10,11 +10,11 @@ pub(crate) const DELEGATED: &str = "delegated";
 /// Where `flat` may go: the positions whose ABI a record's fields can spread into.
 pub(crate) const FLAT_ONLY: &str = "`flat` goes only on an external function's or interface method's parameter or result, or a dispatched case's payload";
 
-pub(crate) fn parse(src: &str) -> Result<Program, Error> {
-    let toks = lex::tokenize(src)?;
+pub(crate) fn parse(src: &str, names: &std::sync::Arc<Names>) -> Result<Program, Error> {
     Parser {
         src,
-        toks,
+        toks: lex::tokenize(src)?,
+        names: names.clone(),
         i: 0,
         declaring: false,
         in_spec: false,
@@ -37,6 +37,7 @@ pub(crate) fn parse_specs(src: &str) -> Result<SpecFile, Error> {
     let mut parser = Parser {
         src,
         toks,
+        names: Names::shared(),
         i: 0,
         declaring: false,
         in_spec: false,
@@ -106,6 +107,8 @@ struct Parser<'a> {
     src: &'a str,
     toks: Vec<Token>,
     i: usize,
+    /// The table names are interned into.
+    names: std::sync::Arc<Names>,
     /// Inside `use M exposing { ... }`: functions are external and have no body.
     declaring: bool,
     /// Inside a spec block, where `old.`, `new.`, `sum`, `count`, and `forall` are spec forms.
@@ -192,7 +195,12 @@ impl Body {
         }
     }
 
-    fn into_program(self, modules: Vec<ModuleDecl>, uses: Vec<UseDecl>) -> Program {
+    fn into_program(
+        self,
+        modules: Vec<ModuleDecl>,
+        uses: Vec<UseDecl>,
+        names: std::sync::Arc<Names>,
+    ) -> Program {
         let named = self.name.is_some();
         Program {
             uses,
@@ -225,6 +233,7 @@ impl Body {
             specs: self.specs,
             proving: false,
             scopes: Default::default(),
+            names,
         }
     }
 }
@@ -323,14 +332,14 @@ impl<'a> Parser<'a> {
         if explicit.is_empty() {
             implicit.interfaces.extend(shared_interfaces);
             implicit.specs.extend(module_specs);
-            return Ok(implicit.into_program(modules, uses));
+            return Ok(implicit.into_program(modules, uses, self.names.clone()));
         }
         let mut programs = Vec::new();
         for (index, mut body) in explicit.into_iter().enumerate() {
             body.interfaces.extend(shared_interfaces.clone());
             body.specs.extend(module_specs.iter().cloned());
             let unit_uses = if index == 0 { uses.clone() } else { Vec::new() };
-            programs.push(body.into_program(modules.clone(), unit_uses));
+            programs.push(body.into_program(modules.clone(), unit_uses, self.names.clone()));
         }
         let mut main = programs.remove(0);
         main.siblings = programs;
@@ -4092,6 +4101,7 @@ impl<'a> Parser<'a> {
             return Err(self.err(format!("expected identifier, found {}", self.found())));
         }
         let name = self.lexeme().to_string();
+        self.names.intern(&name);
         self.bump();
         Ok(name)
     }
@@ -4302,7 +4312,31 @@ struct Pattern {
 
 #[cfg(test)]
 mod tests {
-    use super::parse;
+    use super::*;
+
+    fn parse(src: &str) -> Result<super::Program, crate::Error> {
+        super::parse(src, &super::Names::shared())
+    }
+
+    /// `parse` interns every identifier it reads, and only once per distinct text, so a
+    /// `Program` from one file names the same `Symbol` as the same text in another.
+    #[test]
+    fn parsing_interns_each_identifier_once_into_the_given_table() {
+        let names = std::sync::Arc::new(Names::new());
+        let left = "storage is record { count : uint; }\nexternal function a() is { storage.count := 1; }\n";
+        let right = "storage is record { count : uint; }\nexternal function a() is { storage.count := 2; }\n";
+        super::parse(left, &names).unwrap();
+        let after_left = names.len();
+        // More than zero rules out a parse that never touches the table.
+        assert!(after_left > 0, "left parsed without interning anything");
+        super::parse(right, &names).unwrap();
+        assert_eq!(
+            names.len(),
+            after_left,
+            "the same texts in a second file must reuse their symbols, not add new ones"
+        );
+        assert_eq!(&*names.get(names.intern("count")), "count");
+    }
 
     #[test]
     fn chained_comparison_points_at_the_operator() {

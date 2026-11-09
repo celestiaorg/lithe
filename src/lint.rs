@@ -411,7 +411,7 @@ fn findings_at(
     units: Vec<Program>,
     checked: &[Checked],
 ) -> Result<Vec<Finding>, Error> {
-    let uses = parse::parse(src)?.uses;
+    let uses = parse::parse(src, &crate::ast::Names::shared())?.uses;
     let mut findings = Vec::new();
     // An import is used when this file names something through it.
     let mut used = HashSet::new();
