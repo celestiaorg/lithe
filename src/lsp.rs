@@ -2266,7 +2266,7 @@ external function bump(const x : uint) is { storage.n := inc(x); }\n";
             best = best.min(ns);
         }
         let ms = best as f64 / 1e6;
-        let limit = if cfg!(debug_assertions) { 620.0 } else { 0.0 };
+        let limit = if cfg!(debug_assertions) { 60.0 } else { 20.0 };
         assert!(
             ms <= limit,
             "diagnostics on erc20_full took {ms:.1} ms (limit {limit} ms)"
