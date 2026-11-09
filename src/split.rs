@@ -589,7 +589,12 @@ fn facet(
     prog.scopes = scopes;
     static BUILT: OnceLock<Mutex<HashMap<([u8; 32], String), Facet>>> = OnceLock::new();
     let memo = BUILT.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(facet) = memo.lock().ok().and_then(|memo| memo.get(&key).cloned()) {
+    // A test can force knobs the key cannot see, so its facets are neither read nor kept.
+    let memo = (!gen::forced()).then_some(memo);
+    if let Some(facet) = memo
+        .and_then(|memo| memo.lock().ok())
+        .and_then(|memo| memo.get(&key).cloned())
+    {
         return Ok(facet);
     }
     // A facet is built from its module alone, so contracts that change around it read it back.
@@ -604,8 +609,10 @@ fn facet(
             (r.0.is_empty() && facets.is_empty()).then_some(facet)
         });
     if let Some(facet) = cached {
-        if let Ok(mut memo) = memo.lock() {
-            memo.insert(key, facet.clone());
+        if let Some(memo) = memo {
+            if let Ok(mut memo) = memo.lock() {
+                memo.insert(key, facet.clone());
+            }
         }
         return Ok(facet);
     }
@@ -744,8 +751,10 @@ fn facet(
         put_facets(&mut bytes, std::slice::from_ref(&facet));
         store(&path, &bytes);
     }
-    if let Ok(mut memo) = memo.lock() {
-        memo.insert(key, facet.clone());
+    if let Some(memo) = memo {
+        if let Ok(mut memo) = memo.lock() {
+            memo.insert(key, facet.clone());
+        }
     }
     Ok(facet)
 }
@@ -1843,5 +1852,34 @@ mod tests {
         assert!(fit.warnings.is_empty(), "{:?}", fit.warnings);
         assert!(fit.runtime.len() <= limit);
         assert!(fit.runtime.len() < wide.runtime.len());
+    }
+
+    /// A facet is read back from a process-wide memo, but a test can force codegen knobs
+    /// the key cannot see. A forced build must not read a facet built without the knob.
+    #[test]
+    fn a_forced_facet_is_not_read_from_the_memo() {
+        let path = Path::new("examples/verification/tracked_token.lithe");
+        let facets = || {
+            let out = crate::compile(&crate::Sources::disk(), path, &Options::default())
+                .map_err(|e| e[0].clone())
+                .expect("build");
+            out.single()
+                .expect("one contract")
+                .plan
+                .expect("split")
+                .facets
+                .into_iter()
+                .map(|f| crate::hex(&crate::hash::sha256(&f.deployed_bytecode)))
+                .collect::<Vec<_>>()
+        };
+        let plain = facets();
+        crate::gen::FORCE_SPECIALIZE.set(Some(true));
+        let forced = facets();
+        crate::gen::FORCE_SPECIALIZE.set(None);
+        assert_eq!(forced.len(), plain.len());
+        assert_ne!(
+            forced, plain,
+            "the forced build differs, so reading the plain facet back would hide it"
+        );
     }
 }

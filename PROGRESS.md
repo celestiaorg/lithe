@@ -92,6 +92,8 @@ This section is the single source of truth for what is open and what blocks what
 - **S43 and S44 landed:** one process-wide `LITHE_THREADS` budget, and per-build timing counters. See `## S43 One thread budget` and `## S44 Per-build counters`.
 - **S37/S45 landed:** build state no longer depends on how much of the thread budget was free. `parallel_map` releases a worker's unit as soon as the queue drains, workers start from the caller's byte weight, certifying and tracking, and the `LITHE_TIME` counters are thread-local, summed back by the pool. A parallel `compile_dir` now prints one `[time]` line per build, each with its own `emits`/`finishes`. See `## S37/S45 build state off the budget`.
 - **S49 landed:** the `simplify:` list in `src/evm/bench_gas.rs` now matches `Meter`/`charge()` — the seed is EIP-2929's precompile set 1..=0x11, and the two addresses it leaves cold until first touched (`0x100` P256VERIFY, and anything `CREATE`/`CREATE2` made) are named. Doc-only; no gas total moved. See `## S49`.
+- **S51 landed, `make check` green.** S37's three open findings: `split::facet` no longer answers from its process-wide memo while a test forces a codegen knob (`gen::forced()`), `parallel_map` merges a pool's certificates in item order so a proof is the same at any `LITHE_THREADS`, and worker `Track` notes are deliberately not merged (their labels belong to one build) with the caller's track returned untouched. The whole-suite `LITHE_VERIFY` failure this tree carried since `b8fc4fa` is gone: 558 lib tests pass under VERIFY, 0 fail. See `## S51 S37's findings, and make check green`.
+- **S40 is next:** the greedy `promote_region` path and `Move::Batch` by cost model, as the plan orders it.
 
 ## 0.2b baseline
 
@@ -631,7 +633,40 @@ A four-contract directory build (`bank`, `brackets`, `builtins`, `collections`),
 
 `emits=4` on three lines before is the accumulation: each `reset_timing` wiped the others' counts. After, every line is one build's own work whatever the budget. The four output trees are byte-identical at 1 and 8 threads (`sha256` per artifact).
 
-**Known flake, pre-existing and not from this step.** `LITHE_VERIFY=1 cargo test --lib` fails `evm::snapshot::release_bytecode_matches_snapshot{,_under_verify}` on `examples/verification/tracked_token.lithe:TrackedToken` whenever the suite runs with several threads and with `evm::differential` in the same process; it passes at `--test-threads=1`, at `LITHE_THREADS=1`, and with `evm::differential` skipped. The same failure, with the same three hashes, reproduces on the base commit `b8fc4fa` with this branch stashed, so it is not this step. The likely mechanism is next on this family: `split::facet`'s process-wide `BUILT` memo caches a facet keyed by `(program, opts)` alone, while `FORCE_STATIC_HEAP`/`FORCE_SPECIALIZE` (test-only thread-locals) change what that facet builds — so a facet built by a differential test under a forced knob is read back by the snapshot test. That is a test-harness isolation bug, not build state a real compile depends on, and fixing it means keying the memo by those flags; it is left for its own step rather than widened into this diff.
+**Known flake, pre-existing and not from this step.** `LITHE_VERIFY=1 cargo test --lib` fails `evm::snapshot::release_bytecode_matches_snapshot{,_under_verify}` on `examples/verification/tracked_token.lithe:TrackedToken` whenever the suite runs with several threads and with `evm::differential` in the same process; it passes at `--test-threads=1`, at `LITHE_THREADS=1`, and with `evm::differential` skipped. The same failure, with the same three hashes, reproduces on the base commit `b8fc4fa` with this branch stashed, so it is not this step. The likely mechanism is next on this family: `split::facet`'s process-wide `BUILT` memo caches a facet keyed by `(program, opts)` alone, while `FORCE_STATIC_HEAP`/`FORCE_SPECIALIZE` (test-only thread-locals) change what that facet builds — so a facet built by a differential test under a forced knob is read back by the snapshot test. That is a test-harness isolation bug, not build state a real compile depends on, and fixing it means keying the memo by those flags; it is left for its own step rather than widened into this diff. **Fixed in S51; see that section.**
+
+## S51 S37's findings, and `make check` green
+
+**Plan.** Three defects S37 left. (a) The whole-suite `LITHE_VERIFY` failure at its cause: `split::facet`'s process-wide `BUILT` memo must not answer for a build whose codegen a test forced. (b) `parallel_map` must merge a pool's certificates in item order, not spawn order, so `Certs.loops/funcs/inlines/guards` are the same at `LITHE_THREADS=1` and N. (c) Worker `Track` notes must be handed back in item order, or the reason they are empty written down and tested. No expectation edited.
+
+**What changed.**
+- `gen::forced()` (`src/gen/mod.rs:359`): true when this thread has `FORCE_STATIC_HEAP` or `FORCE_SPECIALIZE` set. Always false outside `cfg(test)`, so a release compile cannot take the branch.
+- `split::facet` (`src/split.rs:593`): the memo is `(!gen::forced()).then_some(memo)`, so a forced build neither reads nor inserts. This is the whole of (a) — the key already covers the program and the options, and the flags are thread-locals a process-wide key cannot see, so there is nothing to add to the key that would not be wrong for the next reader. The on-disk cache is already off under `cfg(test)` (`cache_entry` returns `None`), so the memo was the only path.
+- `gen::parallel_map` (`src/gen/mod.rs:1229`): each item's `Certs` travels with its output in `done`, and the sort by item index happens before any merge, so `Certs.loops/funcs/inlines/guards/lost` read in item order. That is the order the items certify in at one thread, so a proof is the same at any `LITHE_THREADS`. The counter sums still merge in spawn order, which only decides floating-point rounding.
+- Track notes: **not merged, and the reason is written down** at `src/gen/mod.rs:1222–1227`. A note is keyed by a label of the one build that wrote it, and only that build reads it; notes from item *i* would be read by item *i+1* on the same thread if left in place, and those labels belong to a different build. So `work` now takes the caller's track aside for the duration of the pool and puts it back untouched, and each item's own notes are dropped when its `f` returns. That is what one thread's caller does already — `build` starts a track, `codegen` takes it for its certificates, and nothing carries across builds — so 1 thread and N now agree. The new test pins that too: the caller's track comes back with the note it went in with, while the items' notes are gone.
+
+**Why it cannot change bytecode.** (a) is `#[cfg(test)]`-only. (b) and (c) move where already-computed values are put; no plan, pass, cost model or emit path reads them, and the certificate order is one no single-threaded build could produce any other way.
+
+**Proof.**
+- `LITHE_VERIFY=1 cargo test --lib`: **558 passed, 0 failed, 2 ignored** (560 total, 2 more than before this step). Before it the same command read 554 passed and 2 failed of 558, both failures `evm::snapshot::release_bytecode_matches_snapshot{,_under_verify}` on `tracked_token.lithe:TrackedToken` (`ce0f4cd7…` expected, `cb8f6762…` got). That failure reproduced here at the branch tip before any edit, so the cause is the one the plan names.
+- `split::tests::a_forced_facet_is_not_read_from_the_memo` (new): builds `examples/verification/tracked_token.lithe` plain, then with `FORCE_SPECIALIZE`, and asserts the facet hashes differ. It is load-bearing: with `let memo = Some(memo)` restored it fails, and the probe that found the mechanism showed the facet going 3738 → 3840 bytes under the knob. `FORCE_STATIC_HEAP` alone does not move this facet (3738 → 3738); both set moves it to 3862, which is why the test uses the knob that does.
+- `gen::a_pools_certificates_read_in_item_order` (new): runs the same eight items twice, each made artificially slower the lower its index so the queue is drained out of order. Once straight through on the calling thread, which is what `LITHE_THREADS=1` does, and once through `parallel_map`. Asserts both certificate lists are the eight `LoopCert`s in item order, so the pool agrees with the sequential order, and that the caller's own `Track` comes back with the note it went in with. Load-bearing: with the merge moved back before the sort it fails with `["7","6",…,"0"]` against `["0",…,"7"]`. Green at `LITHE_THREADS=1` and unset (16 here).
+- `cargo fmt --check` clean; `cargo clippy --offline --all-targets -- -D warnings` clean for the crate and `playground/`. Release bytecode snapshot unchanged (`evm::snapshot`, both modes).
+
+**`make check`** (`LITHE_CACHE_DIR=` so no build is cached), run to completion on this tree, exit 0:
+
+```
+fmt      cargo fmt --check                            ok
+         cd playground && cargo fmt --check           ok
+clippy   cargo clippy --all-targets -- -D warnings    ok
+         cd playground && cargo clippy --all-targets  ok
+test     cargo test --locked                          ok  (558 lib + 25 bin + 1 doctest)
+verify   LITHE_VERIFY=1 cargo test --locked           ok  (558 lib + 25 bin + 1 doctest)
+diff     LITHE_FUZZ_STEPS=2000 ... evm::differential  ok  (5)
+snapshot cargo test --locked --lib evm::snapshot      ok  (2)
+bench    LITHE_BENCH_GAS=1 ... evm::bench_gas         ok  (2, ignored included)
+wasm     cd playground && cargo build --release       ok
+```
 
 ## 5.1 Interning: scope measured
 
