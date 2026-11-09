@@ -3397,6 +3397,7 @@ pub(crate) fn static_heap(
 /// and drops stores nothing reads. Every change is checked against a stack model. With
 /// `consume`, a last load that finds the value on top takes it instead of a copy: fewer
 /// bytes at that site, but sites the outliner would have shared can stop matching.
+/// Returns whether it changed anything, and how many rounds it took.
 pub(crate) fn promote(
     code: &mut Vec<Inst>,
     tracked: &dyn Fn(u32) -> bool,
@@ -3405,9 +3406,10 @@ pub(crate) fn promote(
     hold_dups: bool,
     sink: bool,
     abandon: bool,
-) -> bool {
+) -> (bool, usize) {
     let region_sink = if sink { MAX_SINK } else { 0 };
     let mut any = false;
+    let mut rounds: usize = 0;
     // Holding a `DUP1` copy is tried once nothing else is left to promote, so it never
     // takes a run another promotion needs.
     let mut dups = false;
@@ -3427,6 +3429,7 @@ pub(crate) fn promote(
     // are still held nowhere.
     let mut last: Option<(Splice, Vec<u32>, Vec<Inst>)> = None;
     for _ in 0..MAX_ROUNDS {
+        rounds += 1;
         let mut stores: Option<Vec<usize>> = None;
         let region = last.take();
         let same_exits = match &region {
@@ -3599,7 +3602,7 @@ pub(crate) fn promote(
                 Promoted::Nothing => {}
             }
             if dups || !hold_dups {
-                return any;
+                return (any, rounds);
             }
             dups = true;
             continue;
@@ -3611,7 +3614,7 @@ pub(crate) fn promote(
         track::pass(code, |c| apply_edits(c, edits));
         last = Some((sp, words, gone));
     }
-    any
+    (any, rounds)
 }
 
 /// What `promote_region` did.

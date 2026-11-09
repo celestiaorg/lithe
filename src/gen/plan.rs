@@ -1300,7 +1300,7 @@ impl<'a> Gen<'a> {
                 asm::forward_constants(code, &tracked, &calls)
             });
         let plan = &self.plan;
-        asm::track::pass(&mut self.code, |code| {
+        let (_, rounds) = asm::track::pass(&mut self.code, |code| {
             asm::promote(
                 code,
                 &tracked,
@@ -1311,6 +1311,7 @@ impl<'a> Gen<'a> {
                 plan.abandon,
             )
         });
+        super::PROMOTE_ROUNDS.fetch_add(rounds, std::sync::atomic::Ordering::Relaxed);
         // String helpers reach storage through a slot they are given, and others write
         // slots they are given, which may be a fixed list's.
         let opaque: std::collections::HashSet<u32> = self

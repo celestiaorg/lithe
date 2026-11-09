@@ -20,7 +20,7 @@ LADDER = (16, 32, 64, 128, 256)
 DUR = re.compile(r"([0-9]+(?:\.[0-9]+)?)(ns|µs|μs|us|ms|s)\Z")
 TIME_LINE = re.compile(
     r"\[time\] check=(\S+) backend=(\S+) \| "
-    r"emits=(\d+) sum=(\S+) \(promote (\S+)\) \| "
+    r"emits=(\d+) sum=(\S+) \(promote (\S+), (\d+) rounds\) \| "
     r"finishes=(\d+) sum=(\S+) \(optimize (\S+), outline\+ (\S+)\)"
 )
 SCALE = {"ns": 1e-9, "us": 1e-6, "µs": 1e-6, "μs": 1e-6, "ms": 1e-3, "s": 1.0}
@@ -48,10 +48,11 @@ def phases(stderr):
         "emits": int(last[2]),
         "emit_s": round(dur_s(last[3]), 6),
         "promote_s": round(dur_s(last[4]), 6),
-        "finishes": int(last[5]),
-        "finish_s": round(dur_s(last[6]), 6),
-        "optimize_s": round(dur_s(last[7]), 6),
-        "outline_s": round(dur_s(last[8]), 6),
+        "promote_rounds": int(last[5]),
+        "finishes": int(last[6]),
+        "finish_s": round(dur_s(last[7]), 6),
+        "optimize_s": round(dur_s(last[8]), 6),
+        "outline_s": round(dur_s(last[9]), 6),
     }
 
 
@@ -309,16 +310,18 @@ def collect(lithe, threads_n, only, skip_gas):
 
 def self_check():
     sample = (
-        "[time] check=11.2ms backend=2.37s | emits=99 sum=2.1s (promote 1.8s) | "
+        "[time] check=11.2ms backend=2.37s | emits=99 sum=2.1s (promote 1.8s, 258 rounds) | "
         "finishes=91 sum=500ms (optimize 400.5ms, outline+ 100µs)"
     )
     got = phases(sample)
     assert got["check_s"] == round(0.0112, 6)
     assert got["backend_s"] == 2.37
     assert got["emits"] == 99 and got["finishes"] == 91
+    assert got["promote_rounds"] == 258
     assert got["outline_s"] == round(100e-6, 6)
     two = phases(sample + "\n" + sample)
     assert two["check_s"] == round(0.0224, 6) and two["emits"] == 99
+    assert two["promote_rounds"] == 258
     rels = {rel for rel, _ in repo_targets()}
     assert "bench/erc20_full.lithe" in rels
     assert "bench/counter.lithe" in rels

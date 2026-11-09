@@ -337,12 +337,13 @@ fn build(
         use std::sync::atomic::Ordering::Relaxed;
         let d = |a: &std::sync::atomic::AtomicU64| std::time::Duration::from_nanos(a.load(Relaxed));
         eprintln!(
-            "[time] check={:?} backend={:?} | emits={} sum={:?} (promote {:?}) | finishes={} sum={:?} (optimize {:?}, outline+ {:?})",
+            "[time] check={:?} backend={:?} | emits={} sum={:?} (promote {:?}, {} rounds) | finishes={} sum={:?} (optimize {:?}, outline+ {:?})",
             t_check,
             t_split.elapsed(),
             gen::EMITS.load(Relaxed),
             d(&gen::EMIT_NS),
             d(&gen::PROMOTE_NS),
+            gen::PROMOTE_ROUNDS.load(Relaxed),
             gen::FINISHES.load(Relaxed),
             d(&gen::FINISH_NS),
             d(&gen::OPT_NS),
