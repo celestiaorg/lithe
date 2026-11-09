@@ -56,9 +56,9 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 
 ### Phase 5 — frontend hygiene and caching
 
-- [ ] **5.1** Identifier interner.
+- [ ] **5.1** Identifier interner. **Measured and split: not doable in this slice.** Adding `Symbol`/`Names` and flipping `NameAt.name` alone breaks 184 sites in 19 files, 12 of them outside this slice, and the table has to be shared across merged files before any field can move. Split into 5.1a (table + determinism proof), 5.1b (AST fields, needs one owner for `check`/`gen`/`prove`/`evm`), 5.1c (the checker's maps, where the win is). See `## 5.1 Interning: scope measured`.
 - [ ] **5.2** `FileId` and byte `Span`. Diagnostics keep `line` and `column`.
-- [ ] **5.3** Remove deep clones. Make `Plan` cheap.
+- [ ] **5.3** Remove deep clones. Make `Plan` cheap. **Measured: `Plan` is not where the time is.** A Release `Plan` clone with 640 set members costs **3.0 µs**; `bench/erc20_full.lithe` Release runs 98 emits and 92 finishes totalling 1.66 s. The ~200 plan clones a search does are therefore ~0.6 ms, 0.04 % of the backend. Not taken on its own; the clones that matter are `Program`'s, which 5.1/5.2 already remove. See `## 5.3 Plan clones measured`.
 - [ ] **5.4** Fx hasher. `IndexMap` where order is observable.
 - [ ] **5.5** Index-arena AST.
 - [ ] **5.6** Parsed and checked module cache across `compile_dir` and `abi_dir`.
@@ -87,6 +87,9 @@ This section is the single source of truth for what is open and what blocks what
 - **4.1 blocked on 3.3b**: `promote`/`optimize` work across functions on one shared stream; `parallel_map` still parallelises plan candidates only.
 - **3.5 blocked on 3.3b** (3.2c is in): re-run the ladder and record the 439→1735 and 1735→3463 ratios once both land.
 - **Final comparison table** below is a mid-branch snapshot; regenerate it once the steps above land.
+
+- **5.1 measured, handoff: needs its own slice.** The interner was started and the exact cost measured before writing it. Details and the number that decides the split are in `## 5.1 Interning: scope measured`.
+- **S43 and S44 landed:** one process-wide `LITHE_THREADS` budget, and per-build timing counters. See `## S43 One thread budget` and `## S44 Per-build counters`.
 
 ## 0.2b baseline
 
@@ -392,6 +395,132 @@ Gates at this head:
 - `cargo fmt --check` clean in the root and in `playground`. `cargo clippy --all-targets --locked -- -D warnings` clean.
 
 The 2.5 `LITHE_TIME` frontend lap now reports codegen as its own `build=` phase. On the uncached path `check=` used to include it. On the cached path it was not timed at all. Repeated marks of the same phase add up.
+
+## 5.3 Plan clones measured
+
+The step lists four clones. Three are `Program` clones whose removal needs the interner and spans (5.1/5.2) to be worth doing; one, `Plan::clone` per candidate, was measured on its own.
+
+`Plan` is 78 fields: a dozen `HashSet`s plus a handful of `HashSet<String>` (`shared_raises`) and `HashSet<(usize, usize)>` (`split_insts`). A clone with 640 members across all of them, timed in a test over 200 iterations at `--profile fast`:
+
+```
+plan clone: 3.026µs
+```
+
+`bench/erc20_full.lithe`, `--release`, `LITHE_THREADS=1`, `target/fast`:
+
+```
+[time] check=5.483297ms backend=1.658849764s | emits=98 sum=821.768905ms (promote 641.866392ms, 13242 rounds) | finishes=92 sum=787.256755ms (optimize 293.418076ms, outline+ 429.479854ms)
+```
+
+A search of 98 emits does on the order of 200 `Plan` clones: 200 × 3 µs ≈ **0.6 ms of 1659 ms, or 0.04 %**. Making `Plan` a bitset plus `Arc` sets would buy that, at the cost of changing every one of its ~78 fields to a different type and every `.insert`/`.remove`/`.contains` on them — a large diff for a number inside the run-to-run noise of the measurement above.
+
+**Not taken, and recorded as such per the loop rules.** If a later slice makes the search cheaper this gets proportionally *less* worth doing, not more, so it should not be revisited unless the emit count rises by an order of magnitude. The `Program` clones the step also lists are removed by 5.1/5.2 (`Checked.source`, `analyze`'s `unit.clone()`, `spec::check(prog.clone())`) because those steps change what `Program` holds; removing them first would be the same wide diff without the interner's payoff.
+
+## S43 One thread budget
+
+**Plan.** `LITHE_THREADS=N` was applied per pool: `gen::parallel_map` capped itself at N, `split::parallel` capped itself at N again, and `lib.rs::emit_dir` ignored the variable and used `available_parallelism`. N facets each searching N plans therefore ran N² threads. Replace all three with one process-wide permit counter; bytecode must not change.
+
+**What changed.**
+- `gen::budget()` — the process's thread count: `LITHE_THREADS`, else one per core. One `OnceLock`, so every caller agrees.
+- `gen::claim()` — takes a unit of the remaining budget; the `Unit` guard returns it on drop. The pool's own thread counts as the first thread, so `SPARE` starts at `budget - 1`.
+- `gen::parallel_map` — spawns while it can claim a unit and work remains; the calling thread then runs `work()` too. With no unit free every item runs inline, in order.
+- `split::parallel` — now just `gen::parallel_map(..).into_iter().collect()`. The two pools were already the same shape, so the duplicate 64 MB-thread spawner is gone.
+- `lib.rs::emit_dir` — worker count from `gen::budget()`, and its extra threads claim from the same counter.
+
+**Why it cannot regress bytecode.** Pool results were already collected by index and sorted before use (`done.sort_by_key(|(i, _)| *i)`), so join order never reached the output. The change decides only *where* an item runs, never what it computes.
+
+**Proof.** `gen::shared_budget_bounds_nested_pools` runs 8 outer items each pooling 4 inner ones — the facet-times-candidate shape — and asserts peak concurrent inner tasks never exceed `budget()`. Green at `LITHE_THREADS` = 1, 2, 3, 8, 64, and with the variable unset.
+
+`target/fast/lithe compile --release`, cache off, SHA-256 of the emitted code, 1 thread vs 8, load average 24–58 on 16 cores:
+
+| contract | `LITHE_THREADS=1` | `LITHE_THREADS=8` |
+|---|---|---|
+| `bench/erc20_full.lithe` | `c9e95d55a93c` | `c9e95d55a93c` |
+| `bench/uniswap_v2_pair.lithe` | `3a64c353a3f7` | `3a64c353a3f7` |
+| `bench/erc1155.lithe` | `1d9afd031948` | `1d9afd031948` |
+| `bench/solady_erc20.lithe` | `33225f31bae1` | `33225f31bae1` |
+
+Release bytecode snapshot unchanged; `evm::differential` (2000 steps) green.
+
+**Not measured.** N² threads was a bug in what `LITHE_THREADS` meant, not a slowdown these targets showed at N = 16 with few facets; no wall-clock claim is made for it. What it buys is that later multi-thread numbers mean what they say.
+
+## S44 Per-build counters
+
+**Plan.** `gen::EMITS`, `FINISHES`, `PROMOTE_ROUNDS` and the `*_NS` sums were process-global and never reset, so the second `build` in one process reported cumulative totals. Reset them per build, make `PROMOTE_ROUNDS` cover the same work as `PROMOTE_NS`, and let the harness parse a `[time]` line with no rounds group.
+
+**What changed.**
+- `gen::reset_timing()` zeroes all eight counters; `lib.rs::build` calls it first.
+- The creation-code `promote` in `gen::creation` was untimed while `PROMOTE_NS` only counted the runtime emit's; it is now timed too, so `PROMOTE_NS` and `PROMOTE_ROUNDS` both cover every `Gen::promote` the build runs.
+- `scripts/bench_compile.py`: the rounds group is optional in `TIME_LINE` and `promote_rounds` is `None` when absent, so a binary from before the counter still parses. Self-check covers both shapes.
+
+**Proof.** `LITHE_TIME=1 target/fast/lithe abi` over three contracts in one process — the case that used to accumulate:
+
+```
+[time] check=145.452µs backend=1.047063ms | emits=1 sum=111.258µs (promote 75.591µs, 3 rounds) | ...
+[time] check=57.227µs  backend=415.906µs  | emits=1 sum=27.291µs  (promote 13.996µs, 1 rounds) | ...
+[time] check=308.766µs backend=1.297209ms | emits=1 sum=149.93µs  (promote 64.58µs,  4 rounds) | ...
+```
+
+`emits=1` on every line: each build reports its own work. Before, the second line would have read `emits=2`.
+
+`python3 scripts/bench_compile.py --self-check` passes, including the new old-format case (`promote_rounds is None` when the group is missing). Bytecode-identical: release snapshot unchanged, `evm::differential` green.
+
+**Tests, and one honest caveat about them.** `cargo test --lib` is green (553 passed, 2 ignored) at load average ~16 on 16 cores, and the bin suite is green (25 passed). At load 40–70 the same suite intermittently fails 1–4 tests in `evm::prove`, with Z3 answering "unknown": those tests give the solver a budget and the box was oversubscribed, and they pass in isolation in under a second and as a whole `evm::prove::` group (38 passed) on this tree. The baseline commit was checked the same way and is green at lower load, so this is machine contention, not a regression from either step; neither step touches `prove`.
+
+**Caveat for the harness.** The counters are still process-wide, so `reset_timing` assumes one build at a time. That holds for `lithe compile <file>` and for a test building one contract, but `compile_dir` builds files on several threads, and there the reset races: on `/tmp/bd` (three contracts, one process, same work either way) `LITHE_TIME=1 lithe compile` printed `emits=1`, `emits=2`, `emits=2` at `LITHE_THREADS=8` and `emits=1` three times at `LITHE_THREADS=1`. So a parallel directory build's `[time]` lines are sums over whichever builds overlapped, not one build's. `bench_compile.py` measures one file per process, which is the case it reports and the case that is now correct. Fixing the parallel case needs thread-local counters, which is a separate step; this one is bytecode-identical and makes the single-build numbers trustworthy.
+
+## 5.1 Interning: scope measured
+
+This step is real work but it is not one iteration's worth, and the reason is measurable rather than a matter of taste. Recorded here so the next iteration starts from the number instead of rediscovering it.
+
+**What the step asks for.** `Symbol(u32)` plus a per-compilation interner, replacing `String` in `NameAt`, `Expr::{Ident, Field, Call}`, `TypeRef::Name`/`Apply`, the `name` of every declaration, `Checked.named`, and `domain_tys`. Diagnostics and bytecode must be identical.
+
+**The measurement.** `Symbol` and `Names` were added to `src/ast.rs` and `NameAt.name` alone was flipped from `String` to `Symbol` (nothing else changed), then the compiler was asked what broke:
+
+| file | errors | in this slice? |
+|---|---:|---|
+| `src/check/hooks.rs` | 30 | no |
+| `src/index.rs` | 21 | yes |
+| `src/modules.rs` | 18 | no |
+| `src/parse.rs` | 17 | yes |
+| `src/check/guards.rs` | 17 | no |
+| `src/spec/mod.rs` | 15 | no |
+| `src/resolve.rs` | 13 | yes |
+| `src/split.rs` | 10 | yes |
+| `src/check/compose.rs` | 8 | no |
+| `src/prove/bytecode.rs`, `src/check/funcs.rs` | 6 each | no |
+| `src/lib.rs`, `src/check/mod.rs` | 5 each | yes |
+| `src/route.rs`, `src/lint.rs` | 3 each | `route.rs` no |
+| `src/spec/instrument.rs`, `src/prove/funcs.rs`, `src/check/types.rs`, `src/gen/dispatch.rs` | 1–2 each | mostly no |
+| **total** | **184** | **7 of 19 files are in this slice** |
+
+One field, 184 sites, 12 files outside the slice. Flipping `Expr::Ident`, `Expr::Field`, and `Expr::Call` too — which the step requires — multiplies that: those three variants are matched in 43 files across `src/gen/` and `src/evm/`, and `src/evm/matrix.rs` and `src/evm/language.rs` are test harnesses whose expectations are the differential gate.
+
+**The two constraints that make it a design decision, not a mechanical sweep.** Both are in `src/modules.rs`, which this slice does not own:
+
+1. **The table has to be shared, not per file.** `append` (`src/modules.rs:922`) merges one parsed `Program`'s vectors into another's. If each file interned into a table of its own, every merged `Symbol` would need remapping, and `std_program`/`parse_cached` return `Program` clones from a process-wide cache keyed on the file alone — so the table cannot live next to the parse result without becoming part of that cache key. The interner therefore has to be threaded through `load_inner` and passed into `parse`, or the merge has to remap.
+2. **Interning must be complete before anything is parsed.** `std/` and the import graph are parsed on demand inside the merge loop. A table that grows while `append` runs gives different symbols to the same text depending on import order, which breaks determinism the moment two files are compiled concurrently (`emit_dir`, phase 4).
+
+**The payoff, and why it needs the step to finish before it shows.** The whole compile is `load` + `check`; on the LSP path the rest is now cached. `did_change_coalesces` at `--profile fast` on 2026-11-09, load average 2–5, `bench/erc20_full.lithe`:
+
+| phase | Fast, this tree |
+|---|---:|
+| load (lex, parse, resolve, merge) | 2.8–13.8 ms |
+| check | 18.1–30.0 ms |
+| lint | 1.4–6.0 ms |
+| index | ~0.2 µs (lazy, from 2.6) |
+
+`check` dominates, so the interner only pays if it reaches the checker's own name maps (`named`, `domain_tys`, the `Scope` maps, `Checker.visiting`), not just the AST fields. That is the same 12 files again. Interning `NameAt` alone would be a large diff with no measurable effect, which §2 rules out as a failed iteration.
+
+**What landed: nothing.** `Symbol`/`Names` and the `NameAt` flip were reverted; the tree is clean and green at `38b6eb9` (`cargo test --lib`: 552 passed, 2 ignored; `cargo fmt --check` clean; release snapshot unchanged). Writing 184 mostly-cosmetic call-site changes against files this slice does not own, with the table's lifetime still undecided, is how the shared `checked.source` cache key and the differential harness get broken silently.
+
+**The split this step needs**, cheapest first, each independently green and byte-identical:
+
+1. **5.1a — the table, no field changes.** Add `Symbol`/`Names` to `src/ast.rs` plus `Program.names`, thread it through `load_inner`, and prove determinism: the same text gets the same symbol across files and across `emit_dir` orderings, with a test. No AST field moves, so nothing breaks, and the lifetime question above is settled with a diff that cannot regress bytecode.
+2. **5.1b — the AST fields.** Flip `NameAt`, `Expr::{Ident, Field, Call}`, and `TypeRef` in one pass, since a partial flip is the 184-error state measured above. This is the slice that touches `src/check/`, `src/gen/`, `src/prove/`, and `src/evm/`, and it needs a single owner for all of them.
+3. **5.1c — the checker's maps.** `Checked.named` and `domain_tys` as `HashMap<Symbol, _>`, keeping `route.rs:1879` and `index.rs:661`'s ordering by sorting on `Names::get` so the ABI and hover output keep their order. This is where the measurable win is, and it should be measured against the `check` numbers above.
+
+5.2 (`FileId`/`Span`) touches the same fields, so 5.1b and 5.2 should be one slice with one owner, in the order the parent plan already sets: 5.4 → 5.3 → 5.1 → 5.2.
 
 ## 6.1–6.4 Evaluated
 

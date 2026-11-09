@@ -536,35 +536,13 @@ fn stand_ins(checked: &Checked, crossing: &[(String, Vec<Crossing>)]) -> BTreeMa
     out
 }
 
-/// Runs `f` on each item on its own thread (or on `LITHE_THREADS` of them), keeping the order.
+/// Runs `f` on each item, keeping the order. Threads come from the process's shared budget:
+/// with none free, each item runs here as it comes, as it must in WebAssembly.
 fn parallel<T: Sync, R: Send>(
     items: &[T],
     f: impl Fn(&T) -> Result<R, Error> + Sync,
 ) -> Result<Vec<R>, Error> {
-    if crate::gen::thread_cap().is_some() {
-        return crate::gen::parallel_map(items, f).into_iter().collect();
-    }
-    let f = &f;
-    let byte_gas = crate::asm::byte_gas();
-    std::thread::scope(|s| {
-        // Without threads, as in WebAssembly, each runs here as it comes.
-        let handles: Vec<_> = items
-            .iter()
-            .map(|item| {
-                std::thread::Builder::new()
-                    .stack_size(64 << 20)
-                    .spawn_scoped(s, move || crate::asm::with_byte_gas(byte_gas, || f(item)))
-                    .map_err(|_| f(item))
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| match h {
-                Ok(h) => h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)),
-                Err(done) => done,
-            })
-            .collect()
-    })
+    crate::gen::parallel_map(items, f).into_iter().collect()
 }
 
 fn fits(built: &Built, limit: usize) -> bool {
