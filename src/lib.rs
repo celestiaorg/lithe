@@ -312,6 +312,7 @@ fn build(
 ) -> Result<Contract, Error> {
     let mut notes = Vec::new();
     let mut plain = None;
+    gen::reset_timing();
     let t_check = gen::timing().then(std::time::Instant::now);
     let checked = if opts.check_specs {
         let specs = spec::check(prog.clone(), opts.evm)?;
@@ -1393,25 +1394,35 @@ fn emit_dir(
     opts: OptionsFor,
 ) -> Result<DirOutput, Error> {
     let files = lithe_sources(dir)?;
+    let workers = crate::gen::budget();
     // Files compile independently, so they share the machine; the output keeps file order.
     let next = std::sync::atomic::AtomicUsize::new(0);
     let done = std::sync::Mutex::new(Vec::new());
-    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let run = || loop {
+        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(path) = files.get(i) else { break };
+        let out = emit_file(path, out_dir, artifact, opts);
+        done.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((i, out));
+    };
+    let mut held = Vec::new();
     std::thread::scope(|s| {
-        for _ in 0..workers.min(files.len()) {
+        // This thread is one worker; each other takes a unit of the shared budget, so the
+        // files' pools and the candidates' pools inside them together run `workers` threads.
+        for _ in 1..workers.min(files.len()) {
+            let Some(unit) = crate::gen::claim() else {
+                break;
+            };
+            held.push(unit);
             std::thread::Builder::new()
                 .stack_size(64 << 20)
-                .spawn_scoped(s, || loop {
-                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some(path) = files.get(i) else { break };
-                    let out = emit_file(path, out_dir, artifact, opts);
-                    done.lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .push((i, out));
-                })
+                .spawn_scoped(s, run)
                 .expect("spawn a compile thread");
         }
+        run();
     });
+    drop(held);
     let mut done = done.into_inner().unwrap_or_else(|e| e.into_inner());
     done.sort_by_key(|(i, _)| *i);
     let mut all = DirOutput::default();

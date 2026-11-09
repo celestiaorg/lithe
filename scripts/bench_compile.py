@@ -20,7 +20,7 @@ LADDER = (16, 32, 64, 128, 256)
 DUR = re.compile(r"([0-9]+(?:\.[0-9]+)?)(ns|µs|μs|us|ms|s)\Z")
 TIME_LINE = re.compile(
     r"\[time\] check=(\S+) backend=(\S+) \| "
-    r"emits=(\d+) sum=(\S+) \(promote (\S+), (\d+) rounds\) \| "
+    r"emits=(\d+) sum=(\S+) \(promote (\S+)(?:, (\d+) rounds)?\) \| "
     r"finishes=(\d+) sum=(\S+) \(optimize (\S+), outline\+ (\S+)\)"
 )
 SCALE = {"ns": 1e-9, "us": 1e-6, "µs": 1e-6, "μs": 1e-6, "ms": 1e-3, "s": 1.0}
@@ -48,7 +48,7 @@ def phases(stderr):
         "emits": int(last[2]),
         "emit_s": round(dur_s(last[3]), 6),
         "promote_s": round(dur_s(last[4]), 6),
-        "promote_rounds": int(last[5]),
+        "promote_rounds": int(last[5]) if last[5] is not None else None,
         "finishes": int(last[6]),
         "finish_s": round(dur_s(last[7]), 6),
         "optimize_s": round(dur_s(last[8]), 6),
@@ -322,6 +322,9 @@ def self_check():
     two = phases(sample + "\n" + sample)
     assert two["check_s"] == round(0.0224, 6) and two["emits"] == 99
     assert two["promote_rounds"] == 258
+    older = phases("[time] check=1ms backend=2ms | emits=3 sum=3ms (promote 2ms) | "
+                   "finishes=2 sum=1ms (optimize 1ms, outline+ 1µs)")
+    assert older["promote_s"] == 0.002 and older["promote_rounds"] is None
     rels = {rel for rel, _ in repo_targets()}
     assert "bench/erc20_full.lithe" in rels
     assert "bench/counter.lithe" in rels

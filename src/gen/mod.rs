@@ -204,13 +204,62 @@ fn time(count: Option<&AtomicUsize>, total: &'static AtomicU64) -> Option<Timer>
     })
 }
 
-/// The worker threads `LITHE_THREADS` allows each parallel step, if it is set.
-pub(crate) fn thread_cap() -> Option<usize> {
+/// Zeroes the counters, so a `[time]` line reports one build and not everything the process
+/// has built. Called once at the start of each `build`.
+pub(crate) fn reset_timing() {
+    EMITS.store(0, Ordering::Relaxed);
+    FINISHES.store(0, Ordering::Relaxed);
+    PROMOTE_ROUNDS.store(0, Ordering::Relaxed);
+    EMIT_NS.store(0, Ordering::Relaxed);
+    PROMOTE_NS.store(0, Ordering::Relaxed);
+    OPT_NS.store(0, Ordering::Relaxed);
+    OUTLINE_NS.store(0, Ordering::Relaxed);
+    FINISH_NS.store(0, Ordering::Relaxed);
+}
+
+/// `LITHE_THREADS`, if it names a positive count.
+fn thread_cap() -> Option<usize> {
     static CAP: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
     *CAP.get_or_init(|| {
         let n = std::env::var("LITHE_THREADS").ok()?.parse().ok()?;
         (n > 0).then_some(n)
     })
+}
+
+/// The threads this whole process may run at once: `LITHE_THREADS`, or one per core.
+///
+/// Every pool draws from this one count, so N facets each searching N plans still run N
+/// threads, not N². A budget of one runs every pool inline, in order.
+pub(crate) fn budget() -> usize {
+    static BUDGET: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        thread_cap().unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+    })
+}
+
+/// Threads still free to start, across every pool in the process. The caller of a pool is
+/// already running and counts as the first thread of the budget.
+fn spare() -> &'static AtomicUsize {
+    static SPARE: std::sync::OnceLock<AtomicUsize> = std::sync::OnceLock::new();
+    SPARE.get_or_init(|| AtomicUsize::new(budget().saturating_sub(1)))
+}
+
+/// A claim on one thread of the budget, released when it drops.
+pub(crate) struct Unit;
+
+impl Drop for Unit {
+    fn drop(&mut self) {
+        spare().fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Claims a thread for the caller, which runs work of its own. `None` when the budget is
+/// spent, and the caller must then run the work inline rather than pool it.
+pub(crate) fn claim() -> Option<Unit> {
+    spare()
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+        .ok()
+        .map(|_| Unit)
 }
 
 /// Compiled code: the creation code, the runtime code it deploys, where the creation code
@@ -1076,12 +1125,10 @@ impl Move {
     }
 }
 
-/// `f` of each item, in order, on at most one thread per core (or per `LITHE_THREADS`), each
-/// with the caller's byte weight.
+/// `f` of each item, in order, on the process's shared thread budget, each with the
+/// caller's byte weight.
 pub(crate) fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let byte_gas = asm::byte_gas();
-    let workers =
-        thread_cap().unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
     let next = AtomicUsize::new(0);
     let done = std::sync::Mutex::new(Vec::with_capacity(items.len()));
     let work = || loop {
@@ -1092,15 +1139,24 @@ pub(crate) fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + 
             .unwrap_or_else(|e| e.into_inner())
             .push((i, out));
     };
+    let mut held = Vec::new();
     std::thread::scope(|s| {
-        for _ in 1..workers.min(items.len()) {
-            std::thread::Builder::new()
+        // The calling thread is one worker. Each thread spawned claims a unit of the
+        // process's budget, so pools nested inside other pools never overrun it.
+        while held.len() + 1 < items.len() {
+            let Some(unit) = claim() else { break };
+            held.push(unit);
+            if std::thread::Builder::new()
                 .stack_size(64 << 20)
                 .spawn_scoped(s, || asm::with_byte_gas(byte_gas, work))
-                .expect("spawn a codegen thread");
+                .is_err()
+            {
+                break;
+            }
         }
-        work();
+        asm::with_byte_gas(byte_gas, work);
     });
+    drop(held);
     let mut done = done.into_inner().unwrap_or_else(|e| e.into_inner());
     done.sort_by_key(|(i, _)| *i);
     done.into_iter().map(|(_, out)| out).collect()
@@ -1137,6 +1193,7 @@ fn creation(
     g.emit_init(func, runtime, marks)?;
     if optimize {
         g.drop_unread_caches();
+        let _t = time(None, &PROMOTE_NS);
         g.promote();
     }
     let mut code = g.resolve()?;
@@ -1217,6 +1274,37 @@ fn place_marked(
         guess = runtime.len();
     }
     Err(error(0, 0, "internal: embedded code did not settle"))
+}
+
+/// Nested pools never start more threads than the budget allows, and a budget of one runs
+/// every item inline.
+#[cfg(test)]
+#[test]
+fn shared_budget_bounds_nested_pools() {
+    // The budget itself is a process-wide once: this asserts the invariant every pool keeps.
+    let cap = budget().max(1);
+    let peak = AtomicUsize::new(0);
+    let live = AtomicUsize::new(0);
+    let inner = |_: &usize| {
+        let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+        peak.fetch_max(now, Ordering::SeqCst);
+        for _ in 0..2000 {
+            std::hint::spin_loop();
+        }
+        live.fetch_sub(1, Ordering::SeqCst);
+    };
+    // Each outer item runs a pool of its own, as a facet's codegen search does.
+    let outer = |_: &usize| parallel_map(&[0usize; 4], inner);
+    parallel_map(&[0usize; 8], outer);
+    assert!(
+        peak.load(Ordering::SeqCst) <= cap,
+        "{} > {cap}",
+        peak.load(Ordering::SeqCst)
+    );
+
+    // With one thread allowed, the pool runs on the calling thread and keeps the order.
+    let one: Vec<usize> = parallel_map(&[3usize, 1, 2], |&n| n);
+    assert_eq!(one, vec![3, 1, 2]);
 }
 
 #[cfg(test)]
