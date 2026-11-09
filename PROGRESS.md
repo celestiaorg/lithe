@@ -77,7 +77,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 This section is the single source of truth for what is open and what blocks what. Older sections below are dated records; where they disagree, this one wins.
 
 - **2.5 landed** (`ad6adc5`): LSP diagnostics on `bench/erc20_full.lithe` about 12 ms at the unrelaxed 20 ms limit.
-- **2.6 in this branch:** the index is lazy and diagnostics take about 6.5 ms. The ≤ 5 ms target is missed because `check` (5.3–5.8 ms) is the floor. Reaching it is Phase 5 frontend work (interner, spans, fewer clones), not more LSP work.
+- **2.6 in this branch:** the index is lazy and diagnostics take 6.3–6.5 ms (release, quiet) and 7.7–7.9 ms (dev). The ≤ 5 ms target is missed because `check` alone is 5.1–7.0 ms and is the floor. Reaching it is Phase 5 frontend work (interner, spans, `Program` clones), not more LSP work; `## 2.6` has the split and owns the number.
 - **3.2b/3.2b(ii) landed** (`f34c8a8`), goal missed under byte-identity.
 - **3.2c in this branch:** `merge_tails` merges every free pair per call; gated and recorded in `## 3.2c`. erc20_full Release `optimize` 382.0 → 301.3 ms, ladder 128 Fast 251.1 → 31.0 ms (min of 7 alternating runs, load 2.0). Against the **pre-3.1** cost re-measured at load 1.6–2.1, erc20_full is 340.4 → 306.3 ms (goal met) and uniswap_v2_pair is 57.8 → 62.4 ms (**still 4 % over**, from the two extra candidate builds 3.3b(ii)'s `Move::Batch` adds, not from the pass). The per-span `peephole` overhead was not touched.
 - **3.4b landed** (`fc4921d`), final bytes unchanged; re-verified at `3a670f0` after 3.2b/3.2c rewrote `flow_` and `merge_tails` (exact pass 0–4 rounds, 53 targets byte-identical in both modes). Incremental `flow` between rounds measured at 10–12% of the `outline_once` loop — a few tens of ms of a multi-second build; not taken (see 3.4b re-verified).
@@ -328,6 +328,20 @@ The test passes at its unrelaxed 20 ms optimized limit, best of five, three runs
 **Incremental `Index` not taken.** `index::build` is one builder whose def ids, `kids`, `spelled`, and file order come from walking every unit, std included, in order. Reusing per-unit pieces would mean renumbering defs and refs across units, which risks the hover, definition, reference, and rename answers and their order that the LSP tests pin. That is a lot of risk for at most 3.5 ms, with the target already met. If Phase 3's ≤ 5 ms target needs it, the cheaper next step is to build the index lazily on the first hover or definition request, which takes it off the diagnostics path without changing any answer. Check itself (≈6 ms) is untouched.
 
 Tests: `cargo test --profile fast` (552 lib + 25 bin + 1, all green), `cargo clippy --all-targets -- -D warnings`.
+
+## 2.6 The index on demand, and the missed 5 ms target
+
+Plan: take `index::build` off the diagnostics path, since no diagnostic needs an index. Time the test in both profiles and set its limits from the measurement. Expect ~12 → ~6.5 ms and still miss ≤ 5 ms.
+
+What changed: `ModuleCache::analyze_edit` runs the frontend without building the index and says whether `ModuleCache::index` would return one. `Doc` keeps `unindexed: Option<String>`, the text whose index is not built yet, and `index_now` builds it from that text the first time a request needs it (hover, definition, references, highlight, symbols, completion, signature help, rename, workspace symbol). No answer changes: the index is built from the same checked units, just later. Diagnostics are published before the index exists, so a keystroke costs load, check, and lint.
+
+`LITHE_TIME=1 cargo test --release --bin lithe did_change_coalesces -- --nocapture`, quiet machine (load 0.07), best of five per run, three runs: the frontend laps are load 0.73–2.4 ms, `check` 5.1–7.0 ms, `lint` 0.35–0.55 ms, `index` 60–140 ns (the lap is now the `unindexed` clone). The timed publish is **6.3 / 6.4 / 6.5 ms**.
+
+`cargo test --bin lithe` (dev, `opt-level = 2`): 7.7 / 7.7 / 7.9 ms. Under 32 spinning processes on 16 cores it is 20.8–41.9 ms, so the dev allowance is 60 ms as 2.3 recorded it; the optimized limit is the unrelaxed 20 ms. `620.0` was a mis-scaled dev number that made the assertion unreachable in release (`limit 0.0`), and both are now the measured pair.
+
+**The ≤ 5 ms target is missed.** `check` alone is 5.1–7.0 ms and is the floor: no further LSP work moves it, because the server has nothing left to skip. Getting under 5 ms means making the frontend cheaper — the interner (5.1), spans (5.2), and the `Program` clones (5.3) — so this is Phase 5 work, and the number to re-measure is this test's, unchanged, at the 20 ms limit it already has.
+
+Tests: `cargo test --locked` (553 lib + 25 bin + 1, green), `cargo test --release --bin lithe` (25 green, including this test at the 20 ms limit), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 
 ## 3.2b Cheaper `merge_tails` and `heat`
 
