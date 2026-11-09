@@ -90,6 +90,7 @@ This section is the single source of truth for what is open and what blocks what
 - **5.1 measured, handoff: needs its own slice.** The interner was started and the exact cost measured before writing it. Details and the number that decides the split are in `## 5.1 Interning: scope measured`.
 - **5.1a landed:** `Symbol`/`Names` and `Program.names`, one process-wide table threaded through `parse`, `parse_specs` and `load_in`, with a determinism test across files and parse orders. No field moved, so bytecode and diagnostics are unchanged. 5.1b and 5.1c remain open. See `## 5.1a The table`.
 - **S43 and S44 landed:** one process-wide `LITHE_THREADS` budget, and per-build timing counters. See `## S43 One thread budget` and `## S44 Per-build counters`.
+- **S49 landed:** the `simplify:` list in `src/evm/bench_gas.rs` now matches `Meter`/`charge()` — the seed is EIP-2929's precompile set 1..=0x11, and the two addresses it leaves cold until first touched (`0x100` P256VERIFY, and anything `CREATE`/`CREATE2` made) are named. Doc-only; no gas total moved. See `## S49`.
 
 ## 0.2b baseline
 
@@ -587,6 +588,20 @@ Release bytecode snapshot unchanged; `evm::differential` (2000 steps) green.
 **Tests, and one honest caveat about them.** `cargo test --lib` is green (553 passed, 2 ignored) at load average ~16 on 16 cores, and the bin suite is green (25 passed). At load 40–70 the same suite intermittently fails 1–4 tests in `evm::prove`, with Z3 answering "unknown": those tests give the solver a budget and the box was oversubscribed, and they pass in isolation in under a second and as a whole `evm::prove::` group (38 passed) on this tree. The baseline commit was checked the same way and is green at lower load, so this is machine contention, not a regression from either step; neither step touches `prove`.
 
 **Caveat for the harness.** The counters are still process-wide, so `reset_timing` assumes one build at a time. That holds for `lithe compile <file>` and for a test building one contract, but `compile_dir` builds files on several threads, and there the reset races: on `/tmp/bd` (three contracts, one process, same work either way) `LITHE_TIME=1 lithe compile` printed `emits=1`, `emits=2`, `emits=2` at `LITHE_THREADS=8` and `emits=1` three times at `LITHE_THREADS=1`. So a parallel directory build's `[time]` lines are sums over whichever builds overlapped, not one build's. `bench_compile.py` measures one file per process, which is the case it reports and the case that is now correct. Fixing the parallel case needs thread-local counters, which is a separate step; this one is bytecode-identical and makes the single-build numbers trustworthy.
+
+## S49 The `simplify:` list matches the meter
+
+**Plan.** Two review findings on `ab6c382`'s doc-only diff. The warm-set bullet called precompiles 1–3 warm "by accident" beside "unrelated low addresses"; the seed is 1..=0x11, EIP-2929's precompile set, so those are warm by the spec's rule and no unrelated address is in it. The entry naming the real gaps (`0x100` and created accounts) was missing, and the created-account gap was also unlisted in the creation bullet. Both fixed in the prose, not the meter, so no gas total moves.
+
+**What the code says.**
+- `metered` seeds `from`, `to`, and `1..=0x11` (`src/evm/bench_gas.rs:147–150`); `charge` bills a call target 100 if `accounts` already holds it and 2 600 otherwise (`:120–128`). EIP-2929 warms the precompiles at a transaction's start, so that range is the rule, not an accident.
+- `0xf0`/`0xf5` charge `32_000 + 2 * words` and never insert the created address (`:119`); only the call ops insert (`:121`). So the first call to a freshly created contract is billed the cold 2 600 where a node's CREATE warms the account. That is the gap the creation bullet now names.
+- `0x100` P256VERIFY is answered by the interpreter (`src/evm/mod.rs:988`) but sits outside the seed, so its first call is cold too.
+- Deployment is unaffected: each suite's deploy passes the new address as `to` to `metered` (`:460`), so it is warm, and the code deposit is added separately (`:467–471`).
+
+**What changed.** Doc lines only, in `src/evm/bench_gas.rs`: the warm-set bullet states the seeded range as EIP-2929's precompile set and the P256VERIFY gap, and drops the "unrelated low addresses" claim; the creation bullet gains the created-account gap.
+
+**Proof.** A comment-only diff cannot move bytecode or gas. Re-measured rather than asserted, `LITHE_BENCH_OUT` through `cargo test --lib evm::bench_gas` on this tree: 45 suites, transaction gas **68 121 662**, deploy gas **28 315 691**, suite runtime bytes **106 059** — the same three totals as `## 3.2c`'s after column, so the last codegen change's record still describes this tree and no number needs re-recording. `cargo test --profile fast --lib evm::bench_gas` green (2 passed), `cargo fmt --check` and `cargo clippy --profile fast --lib` clean.
 
 ## 5.1 Interning: scope measured
 
