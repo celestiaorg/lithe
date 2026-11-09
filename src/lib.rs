@@ -335,20 +335,20 @@ fn build(
     let t_split = gen::timing().then(std::time::Instant::now);
     let split = split::build_from(&checked, plain.as_ref().unwrap_or(&checked), name, opts)?;
     if let (Some(t_check), Some(t_split)) = (t_check, t_split) {
-        use std::sync::atomic::Ordering::Relaxed;
-        let d = |a: &std::sync::atomic::AtomicU64| std::time::Duration::from_nanos(a.load(Relaxed));
+        let counts = gen::counts();
+        let d = |ns: u64| std::time::Duration::from_nanos(ns);
         eprintln!(
             "[time] check={:?} backend={:?} | emits={} sum={:?} (promote {:?}, {} rounds) | finishes={} sum={:?} (optimize {:?}, outline+ {:?})",
             t_check,
             t_split.elapsed(),
-            gen::EMITS.load(Relaxed),
-            d(&gen::EMIT_NS),
-            d(&gen::PROMOTE_NS),
-            gen::PROMOTE_ROUNDS.load(Relaxed),
-            gen::FINISHES.load(Relaxed),
-            d(&gen::FINISH_NS),
-            d(&gen::OPT_NS),
-            d(&gen::OUTLINE_NS)
+            counts.emits,
+            d(counts.emit_ns),
+            d(counts.promote_ns),
+            counts.promote_rounds,
+            counts.finishes,
+            d(counts.finish_ns),
+            d(counts.opt_ns),
+            d(counts.outline_ns)
         );
     }
     let prerequisites = split.prerequisites();
