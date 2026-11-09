@@ -19,14 +19,16 @@
 //! - there are no refunds, no EIP-7623 calldata floor, and no transaction access lists;
 //! - nothing limits gas: there is no 63/64 rule, no call stipend, and no out-of-gas path, so
 //!   `GAS` answers the constant 1 000 000 and every frame runs to its own end;
-//! - the warm set at a transaction's start is its `from`, its `to`, and accounts 1 through
-//!   0x11: precompiles 1–3 are warm by that accident, and so are unrelated low addresses;
+//! - the warm set at a transaction's start is its `from`, its `to`, and the precompiles 1
+//!   through 0x11, as EIP-2929 warms them; `0x100` (P256VERIFY), which the interpreter
+//!   answers, is outside the seed, so its first call is charged the cold 2 600;
 //! - `BALANCE`, `EXTCODESIZE`, and `EXTCODEHASH` always cost the warm 100, and `EXTCODECOPY`
 //!   the warm 100 plus its per-word copy;
 //! - accounts and slots stay warm when the frame that touched them reverts;
 //! - a value call costs the 9 000 it moves and not the 25 000 that opens a new account, and
 //!   a precompile charges its access but never its own gas;
-//! - a creation during a transaction costs no `CREATE2` hashing and no code deposit;
+//! - a creation during a transaction costs no `CREATE2` hashing and no code deposit, and does
+//!   not warm the created account, so the first call to it is charged the cold 2 600;
 //! - a zero-length memory access past the end still grows memory, and is charged for it;
 //! - `TIMESTAMP` is the interpreter's constant, so `run.py`'s waits are dropped: Uniswap's
 //!   price accumulators and the staking rewards never grow;
