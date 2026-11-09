@@ -12,19 +12,27 @@
 //!
 //! Plain `cargo test` replays only `SMOKE`; `LITHE_BENCH_OUT` or `LITHE_BENCH_GAS` replays all.
 //!
-//! simplify: the meter prices Osaka's opcodes, memory expansion, EIP-2929/2200 warm and cold
-//! storage and calls, the intrinsic and calldata cost, and deployment's code deposit. Its
-//! totals track codegen changes between builds and do not match a node's receipts, because:
+//! simplify: the meter prices Osaka's opcodes, memory expansion by a frame's final size,
+//! EIP-2929/2200 warm and cold storage and calls, EIP-1153 transient storage at the flat 100,
+//! the intrinsic and calldata cost, and deployment's code deposit. Its totals track codegen
+//! changes between builds and do not match a node's receipts, because:
 //! - there are no refunds, no EIP-7623 calldata floor, and no transaction access lists;
-//! - nothing limits gas: no 63/64 rule, no call stipend, and `GAS` answers a constant;
-//! - a value call to a new account costs no 25 000, and precompiles cost nothing;
-//! - `BALANCE`, `EXTCODESIZE`, `EXTCODECOPY`, and `EXTCODEHASH` always cost the warm 100;
+//! - nothing limits gas: there is no 63/64 rule, no call stipend, and no out-of-gas path, so
+//!   `GAS` answers the constant 1 000 000 and every frame runs to its own end;
+//! - the warm set at a transaction's start is its `from`, its `to`, and accounts 1 through
+//!   0x11: precompiles 1–3 are warm by that accident, and so are unrelated low addresses;
+//! - `BALANCE`, `EXTCODESIZE`, and `EXTCODEHASH` always cost the warm 100, and `EXTCODECOPY`
+//!   the warm 100 plus its per-word copy;
 //! - accounts and slots stay warm when the frame that touched them reverts;
+//! - a value call costs the 9 000 it moves and not the 25 000 that opens a new account, and
+//!   a precompile charges its access but never its own gas;
 //! - a creation during a transaction costs no `CREATE2` hashing and no code deposit;
 //! - a zero-length memory access past the end still grows memory, and is charged for it;
 //! - `TIMESTAMP` is the interpreter's constant, so `run.py`'s waits are dropped: Uniswap's
 //!   price accumulators and the staking rewards never grow;
-//! - only the contract a transaction targets holds a balance; contracts it calls hold none.
+//! - only the contract a transaction targets holds a balance; contracts it calls hold none;
+//! - frames are capped at 200 000 steps with no 1 024 call-depth check, and `PC`, `CALLCODE`,
+//!   `INVALID`, and `SELFDESTRUCT` are unimplemented, so a frame that reaches one errors.
 //!
 //! Price those when a number has to match anvil's.
 
