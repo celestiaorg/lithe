@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::asm::{self, Inst, Mark};
@@ -168,53 +168,123 @@ const TOPIC_WORDS: u32 = 8;
 /// A memory address before layout is `(region + 1) << REGION_SHIFT | offset`.
 const REGION_SHIFT: u32 = 16;
 
-/// Counts and CPU time of the backend's phases, kept only when `LITHE_TIME` is set.
-pub(crate) static EMITS: AtomicUsize = AtomicUsize::new(0);
-pub(crate) static FINISHES: AtomicUsize = AtomicUsize::new(0);
-/// Rounds `asm::promote` took, summed over every emit.
-pub(crate) static PROMOTE_ROUNDS: AtomicUsize = AtomicUsize::new(0);
-pub(crate) static EMIT_NS: AtomicU64 = AtomicU64::new(0);
-pub(crate) static PROMOTE_NS: AtomicU64 = AtomicU64::new(0);
-pub(crate) static OPT_NS: AtomicU64 = AtomicU64::new(0);
-pub(crate) static OUTLINE_NS: AtomicU64 = AtomicU64::new(0);
-pub(crate) static FINISH_NS: AtomicU64 = AtomicU64::new(0);
+/// Counts and CPU time of the backend's phases, kept only when `LITHE_TIME` is set. Each
+/// thread keeps its own, and a pool adds its workers' to the caller's, so a `[time]` line
+/// reports one build's work wherever its candidates ran.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Counts {
+    pub emits: usize,
+    pub finishes: usize,
+    /// Rounds `asm::promote` took, summed over every emit.
+    pub promote_rounds: usize,
+    pub emit_ns: u64,
+    pub promote_ns: u64,
+    pub opt_ns: u64,
+    pub outline_ns: u64,
+    pub finish_ns: u64,
+}
+
+thread_local! {
+    static COUNTS: std::cell::Cell<Counts> = const {
+        std::cell::Cell::new(Counts {
+            emits: 0,
+            finishes: 0,
+            promote_rounds: 0,
+            emit_ns: 0,
+            promote_ns: 0,
+            opt_ns: 0,
+            outline_ns: 0,
+            finish_ns: 0,
+        })
+    };
+}
 
 pub(crate) fn timing() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("LITHE_TIME").is_some())
 }
 
-/// Adds the time until it drops to `total`.
-struct Timer(&'static AtomicU64, std::time::Instant);
+/// A phase of the backend, as the timers name it.
+#[derive(Clone, Copy)]
+enum Phase {
+    Emit,
+    Finish,
+    Promote,
+    Optimize,
+    Outline,
+}
+
+/// Adds the time a phase took until it drops to this thread's counts.
+struct Timer(Phase, std::time::Instant);
 
 impl Drop for Timer {
     fn drop(&mut self) {
-        self.0
-            .fetch_add(self.1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let ns = self.1.elapsed().as_nanos() as u64;
+        note(|n| match self.0 {
+            Phase::Emit => n.emit_ns += ns,
+            Phase::Finish => n.finish_ns += ns,
+            Phase::Promote => n.promote_ns += ns,
+            Phase::Optimize => n.opt_ns += ns,
+            Phase::Outline => n.outline_ns += ns,
+        });
     }
 }
 
-/// Counts one more of a phase into `count`, and times it into `total` while the result lives.
-fn time(count: Option<&AtomicUsize>, total: &'static AtomicU64) -> Option<Timer> {
-    timing().then(|| {
-        if let Some(count) = count {
-            count.fetch_add(1, Ordering::Relaxed);
-        }
-        Timer(total, std::time::Instant::now())
-    })
+/// Changes this thread's counts.
+fn note(f: impl FnOnce(&mut Counts)) {
+    COUNTS.with(|c| {
+        let mut n = c.get();
+        f(&mut n);
+        c.set(n);
+    });
+}
+
+/// Counts one more of a phase, and times it while the result lives. Nothing is written when
+/// `LITHE_TIME` is off, so a build pays nothing for counters nobody reads.
+fn time(phase: Phase) -> Option<Timer> {
+    if !timing() {
+        return None;
+    }
+    match phase {
+        Phase::Emit => note(|n| n.emits += 1),
+        Phase::Finish => note(|n| n.finishes += 1),
+        Phase::Promote | Phase::Optimize | Phase::Outline => {}
+    }
+    Some(Timer(phase, std::time::Instant::now()))
+}
+
+/// Adds the rounds `asm::promote` took to this thread's counts.
+pub(crate) fn add_promote_rounds(rounds: usize) {
+    note(|n| n.promote_rounds += rounds);
+}
+
+/// The counts of the work this thread did, the work of the pools it ran included.
+pub(crate) fn counts() -> Counts {
+    COUNTS.with(|c| c.get())
+}
+
+/// Takes this thread's counts and zeroes them, for a worker handing its work back.
+fn take_counts() -> Counts {
+    COUNTS.with(|c| c.replace(Counts::default()))
+}
+
+fn add_counts(o: Counts) {
+    note(|n| {
+        n.emits += o.emits;
+        n.finishes += o.finishes;
+        n.promote_rounds += o.promote_rounds;
+        n.emit_ns += o.emit_ns;
+        n.promote_ns += o.promote_ns;
+        n.opt_ns += o.opt_ns;
+        n.outline_ns += o.outline_ns;
+        n.finish_ns += o.finish_ns;
+    });
 }
 
 /// Zeroes the counters, so a `[time]` line reports one build and not everything the process
-/// has built. Called once at the start of each `build`.
+/// has built. Called once at the start of each `build`, on the thread that builds it.
 pub(crate) fn reset_timing() {
-    EMITS.store(0, Ordering::Relaxed);
-    FINISHES.store(0, Ordering::Relaxed);
-    PROMOTE_ROUNDS.store(0, Ordering::Relaxed);
-    EMIT_NS.store(0, Ordering::Relaxed);
-    PROMOTE_NS.store(0, Ordering::Relaxed);
-    OPT_NS.store(0, Ordering::Relaxed);
-    OUTLINE_NS.store(0, Ordering::Relaxed);
-    FINISH_NS.store(0, Ordering::Relaxed);
+    COUNTS.with(|c| c.set(Counts::default()));
 }
 
 /// `LITHE_THREADS`, if it names a positive count.
@@ -364,14 +434,14 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         }
     };
     let emit = |plan: &Plan| -> Result<(Emitted, Vec<Facet>), Error> {
-        let _t = time(Some(&EMITS), &EMIT_NS);
+        let _t = time(Phase::Emit);
         let mut g = Gen::new(checked, plan.clone(), shape)?;
         g.body_memo = Some(Arc::clone(&body_memo));
         g.imm_consts = imm_consts.clone();
         g.emit()?;
         g.drop_unread_caches();
         {
-            let _t = time(None, &PROMOTE_NS);
+            let _t = time(Phase::Promote);
             g.promote();
         }
         let code = g.resolve()?;
@@ -412,14 +482,14 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                 return priced(e, &code, Some(&flow), limit);
             }
         }
-        let _t = time(Some(&FINISHES), &FINISH_NS);
+        let _t = time(Phase::Finish);
         let mut code = e.code.clone();
         {
-            let _t = time(None, &OPT_NS);
+            let _t = time(Phase::Optimize);
             asm::optimize(&mut code);
         }
         let leaves: HashMap<u32, usize> = e.leaves.iter().copied().collect();
-        let outline = time(None, &OUTLINE_NS);
+        let outline = time(Phase::Outline);
         asm::outline(&mut code, &e.entries, both, |code| {
             asm::track::pass(code, |c| asm::tail_calls(c, &leaves));
             asm::track::pass(code, asm::rotate_loops);
@@ -1131,36 +1201,66 @@ impl Move {
 
 /// `f` of each item, in order, on the process's shared thread budget, each with the
 /// caller's byte weight.
+///
+/// A worker holds the unit it claimed only while it takes items, so a worker that drains
+/// the queue is off the budget at once rather than when the pool ends. A worker also takes
+/// the caller's byte weight, certifying and tracking, so a pooled build runs the same passes
+/// — `asm::optimize`'s tracked path, `finish`'s uncached path, the body memo's keys — that
+/// it runs with no budget to pool. Its counters and certificates are handed back, so one
+/// `[time]` line and one proof cover the whole build.
 pub(crate) fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let byte_gas = asm::byte_gas();
+    let certify = certify::wanted();
+    let track = asm::track::on();
     let next = AtomicUsize::new(0);
     let done = std::sync::Mutex::new(Vec::with_capacity(items.len()));
-    let work = || loop {
-        let i = next.fetch_add(1, Ordering::Relaxed);
-        let Some(item) = items.get(i) else { break };
-        let out = f(item);
-        done.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push((i, out));
+    let work = |unit: Option<Unit>| {
+        let _unit = unit;
+        loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            let Some(item) = items.get(i) else { break };
+            let out = f(item);
+            done.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((i, out));
+        }
     };
-    let mut held = Vec::new();
     std::thread::scope(|s| {
         // The calling thread is one worker. Each thread spawned claims a unit of the
         // process's budget, so pools nested inside other pools never overrun it.
-        while held.len() + 1 < items.len() {
+        let mut spawned = Vec::new();
+        while spawned.len() + 1 < items.len() {
             let Some(unit) = claim() else { break };
-            held.push(unit);
-            if std::thread::Builder::new()
+            match std::thread::Builder::new()
                 .stack_size(64 << 20)
-                .spawn_scoped(s, || asm::with_byte_gas(byte_gas, work))
-                .is_err()
-            {
-                break;
+                .spawn_scoped(s, move || {
+                    if certify {
+                        certify::certifying(true);
+                    }
+                    if track {
+                        asm::track::start();
+                    }
+                    asm::with_byte_gas(byte_gas, || work(Some(unit)));
+                    // A facet built by this worker makes its certificates here, as it would
+                    // on the calling thread, so they are handed back with its counters.
+                    (certify.then(certify::take_certs), take_counts())
+                }) {
+                Ok(handle) => spawned.push(handle),
+                Err(_) => break,
             }
         }
-        asm::with_byte_gas(byte_gas, work);
+        asm::with_byte_gas(byte_gas, || work(None));
+        // In spawn order, so the sums and certificates read the same however they raced.
+        for handle in spawned {
+            let (certs, counts) = handle
+                .join()
+                .unwrap_or_else(|e| std::panic::resume_unwind(e));
+            if let Some(certs) = certs {
+                certify::keep(certs);
+            }
+            add_counts(counts);
+        }
     });
-    drop(held);
     let mut done = done.into_inner().unwrap_or_else(|e| e.into_inner());
     done.sort_by_key(|(i, _)| *i);
     done.into_iter().map(|(_, out)| out).collect()
@@ -1197,7 +1297,7 @@ fn creation(
     g.emit_init(func, runtime, marks)?;
     if optimize {
         g.drop_unread_caches();
-        let _t = time(None, &PROMOTE_NS);
+        let _t = time(Phase::Promote);
         g.promote();
     }
     let mut code = g.resolve()?;
@@ -1309,6 +1409,26 @@ fn shared_budget_bounds_nested_pools() {
     // With one thread allowed, the pool runs on the calling thread and keeps the order.
     let one: Vec<usize> = parallel_map(&[3usize, 1, 2], |&n| n);
     assert_eq!(one, vec![3, 1, 2]);
+}
+
+/// A pooled build's state is the caller's, whatever thread its items land on: the flags that
+/// pick the tracked passes and the uncached finish, and the counters a `[time]` line sums.
+#[cfg(test)]
+#[test]
+fn a_pools_work_is_the_callers_build() {
+    certify::certifying(true);
+    asm::track::start();
+    let saw = parallel_map(&[0usize; 8], |_| (certify::wanted(), asm::track::on()));
+    certify::certifying(false);
+    drop(asm::track::take());
+    assert!(
+        saw.iter().all(|&(certify, track)| certify && track),
+        "{saw:?}"
+    );
+
+    reset_timing();
+    parallel_map(&[0usize; 8], |_| note(|n| n.emits += 1));
+    assert_eq!(counts().emits, 8, "{}", counts().emits);
 }
 
 #[cfg(test)]

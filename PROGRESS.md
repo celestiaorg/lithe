@@ -90,6 +90,7 @@ This section is the single source of truth for what is open and what blocks what
 - **5.1 measured, handoff: needs its own slice.** The interner was started and the exact cost measured before writing it. Details and the number that decides the split are in `## 5.1 Interning: scope measured`.
 - **5.1a landed:** `Symbol`/`Names` and `Program.names`, one process-wide table threaded through `parse`, `parse_specs` and `load_in`, with a determinism test across files and parse orders. No field moved, so bytecode and diagnostics are unchanged. 5.1b and 5.1c remain open. See `## 5.1a The table`.
 - **S43 and S44 landed:** one process-wide `LITHE_THREADS` budget, and per-build timing counters. See `## S43 One thread budget` and `## S44 Per-build counters`.
+- **S37/S45 landed:** build state no longer depends on how much of the thread budget was free. `parallel_map` releases a worker's unit as soon as the queue drains, workers start from the caller's byte weight, certifying and tracking, and the `LITHE_TIME` counters are thread-local, summed back by the pool. A parallel `compile_dir` now prints one `[time]` line per build, each with its own `emits`/`finishes`. See `## S37/S45 build state off the budget`.
 - **S49 landed:** the `simplify:` list in `src/evm/bench_gas.rs` now matches `Meter`/`charge()` — the seed is EIP-2929's precompile set 1..=0x11, and the two addresses it leaves cold until first touched (`0x100` P256VERIFY, and anything `CREATE`/`CREATE2` made) are named. Doc-only; no gas total moved. See `## S49`.
 
 ## 0.2b baseline
@@ -602,6 +603,35 @@ Release bytecode snapshot unchanged; `evm::differential` (2000 steps) green.
 **What changed.** Doc lines only, in `src/evm/bench_gas.rs`: the warm-set bullet states the seeded range as EIP-2929's precompile set and the P256VERIFY gap, and drops the "unrelated low addresses" claim; the creation bullet gains the created-account gap.
 
 **Proof.** A comment-only diff cannot move bytecode or gas. Re-measured rather than asserted, `LITHE_BENCH_OUT` through `cargo test --lib evm::bench_gas` on this tree: 45 suites, transaction gas **68 121 662**, deploy gas **28 315 691**, suite runtime bytes **106 059** — the same three totals as `## 3.2c`'s after column, so the last codegen change's record still describes this tree and no number needs re-recording. `cargo test --profile fast --lib evm::bench_gas` green (2 passed), `cargo fmt --check` and `cargo clippy --profile fast --lib` clean.
+
+## S37/S45 build state off the budget
+
+**Plan.** Three pieces of build state were reached through a thread's own thread-locals, but `parallel_map` only carried `byte_gas` into a worker. So a candidate that ran on a spare worker saw `asm::track::on()` and `certify::wanted()` as false while the same candidate on the caller's thread saw them as true: `asm::optimize` takes the block-IR path instead of the tracked one, `finish` takes its `cacheable` path, and the body memo's guards are read differently. Meanwhile a worker held its unit of the budget until the pool end, and the `LITHE_TIME` counters were process statics that `reset_timing` zeroed under a parallel `compile_dir`, so the `[time]` lines in a directory build were sums over whichever builds overlapped.
+
+**What changed.**
+- `gen::parallel_map` gives the unit back as soon as its worker finds the queue drained: `work` takes the `Unit` by value and lets it drop on return, so a thread with nothing left to take is off the budget at once instead of at pool exit. The caller's own thread runs one `work(None)` and holds no unit, as before.
+- A worker starts from the caller's state: `asm::with_byte_gas(byte_gas, …)` as before, plus `certify::certifying(true)` when the build certifies and `asm::track::start()` when it tracks. Both flags are read once, on the caller's thread, before any worker spawns.
+- The `LITHE_TIME` counters are now a thread-local `Counts` (`src/gen/mod.rs:171–290`) instead of process statics; `time()`, `add_promote_rounds` and `Timer::drop` write the calling thread's, and a worker hands its `Counts` back to the pool, which adds them in spawn order. `reset_timing` zeroes the calling thread's only, so a parallel directory build no longer races. The hand-back is unconditional, not gated on `LITHE_TIME`: it is a thread-local copy, so a build's counts never depend on whether anyone reads them.
+- A worker hands back its `Certs` too, so a facet certified on a worker thread reaches the proof of the build that pooled it. `Track` notes are not merged: they are keyed by the labels of the build that made them and only that thread reads them, exactly as at one thread.
+- `lib.rs::build` prints the line from `gen::counts()`.
+
+**Why it cannot regress bytecode.** Every added branch reads a flag that was already true on the thread that does the single-threaded build; propagating it only makes a pooled build take the same branch. No plan, pass or cost model changed. A worker's notes are not merged into the caller's `Track`: the marks are keyed by that build's own labels and only that thread reads them, exactly as at one thread.
+
+**Proof.** `cargo test` green (556 lib + 25 bin + 1 doctest; one more lib test than the parent, the new `gen::a_pools_work_is_the_callers_build`). That test asserts both properties this step is about: every item of a pool sees the caller's `certifying`/`track` state, and the items' `emits` counts come back to the caller's thread. It is load-bearing — with the two propagation calls deleted it fails at `LITHE_THREADS=8`, which is how the old behaviour was confirmed. `LITHE_THREADS` = 1, 8 and 64 all pass it. `LITHE_THREADS` = 1 and 8 both green on `evm::prove::certifying_builds_emit_the_same_bytes` and on `evm::prove::facets_hooks_and_upgrades_prove_at_the_bytecode_level`, the certifying paths this step touches. Release bytecode snapshot unchanged (`evm::snapshot`, both modes). `LITHE_FUZZ_STEPS=2000 evm::differential` 5 green. `LITHE_VERIFY=1 cargo test --lib -- --test-threads=1` 556 green. `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` clean.
+
+The early release has no unit test: `spare()` is process-wide and cargo runs tests concurrently, so any assertion on the global count is racy (the first version of this test asserted `spare()` after a pool and failed only in the full suite, at `left: 10, right: 15`, exactly because other tests held units then). The property is instead kept by construction — `work` owns the `Unit`, so it drops when `work` returns, which is the last take — and by the nested-pool test above, which asserts peak concurrency never exceeds the budget while 8 outer items each run a pool of 4.
+
+A four-contract directory build (`bank`, `brackets`, `builtins`, `collections`), `target/fast`, cache off, `LITHE_TIME=1`:
+
+| | `emits` per line | `finishes` per line | lines printed |
+|---|---|---|---|
+| before, `LITHE_THREADS=8` | 4, 4, 4, 4 | 6, 7, 7, 8 | 4 |
+| after, `LITHE_THREADS=8` | 1, 1, 1, 1 | 2, 2, 2, 2 | 4 |
+| after, `LITHE_THREADS=1` | 1, 1, 1, 1 | 2, 2, 2, 2 | 4 |
+
+`emits=4` on three lines before is the accumulation: each `reset_timing` wiped the others' counts. After, every line is one build's own work whatever the budget. The four output trees are byte-identical at 1 and 8 threads (`sha256` per artifact).
+
+**Known flake, pre-existing and not from this step.** `LITHE_VERIFY=1 cargo test --lib` fails `evm::snapshot::release_bytecode_matches_snapshot{,_under_verify}` on `examples/verification/tracked_token.lithe:TrackedToken` whenever the suite runs with several threads and with `evm::differential` in the same process; it passes at `--test-threads=1`, at `LITHE_THREADS=1`, and with `evm::differential` skipped. The same failure, with the same three hashes, reproduces on the base commit `b8fc4fa` with this branch stashed, so it is not this step. The likely mechanism is next on this family: `split::facet`'s process-wide `BUILT` memo caches a facet keyed by `(program, opts)` alone, while `FORCE_STATIC_HEAP`/`FORCE_SPECIALIZE` (test-only thread-locals) change what that facet builds — so a facet built by a differential test under a forced knob is read back by the snapshot test. That is a test-harness isolation bug, not build state a real compile depends on, and fixing it means keying the memo by those flags; it is left for its own step rather than widened into this diff.
 
 ## 5.1 Interning: scope measured
 
