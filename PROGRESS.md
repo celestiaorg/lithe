@@ -44,7 +44,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **3.2** `peephole` and `schedule` per block. Byte-identical in both modes. The 500-round bound stays, and the dirty-set was measured and dropped. See the measurements below.
 - [x] **3.2b** Cheaper `merge_tails`/`heat`, byte-identical. Ladder 128 `optimize` 414 → 250–279 ms. erc20_full and uniswap_v2_pair release are still above their pre-3.1 cost. See below.
 - [x] **3.2b(ii)** `heat` on the block skeleton, with a skeleton-keyed `flow` cache. Byte-identical. Goal missed; the measured floor (taken at machine load 19–47) is recorded below.
-- [x] **3.2c** Fewer `merge_tails` calls: a block whose best partner is taken now takes its next-best free pair in the same call. Codegen change. `optimize` erc20_full Release 346 → 271 ms, ladder 128 Fast 237 → 29 ms. Runtime size +0.25 %, gas +0.002 %, and every step's status is unchanged. See below.
+- [x] **3.2c** Fewer `merge_tails` calls: a block whose best partner is taken now takes its next-best free pair in the same call. Codegen change, gated and recorded in `## 3.2c`. `optimize` erc20_full Release 382.0 → 301.3 ms, ladder 128 Fast 251.1 → 31.0 ms (min of 7, load 2.0), and the pre-3.1 floor 3.2b(ii) owed is re-measured at load 1.6–2.1: erc20_full 340.4 → 306.3 ms, goal met; uniswap_v2_pair 57.8 → 62.4 ms, still 4 % over. Runtime bytes +0.072 % over 304 target-modes, transaction gas +0.0012 %, every step status unchanged. See below.
 - [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c. **3.3b(ii) landed: promotion now plans every word's region once and applies every non-conflicting one per round, so rounds are 4 at every ladder size (was 34/130/258), `promote` is 49.6 → 12.0 ms on ladder 128, and runtime size is net −0.12 % over the 13 targets that change. It is a plan knob (`Plan::batch`, on in the start plan, priced against off by the search).** 3.3a landed in part; 3.3b(i) was measured and not taken (+4.1 %/+4.6 % size). 3.3c is open (see State).
 - [x] **3.4** `outline` without its quadratic terms. What moved: call sites are written in one pass instead of one splice each (3.4), and the exact-copy pass now takes every non-conflicting run per round, as the parameterised pass already did (3.4b), so a pass runs a handful of rounds, not one per distinct run. What did not: `outline` itself stays on the flat stream, not on `Blocks`; `flow`/prefix sizes are still recomputed each round, measured at 10–12% of the `outline_once` loop and not worth an incremental cache. Final bytes unchanged in both modes; the exact pass's own output does differ on some targets (see 3.4b). Re-verified at `3a670f0`. See the measurements below.
 - [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×. **`promote` now scales flat** (12.0/12.0 ms at N = 64/128, rounds constant at 4). The bar is still missed because `optimize` is the superlinear term; that is 3.2b territory and S38's re-measurement, not `promote`.
@@ -69,7 +69,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **6.1** Process startup. Measured; not taken.
 - [x] **6.2** Assembler width fixpoint. It already is one, and candidate cost is already cached. Nothing taken.
 - [x] **6.3** Memoize constant keccak. Measured; not taken.
-- [x] **6.4** Incremental `heat` / `flow`. Taken in 3.2b(ii) as a skeleton-keyed `flow` cache with a ~5% hit rate; goal missed, remainder moved to 3.2c.
+- [x] **6.4** Incremental `heat` / `flow`. Taken in 3.2b(ii) as a skeleton-keyed `flow` cache with a ~5% hit rate; goal missed, and 3.2c reached the same goal the other way (fewer `merge_tails` calls, so `heat` runs on 1019 calls instead of 1940 on erc20_full) rather than by making one call cheaper.
 - [ ] **6.5** `--timings`, and CI that fails when erc20_full Fast compile exceeds 2× the recorded baseline.
 
 ## State
@@ -79,7 +79,7 @@ This section is the single source of truth for what is open and what blocks what
 - **2.5 landed** (`ad6adc5`): LSP diagnostics on `bench/erc20_full.lithe` about 12 ms at the unrelaxed 20 ms limit.
 - **2.6 in this branch:** the index is lazy and diagnostics take about 6.5 ms. The ≤ 5 ms target is missed because `check` (5.3–5.8 ms) is the floor. Reaching it is Phase 5 frontend work (interner, spans, fewer clones), not more LSP work.
 - **3.2b/3.2b(ii) landed** (`f34c8a8`), goal missed under byte-identity.
-- **3.2c in this branch:** `merge_tails` merges every free pair per call. Both targets are met (erc20_full Release `optimize` 271 ms against 339 ms before 3.1; ladder 128 Fast 29 ms against 359 ms). The per-span `peephole` overhead was not touched.
+- **3.2c in this branch:** `merge_tails` merges every free pair per call; gated and recorded in `## 3.2c`. erc20_full Release `optimize` 382.0 → 301.3 ms, ladder 128 Fast 251.1 → 31.0 ms (min of 7 alternating runs, load 2.0). Against the **pre-3.1** cost re-measured at load 1.6–2.1, erc20_full is 340.4 → 306.3 ms (goal met) and uniswap_v2_pair is 57.8 → 62.4 ms (**still 4 % over**, from the two extra candidate builds 3.3b(ii)'s `Move::Batch` adds, not from the pass). The per-span `peephole` overhead was not touched.
 - **3.4b landed** (`fc4921d`), final bytes unchanged; re-verified at `3a670f0` after 3.2b/3.2c rewrote `flow_` and `merge_tails` (exact pass 0–4 rounds, 53 targets byte-identical in both modes). Incremental `flow` between rounds measured at 10–12% of the `outline_once` loop — a few tens of ms of a multi-second build; not taken (see 3.4b re-verified).
 - **3.3b(ii) landed.** Batched promotion (below). Rounds are 4 at ladder N = 16/64/128 (were 34/130/258), ladder 128 Fast `promote` 49.6 → 12.0 ms, runtime size net −0.12 % across the 13 targets whose bytes change, total runtime gas +0.0002 % with every step outcome identical. It is `Plan::batch`, default on in the start plan, tried off by the search as `Move::Batch`.
 - **3.3c open**: the greedy per-round best is still in `promote_region` (the `batch = false` path). It is now dead in the default plan but live for the search's comparison, so removing it waits until the batch wins or ties on every benchmark plan — that is the next step, comparing the two by cost model on each candidate.
@@ -383,7 +383,9 @@ Measured (`target/fast`, `LITHE_THREADS=1`, cache off, min of 7 alternating runs
 
 Inside one erc20_full compile, `heat` over all 1890 `merge_tails` calls (including `outline`'s): 87 ms before, 84 ms after, with skeleton building included. The skeleton is about 36% of the stream (1475 vs 4094 instructions on average). The cache hits 89 of 1890 calls. `merge_tails` runs only in a round where nothing else changed, and the previous merge has just changed the labels and jumps, so a repeated skeleton is rare.
 
-**Floor: about 376 ms / 66 ms, measured at machine load 19–47; the 339 / 59.9 ms goals were not measured under that load, so the two are not yet comparable (3.2c re-measures both under recorded low load). The goal is missed.** `flow`'s cost is per block, not per instruction, and no single phase holds the 37 ms gap. Split of `flow` over one erc20_full compile (temporary timers): starts 8, label map 11, successors 11, cold fixpoint 6.5, DFS 9, preds 5, indeg 3, entry walk 23 ms. Heat is called once per merge round. Getting under 339 ms needs fewer `merge_tails` calls, by merging more per call (3.4, which changes bytes), or the per-span `peephole` overrun (≈95 ms) recovered. Neither fits under the byte-identical constraint here.
+**Floor: about 376 ms / 66 ms, measured at machine load 19–47; the 339 / 59.9 ms goals were not measured under that load, so the two are not yet comparable (3.2c re-measures both under recorded low load). The goal is missed.** `flow`'s cost is per block, not per instruction, and no single phase holds the 37 ms gap. Split of `flow` over one erc20_full compile (temporary timers): starts 8, label map 11, successors 11, cold fixpoint 6.5, DFS 9, preds 5, indeg 3, entry walk 23 ms. Heat is called once per merge round. Getting under 339 ms needs fewer `merge_tails` calls, by merging more per call (3.4, which changes bytes), or the per-span `peephole` overrun (≈95 ms) recovered. Neither fits under the byte-identity constraint here.
+
+Resolved in 3.2c: fewer `merge_tails` calls per compile was taken (next-best free pair per call), and the pre-3.1 comparison was re-run at recorded low load. erc20_full Release is 306.3 ms against the 339 ms goal; uniswap_v2_pair is 62.4 ms against 59.9 ms, and the 2 extra candidate builds 3.3b(ii) adds are what hold it over. See `## 3.2c`.
 
 Gates at this head:
 - `cargo test --locked` (dev profile): 552 lib + 25 bin + 1, green.
@@ -394,6 +396,109 @@ Gates at this head:
 - `cargo fmt --check` clean in the root and in `playground`. `cargo clippy --all-targets --locked -- -D warnings` clean.
 
 The 2.5 `LITHE_TIME` frontend lap now reports codegen as its own `build=` phase. On the uncached path `check=` used to include it. On the cached path it was not timed at all. Repeated marks of the same phase add up.
+
+## 3.2c `merge_tails` takes its next-best free pair
+
+**Plan.** `merge_tails` applied at most one merge per block per call, and a block whose best partner was already taken in that call counted as used anyway: it was out for the rest of the call and waited for the next one. Every call costs a whole `stream_heat`, so a lost pairing cost a round. The hunk is 11 lines in `Blocks::merge_tails`: skip a pair without marking either block, so a block whose partner is gone can still take a smaller pair in the same call.
+
+```rust
+for &(a, b, n, _) in &pairs {
+    if used[a] || used[b] {
+        continue;
+    }
+    used[a] = true;
+    used[b] = true;
+```
+
+That changes which pairs get merged, so it moves bytes, and this step is the gate and the record rather than the implementation. The counterfactual below restores the old gate (`let free = …; used[a] = true; used[b] = true; if !free { continue; }`) and nothing else; both binaries are `[profile.fast]` builds of the same commit, so the difference is the hunk.
+
+`optimize` sum and its neighbours, min of 7 alternating runs, `LITHE_THREADS=1`, cache off, one-minute load 2.0 at both ends of the run:
+
+| target | mode | optimize before → after | backend | promote | outline+ | emits / finishes |
+|---|---|---:|---:|---:|---:|---|
+| `bench/erc20_full.lithe` | release | 382.0 → **301.3 ms** | 1676.0 → 1557.5 | 544.2 → 541.5 | 458.8 → 426.3 | 99/99, 93/93 |
+| `bench/uniswap_v2_pair.lithe` | release | 67.4 → **63.0 ms** | 362.8 → 357.1 | 120.8 → 120.1 | 97.0 → 96.7 | 37/37, 34/34 |
+| `bench/erc1155.lithe` | release | 141.0 → **121.8 ms** | 607.9 → 593.7 | 159.4 → 158.7 | 204.0 → 206.3 | 61/61, 51/51 |
+| `bench/erc20_full.lithe` | fast | 13.3 → **12.6 ms** | 41.3 → 40.3 | 5.1 → 5.1 | 10.1 → 9.9 | 1/1, 2/2 |
+| `scaling/n64` | fast | 56.2 → **15.3 ms** | 84.9 → 43.5 | 1.9 → 1.9 | 9.3 → 9.2 | 1/1, 2/2 |
+| `scaling/n128` | fast | 251.1 → **31.0 ms** | 338.1 → 117.7 | 4.5 → 4.5 | 21.7 → 21.5 | 1/1, 2/2 |
+
+`promote` is the same work in both binaries — it runs before `optimize` and its input is identical — so the 0.1–0.7 ms spread in its column is timer noise, and its emit/finish counts are equal on every row.
+
+**Pass split** (temporary timers around each pass inside `blocks::optimize`, since removed; min of 7 alternating runs at load 2.08, milliseconds). These counters are process-wide and cover every `blocks::optimize` — including the ones `outline` runs — so the sum exceeds the `optimize` timer above:
+
+| target | | prune | thread | peephole | dedup | dup_const | merge_tails | schedule | rounds | `merge_tails` calls |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| erc20_full R | before | 39.4 | 23.7 | 95.0 | 66.1 | 75.5 | **161.8** | 74.5 | 2692 | 1940 |
+| | after | 35.1 | 21.3 | 81.3 | 60.1 | 63.0 | **96.3** | 74.2 | 2362 | 1019 |
+| uniswap_v2_pair R | before | 6.1 | 3.5 | 14.8 | 10.5 | 11.8 | 20.8 | 22.4 | 511 | 381 |
+| | after | 6.0 | 3.5 | 14.5 | 10.8 | 11.3 | 15.6 | 22.8 | 511 | 245 |
+| erc1155 R | before | 14.0 | 7.9 | 35.4 | 32.2 | 26.3 | 36.3 | 28.1 | 1184 | 713 |
+| | after | 12.9 | 7.4 | 31.8 | 29.4 | 23.4 | 27.0 | 28.6 | 1066 | 437 |
+| ladder 64 F | before | 3.6 | 2.0 | 9.7 | 7.2 | 4.8 | 25.1 | 5.3 | 143 | 135 |
+| | after | 1.2 | 0.7 | 2.9 | 2.3 | 1.4 | 3.0 | 5.1 | 49 | 21 |
+| ladder 128 F | before | 14.1 | 7.8 | 37.5 | 28.6 | 18.5 | **140.0** | 7.0 | 271 | 263 |
+| | after | 2.6 | 1.6 | 6.6 | 5.3 | 3.1 | **7.8** | 6.3 | 55 | 23 |
+
+Two effects, and only the first is `merge_tails`'s own cost.
+
+**Fewer calls.** 1940 → 1019 on erc20_full, 263 → 23 on ladder 128. On erc20_full a call now costs more, 0.083 → 0.095 ms (+13 %: more pair comparisons, and one `stream_heat` covering several merges instead of one), and on ladder 128 it costs less, 0.53 → 0.34 ms, because the early calls no longer leave most exits unpaired. Either way the totals fall: 1.7× on the real contracts (161.8 → 96.3 ms) and 18× on the ladder (140.0 → 7.8 ms).
+
+**Fewer rounds.** 2692 → 2362 on erc20_full, 271 → 55 on ladder 128, because a call that merges every free pair reaches the pass's fixed point in fewer rounds. That is what shrinks every other pass: `peephole` 37.5 → 6.6 ms on ladder 128 is the same `peephole` run in 55 rounds instead of 271. `schedule` is unchanged because it only runs in a round where the earlier passes found nothing, and once `merge_tails` has a stream it changes nothing more. Rounds exceed `merge_tails` calls because `merge_tails` is skipped in any round the earlier passes did change something.
+
+**The pre-3.1 floor, which 3.2b(ii) recorded as owed.** 3.2b(ii) measured 376 ms / 66 ms at load 19–47 against goals of 339 ms / 59.9 ms set before 3.1, and wrote that the two were not yet comparable (3.2c re-measures both under recorded low load). Done, min of 7 alternating runs, load 1.59 and 2.14:
+
+| target | mode | 3.0 (`b9b5acd`, before 3.1) | this tree | pre-3.1 goal |
+|---|---|---:|---:|---:|
+| `bench/erc20_full.lithe` | release | 340.4 ms (97 emits / 91 finishes) | **306.3 ms** (99 / 93) | 339 ms — **met** |
+| `bench/uniswap_v2_pair.lithe` | release | 57.8 ms (35 / 33) | 62.4 ms (37 / 34) | 59.9 ms — **missed by 4 %** |
+
+So the erc20_full gap 3.2b(ii) could not close is closed: `optimize` is 10 % below its pre-3.1 cost. `uniswap_v2_pair` is not, and the reason is the search's size, not the pass: this tree runs two more emits and one more finish than 3.0, which is the `Move::Batch` candidate 3.3b(ii) added for the search to price (S40 measures whether that dimension earns its place and removes it if it does not). Per finish the pair's `optimize` is 1.75 → 1.84 ms (+4.8 %), and the total is +8.0 % over two extra candidate builds. Recorded as missed rather than softened: 3.2c's own hunk makes the pass cheaper on this target too, it just does not pay back the extra finish 3.3b(ii) added.
+
+These two tables give the same binary two values for the pair: 62.4 ms here and 63.0 ms in the table above, 1 % apart, from separate 7-run sets. Both are min-of-7 at load under 2.2; the pair has the smallest `optimize` of the five targets and therefore the widest relative noise.
+
+**Size, over every target.** 152 files, both modes (304 target-modes): all of `bench/`, the `examples/` and `fuzz/` trees `differential_targets` accepts, and the ladders at N = 64 and 128. Creation and runtime bytes from `lithe compile`, counterfactual vs this tree:
+
+| measure | before | after | delta |
+|---|---:|---:|---:|
+| runtime bytes, all 304 target-modes | 464 161 | 464 497 | **+0.072 %** |
+| creation bytes, all 304 target-modes | 500 510 | 500 784 | +0.055 % |
+| runtime bytes, Release only (152) | 231 178 | 231 498 | +0.138 % |
+| runtime bytes, Fast only (152) | 232 983 | 232 999 | +0.007 % |
+| runtime bytes, `bench/` only (102) | 177 990 | 178 075 | +0.048 % |
+| creation + runtime, the 34 changed target-modes | 281 557 | 282 167 | +0.217 % |
+
+34 of the 304 target-modes change at all; the rest are byte-identical, including every ladder row in both modes. The worst per target is `erc6909`/`claims` Release runtime 3326 → 3423 (+2.92 %), then `stdlib/token` Release 2520 → 2566 (+1.83 %), `ownable_roles` Release 1042 → 1056 (+1.34 %) and `erc20` Release 2244 → 2269 (+1.11 %). Six move down: `erc4626` Release 2884 → 2821 (−2.18 %) and Fast 3120 → 3063 (−1.83 %), `erc721_full` Release 5640 → 5624 (−0.28 %), and three by a byte or two (`fuzz/arith` both modes, `uniswap_v2/factory` Fast).
+
+Two notes so the numbers are not read as more than they are. **The §2 gate is on totals, and the totals pass**: +0.072 % runtime against a 1 % allowance. Five target-modes are over 1 % on their own, four distinct programs: `erc6909` and `examples/stdlib/claims` (the same contract under two names, +97 bytes each on 3326), `stdlib/token` +46 on 2520, `ownable_roles` +14 on 1042, `erc20` +25 on 2244. They are the cost of a batched merge reaching a different pair set, not a leak: the pair `merge_tails` now takes instead of waiting is chosen by the same `saved ≥ 0` test against the same heat model, so a local loss with a global gain is what the pass is allowed to produce. Nothing on a revert or check path changes, and every suite's outcomes are identical. **The 34 changed target-modes and the snapshot's 34 changed keys are the same set** — checked key by key, `path:Contract` in Release and `path:Contract:fast` in Fast.
+
+**Gas, `evm::bench_gas`, all 45 suites, on the identical binaries the snapshot hashes.** Every step's ok/revert status and every suite's status vector are unchanged. The one suite whose returndata hashes move is `uniswap_v2` (12 of 139 steps), and for the reason already recorded in 1.2: the factory creates its pair with CREATE2, the factory's own runtime grew a byte (6038 → 6039), so the pair address and the `DOMAIN_SEPARATOR` that commits to it differ — steps 12, 13, 16–18, 21, 30, 126–129 and 131, exactly the ones that read a CREATE2-derived address. Status stays `ok` throughout.
+
+| measure | before | after | delta |
+|---|---:|---:|---:|
+| transaction gas, 45 suites | 68 120 851 | 68 121 662 | **+0.0012 %** |
+| deploy gas, 45 suites | 28 259 326 | 28 315 691 | +0.1995 % |
+| gas including deploy | 96 380 177 | 96 437 353 | +0.0593 % |
+| suite runtime bytes | 105 796 | 106 059 | +0.2486 % |
+
+11 of the 45 suites move at all: `codec`, `erc20`, `erc721`, `erc1155`, `erc6909`, `erc721_full`, `erc4626`, `safe_erc20`, `erc20_full`, `uniswap_v2`, `staking`. `erc4626` is the only one that moves down once deploy is counted (transaction gas +1 049, deploy −8 250, bytes 5256 → 5218, net −7 201); the rest are small increases, the largest being `erc6909`'s 97 bytes of runtime.
+
+**Snapshot.** `tests/snapshots/bytecode.json` was regenerated for this change at `26cc9d1`: 34 of its 290 keys change — 19 Release and 15 Fast, the 34 targets in the size table above, checked key by key against it. Four are Release-only (`erc20`, `erc20_full`, `stdlib/token`, `stdlib/ownable_roles`) because Fast builds a different plan there. At this head the file differs from the pre-3.2c tree by 43 keys: 3.2c's 34, plus the 13 that 3.3b(ii) moved afterwards, 4 of which 3.2c had already moved. No key is counted twice and `evm::snapshot` passes in both modes and under `LITHE_VERIFY`.
+
+**Gates at this head** (`ab6c382`, the merged branch, nothing uncommitted):
+- `cargo test --locked --offline`: 553 lib + 25 bin + 1 doctest, 0 failed.
+- `LITHE_VERIFY=1 cargo test --locked --offline --lib`: 553 passed, 2 ignored — the `region_batch` and incremental-against-fresh oracles run on every round.
+- `LITHE_FUZZ_STEPS=5000 cargo test --lib evm::differential`: 5 passed.
+- `cargo test --lib evm::prove`: 38 passed, 2 ignored, including the three bytecode-level proofs.
+- `cargo test --lib evm::snapshot`: both tests, including the `LITHE_VERIFY` one.
+- `LITHE_BENCH_OUT=… cargo test --lib evm::bench_gas::bench_gas -- --exact`: green, 45 suites.
+- `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean, root and `playground`.
+- Playground `cargo build --release --locked` (wasm32-unknown-unknown) builds.
+- Determinism: ladder 128 Release byte-identical at `LITHE_THREADS` 1/4/16; `erc20_full` Release byte-identical at 1/8.
+
+**One machine note for the next reader.** Several timing sets were discarded for load: the box went from 1.6 to 43 within one set. Every number above was taken with the one-minute load average below 3 at the start and at the end of the run it is in, and the load is stated where it is not. What load does to these figures, measured on the same `bin-after` binary: `optimize` on erc20_full is 306.3 ms at load 2.1 and 761.0 ms at load 43 — 2.5×, with `promote` and `backend` inflated by the same factor. At load 18 the same binary's counterfactual pair reads 385.9 / 299.2 against 382.0 / 301.3 at load 2.0, which is inside noise. So `LITHE_THREADS=1` does not make a timing immune to load: the process still competes for cores, and only a measurement that states its load is worth reading.
+
+The pair this step previously carried — 346 → 271 ms on erc20_full, 237 → 29 ms on ladder 128 — records no load and no counterfactual binary, so it cannot be reproduced, and it was measured at `26cc9d1`, before 3.3b(ii) added `Move::Batch` to every Release round. The reduction it reports (−21.7 % / −87.8 %) is the same one measured above (−21.1 % / −87.7 %); the absolute values differ because the earlier "before" is not the same program. What this section adds beyond the ratio is the load, the counterfactual, the pass split, the pre-3.1 comparison, and the size and gas the step was owed.
 
 ## 5.3 Plan clones measured
 
@@ -533,7 +638,7 @@ Measured 2026-11-07, `target/fast`, cache off:
   - uniswap_v2_pair release: 13 864 calls, 3.5 ms.
 
   A memo pays a hash and a key allocation per call against about 250 ns of hashing. It would save well under 1%. Not taken.
-- **6.4 Incremental heat/flow.** After 3.2b, heat is 92 ms of erc20_full release (about 5% of the backend) and 42 ms of ladder 128. A block's heat depends on global structure: coldness, loop depth, and the topological order of entries. Recomputing one block would need a skeleton-keyed cache (labels, label pushes, exits, and `JUMPI` positions) and an exact invalidation argument. Taken in 3.2b(ii) as the skeleton-keyed `flow` cache, with a ~5% hit rate; the goal was missed and the remaining incremental work is 3.2c.
+- **6.4 Incremental heat/flow.** After 3.2b, heat is 92 ms of erc20_full release (about 5% of the backend) and 42 ms of ladder 128. A block's heat depends on global structure: coldness, loop depth, and the topological order of entries. Recomputing one block would need a skeleton-keyed cache (labels, label pushes, exits, and `JUMPI` positions) and an exact invalidation argument. Taken in 3.2b(ii) as the skeleton-keyed `flow` cache, with a ~5% hit rate; the goal was missed the incremental way. 3.2c met it by calling `heat` half as often (1019 `merge_tails` calls instead of 1940 on erc20_full), which leaves the incremental cache unnecessary: measured after 3.2c, `merge_tails` including its `heat` is 96 ms of erc20_full Release and 7.8 ms of ladder 128.
 
 ## 3.3 Stack scheduler: handoff
 
