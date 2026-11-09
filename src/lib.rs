@@ -886,7 +886,7 @@ fn module_contract(
         .read(entry)
         .map_err(|err| error(1, 1, format!("cannot read `{}`: {err}", entry.display())))?;
     let mut src = format!("import \"{import}\";\n");
-    for used in parse::parse(&text)?.uses {
+    for used in parse::parse(&text, &ast::Names::shared())?.uses {
         match used.alias {
             Some(alias) => src.push_str(&format!("import \"{}\" as {alias};\n", used.path)),
             None => src.push_str(&format!("import \"{}\";\n", used.path)),
@@ -1620,7 +1620,7 @@ pub fn is_library(sources: &Sources, path: &Path, errors: &[Error]) -> bool {
 }
 
 pub(crate) fn declares_no_contract(text: &str) -> bool {
-    let Ok(prog) = parse::parse(text) else {
+    let Ok(prog) = parse::parse(text, &ast::Names::shared()) else {
         return false;
     };
     prog.contract_name.is_none()

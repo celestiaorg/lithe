@@ -56,7 +56,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 
 ### Phase 5 — frontend hygiene and caching
 
-- [ ] **5.1** Identifier interner. **Measured and split: not doable in this slice.** Adding `Symbol`/`Names` and flipping `NameAt.name` alone breaks 184 sites in 19 files, 12 of them outside this slice, and the table has to be shared across merged files before any field can move. Split into 5.1a (table + determinism proof), 5.1b (AST fields, needs one owner for `check`/`gen`/`prove`/`evm`), 5.1c (the checker's maps, where the win is). See `## 5.1 Interning: scope measured`.
+- [ ] **5.1** Identifier interner. **Measured and split: not doable in one slice.** Adding `Symbol`/`Names` and flipping `NameAt.name` alone breaks 184 sites in 19 files, 12 of them outside this slice, and the table has to be shared across merged files before any field can move. Split into 5.1a (table + determinism proof, **landed**), 5.1b (AST fields, needs one owner for `check`/`gen`/`prove`/`evm`), 5.1c (the checker's maps, where the win is). See `## 5.1 Interning: scope measured` and `## 5.1a The table`.
 - [ ] **5.2** `FileId` and byte `Span`. Diagnostics keep `line` and `column`.
 - [ ] **5.3** Remove deep clones. Make `Plan` cheap. **Measured: `Plan` is not where the time is.** A Release `Plan` clone with 640 set members costs **3.0 µs**; `bench/erc20_full.lithe` Release runs 98 emits and 92 finishes totalling 1.66 s. The ~200 plan clones a search does are therefore ~0.6 ms, 0.04 % of the backend. Not taken on its own; the clones that matter are `Program`'s, which 5.1/5.2 already remove. See `## 5.3 Plan clones measured`.
 - [ ] **5.4** Fx hasher. `IndexMap` where order is observable.
@@ -88,6 +88,7 @@ This section is the single source of truth for what is open and what blocks what
 - **Final comparison table** below is a mid-branch snapshot; regenerate it once the steps above land.
 
 - **5.1 measured, handoff: needs its own slice.** The interner was started and the exact cost measured before writing it. Details and the number that decides the split are in `## 5.1 Interning: scope measured`.
+- **5.1a landed:** `Symbol`/`Names` and `Program.names`, one process-wide table threaded through `parse`, `parse_specs` and `load_in`, with a determinism test across files and parse orders. No field moved, so bytecode and diagnostics are unchanged. 5.1b and 5.1c remain open. See `## 5.1a The table`.
 - **S43 and S44 landed:** one process-wide `LITHE_THREADS` budget, and per-build timing counters. See `## S43 One thread budget` and `## S44 Per-build counters`.
 
 ## 0.2b baseline
@@ -625,6 +626,28 @@ One field, 184 sites, 12 files outside the slice. Flipping `Expr::Ident`, `Expr:
 3. **5.1c — the checker's maps.** `Checked.named` and `domain_tys` as `HashMap<Symbol, _>`, keeping `route.rs:1879` and `index.rs:661`'s ordering by sorting on `Names::get` so the ABI and hover output keep their order. This is where the measurable win is, and it should be measured against the `check` numbers above.
 
 5.2 (`FileId`/`Span`) touches the same fields, so 5.1b and 5.2 should be one slice with one owner, in the order the parent plan already sets: 5.4 → 5.3 → 5.1 → 5.2.
+
+## 5.1a The table
+
+Landed. `src/ast.rs` gains `Symbol(u32)` and `Names`, the table it indexes, plus `Program.names: Arc<Names>`. No AST field moved, so every diagnostic string and every byte of codegen is untouched — `evm::snapshot` is byte-identical in both modes and the differential gate passes.
+
+**The lifetime question 5.1 left open, answered.** One table per process, `Names::shared()`, behind a `OnceLock`. `std_program` and `ModuleCache::parsed` are process-wide caches keyed on a file and its content hash; if the table were per build, a `Program` cloned out of either cache would carry symbols from the build that parsed it. A per-build table would also have to become part of the cache key and would make a symbol depend on what the build parsed before it — the two constraints recorded above. One process-wide table satisfies both: a symbol is a pure function of its text, and `append` merges `Symbol`s without remapping.
+
+**Threading.** `parse` takes `&Arc<Names>`; `Parser` holds it and interns from `ident`, the one place an identifier's text is read. `LoadEnv` carries the table for a whole `load_in`, `empty()` takes the unit's own table, and every other parse site (`parse_specs`, `resolve::INDEX`, `lint`, `spec::instrument`, `lib::declares_no_contract`, the `uses` scan) uses `Names::shared()`. `Program.names` records it on every program `parse` returns and on the merged unit.
+
+**Determinism test.** `modules::tests::a_name_has_one_symbol_across_files_and_build_orders` loads two files that both name `count`, asserts one table across them, asserts the same symbol for the same text, and re-runs the loads in the other order on a second thread to prove the symbol does not depend on parse order (which is what `emit_dir` varies). `Arc::ptr_eq` against `Names::shared()` pins "one table per process", the property the parse caches need.
+
+**The test is not vacuous, which needed its own check.** That test interns `"count"` itself, so it would still pass if `parse` never touched the table. `parse::tests::parsing_interns_each_identifier_once_into_the_given_table` covers that half: it parses one file into a private `Names`, asserts the table grew, parses a second file with the same identifiers and asserts it did not grow again. Deleting the `self.names.intern` call in `ident` makes it fail, which is how the assertion was checked.
+
+**Directory builds are unchanged.** `lithe compile bench` (51 files) hashes identically to the parent binary at `ab6c382`, at `LITHE_THREADS=1` and `=8`, and both thread counts agree with each other; wall time at 1 and 8 threads is the same as the parent (376/89 ms vs 369/88 ms, median of 7). The process-wide mutex does not serialize parallel builds in practice: the critical section is a map lookup, and the whole of `bench/` is 90 ms.
+
+**Cost.** Interning costs one mutex acquisition and one `String` copy per identifier. `lithe abi`, median of 15 runs, parent (`ab6c382`) → this branch: `erc20_full` 18.0 → 17.8 ms, `uniswap_v2_pair` 8.0 → 8.1 ms, `solady_erc20` 6.5 → 7.0 ms. Inside noise; no regression. The win is not here — it is in 5.1c, where the checker's maps stop hashing strings.
+
+`simplify:` the table never shrinks, so a long-lived language server keeps every identifier it has seen. Dropping entries the caches no longer reference is the upgrade if that ever shows up in RSS.
+
+Gates: `cargo test --locked` (555 lib + 25 bin + 1 doctest, green — one more lib test than the parent), `LITHE_VERIFY=1 cargo test --locked` (green), `LITHE_FUZZ_STEPS=2000` differential (5 green), `evm::snapshot` (both modes, byte-identical), `evm::bench_gas` (both green), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, and the playground `cargo build --release --locked` plus its clippy and fmt. The `lithe compile bench` hash comparison above is the determinism evidence at the whole-directory level.
+
+The step's remaining halves are unchanged: 5.1b flips `NameAt`, `Expr::{Ident, Field, Call}`, `TypeRef` in one pass (the 184-error state measured above), and 5.1c takes `Checked.named` and `domain_tys`.
 
 ## 6.1–6.4 Evaluated
 
