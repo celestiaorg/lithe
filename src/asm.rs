@@ -3406,6 +3406,7 @@ pub(crate) fn promote(
     hold_dups: bool,
     sink: bool,
     abandon: bool,
+    batch: bool,
 ) -> (bool, usize) {
     let region_sink = if sink { MAX_SINK } else { 0 };
     let mut any = false;
@@ -3590,13 +3591,14 @@ pub(crate) fn promote(
                     &labels,
                     region_sink,
                     abandon,
+                    batch,
                     &mut plans,
                 )
             });
             match promoted {
-                Promoted::Region(sp, a, gone) => {
+                Promoted::Region(sp, words, gone) => {
                     any = true;
-                    last = Some((sp, vec![a], gone));
+                    last = Some((sp, words, gone));
                     continue;
                 }
                 Promoted::Nothing => {}
@@ -3620,10 +3622,10 @@ pub(crate) fn promote(
 /// What `promote_region` did.
 enum Promoted {
     Nothing,
-    /// Held a word over a region, or read the item it was copied from instead, which changed
-    /// only the code the splice says, from the instructions given, and only that word's
-    /// loads and stores.
-    Region(Splice, u32, Vec<Inst>),
+    /// Held the words over regions, or read the item they were copied from instead, which
+    /// changed only the code the splice says, from the instructions given, and only those
+    /// words' loads and stores.
+    Region(Splice, Vec<u32>, Vec<Inst>),
 }
 
 /// Moves each exit a branch jumps over, `PUSH bad JUMPI PUSH ok JUMP bad: .. exit ok:`, to
@@ -3792,6 +3794,7 @@ fn promote_region(
     labels: &LabelIndex,
     sink: i64,
     abandon: bool,
+    batch: bool,
     plans: &mut RegionPlans,
 ) -> Promoted {
     if plans.exits != *exits {
@@ -3802,7 +3805,7 @@ fn promote_region(
     // would keep a second item in step each time the store runs.
     if let Some((sp, a, gone)) = alias_copies(code, calls, exits, labels, uses) {
         plans.clear();
-        return Promoted::Region(sp, a, gone);
+        return Promoted::Region(sp, vec![a], gone);
     }
     if plans.ids.is_empty() {
         plans.ids.extend(0..code.len() as u32);
@@ -3862,7 +3865,16 @@ fn promote_region(
                                 also: Vec::new(),
                             };
                             let saved = plan_region(
-                                code, entry, a, calls, exits, live, labels, abandon, &mut trace,
+                                code,
+                                entry,
+                                a,
+                                calls,
+                                exits,
+                                live,
+                                labels,
+                                labels.fresh,
+                                abandon,
+                                &mut trace,
                                 false,
                             )
                             .map(|r| r.saved);
@@ -3893,6 +3905,7 @@ fn promote_region(
                     exits,
                     live,
                     labels,
+                    labels.fresh,
                     abandon,
                     &mut Trace::default(),
                     false,
@@ -4031,12 +4044,33 @@ fn promote_region(
         assert_eq!(best, all, "region search");
     }
     plans.best = known;
+    if batch {
+        let mut winners: Vec<(i64, Order, Entry, u32)> = uses
+            .keys()
+            .filter_map(|&a| {
+                let found = plans.best.get(&a)?.found?;
+                Some((found.0, found.1, found.2, a))
+            })
+            .collect();
+        winners.sort_by(|x, y| y.0.cmp(&x.0).then(x.1.cmp(&y.1)));
+        return region_batch(code, calls, exits, live, labels, abandon, winners, plans);
+    }
     let Some((_, _, entry, a)) = best else {
         return Promoted::Nothing;
     };
     let mut trace = Trace::default();
     let region = plan_region(
-        code, entry, a, calls, exits, live, labels, abandon, &mut trace, true,
+        code,
+        entry,
+        a,
+        calls,
+        exits,
+        live,
+        labels,
+        labels.fresh,
+        abandon,
+        &mut trace,
+        true,
     );
     let region = region.expect("planned");
     track::note(|t| {
@@ -4048,7 +4082,105 @@ fn promote_region(
     let gone = code[sp.lo..sp.old_hi].to_vec();
     plans.applied(&region.edits, &[a]);
     apply_edits(code, region.edits);
-    Promoted::Region(sp, a, gone)
+    Promoted::Region(sp, vec![a], gone)
+}
+
+/// Every word's best region whose walk stays clear of the regions taken before it, best
+/// first. The walks are kept disjoint rather than replanned against each other: holding a
+/// word keeps an extra item above the code it spans, so a second region planned across that
+/// code would have found the wrong depths. Disjoint regions are independent, so their edits
+/// compose in one pass.
+fn region_batch(
+    code: &mut Vec<Inst>,
+    calls: &Calls,
+    exits: &FxHashSet<u32>,
+    live: &Live,
+    labels: &LabelIndex,
+    abandon: bool,
+    winners: Vec<(i64, Order, Entry, u32)>,
+    plans: &mut RegionPlans,
+) -> Promoted {
+    let n = code.len();
+    // The code each taken region's walk reads. Two walks that share any of it cannot both
+    // be held: each keeps its own item above the shared code.
+    let mut taken: Vec<(usize, usize)> = Vec::new();
+    let mut edits: Vec<(usize, usize, Vec<Inst>)> = Vec::new();
+    let mut words: Vec<u32> = Vec::new();
+    let mut held: Vec<(u32, u32, usize)> = Vec::new();
+    let mut fresh = labels.fresh;
+    for (saved, _, entry, a) in winners {
+        if saved <= 0 {
+            break;
+        }
+        let mut trace = Trace {
+            reach: match entry {
+                Entry::Store(i, _) | Entry::StoreUnder(i) => i + 2,
+                Entry::Load(s) => s,
+            },
+            reads: Vec::new(),
+            also: Vec::new(),
+        };
+        let Some(region) = plan_region(
+            code, entry, a, calls, exits, live, labels, fresh, abandon, &mut trace, true,
+        ) else {
+            continue;
+        };
+        if region.edits.is_empty() {
+            continue;
+        }
+        if verify() {
+            // The same word on the same code, planned without keeping the edits: the saving
+            // that put it in `winners` must be what the walk finds.
+            let fresh_saved = plan_region(
+                code,
+                entry,
+                a,
+                calls,
+                exits,
+                live,
+                labels,
+                fresh,
+                abandon,
+                &mut Trace::default(),
+                false,
+            )
+            .map_or(0, |r| r.saved);
+            assert_eq!(fresh_saved, saved, "batch plan saving: word {a}");
+        }
+        // The code this region's walk reads, which another region's walk must not share.
+        let from = entry.at().saturating_sub(1);
+        let to = trace.reach.saturating_add(4);
+        let mine = std::iter::once((from, to)).chain(trace.also.iter().copied());
+        if mine
+            .clone()
+            .any(|(f, t)| taken.iter().any(|&(g, u)| f < u && g < t))
+        {
+            continue;
+        }
+        taken.extend(mine);
+        // A region may mint a label for an exit it moves; each takes its own so no two
+        // regions can name the same one.
+        fresh += 1;
+        for (l, d) in region.held {
+            held.push((l, a, d as usize));
+        }
+        words.push(a);
+        edits.extend(region.edits);
+    }
+    if edits.is_empty() {
+        return Promoted::Nothing;
+    }
+    edits.sort_by_key(|e| e.0);
+    track::note(|t| {
+        for &(l, a, d) in &held {
+            t.hold(l, a, d, false);
+        }
+    });
+    let sp = Splice::of(&edits, n);
+    let gone = code[sp.lo..sp.old_hi].to_vec();
+    plans.applied(&edits, &words);
+    apply_edits(code, edits);
+    Promoted::Region(sp, words, gone)
 }
 
 /// Where a region can load a word for the loop at `s`: the head, then back over the
@@ -4681,6 +4813,7 @@ fn plan_region(
     exits: &FxHashSet<u32>,
     live: &Live,
     labels: &LabelIndex,
+    fresh: u32,
     abandon: bool,
     trace: &mut Trace,
     keep: bool,
@@ -4987,7 +5120,6 @@ fn plan_region(
         };
         if let Some(l) = end.landing {
             // Jumps from inside land on the exit code; others still land after it.
-            let fresh = labels.fresh;
             exit.insert(0, Label(fresh));
             for (p, inst) in code.iter().enumerate().take(end.at).skip(start) {
                 if *inst == PushLabel(l) {

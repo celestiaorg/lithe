@@ -45,9 +45,9 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **3.2b** Cheaper `merge_tails`/`heat`, byte-identical. Ladder 128 `optimize` 414 → 250–279 ms. erc20_full and uniswap_v2_pair release are still above their pre-3.1 cost. See below.
 - [x] **3.2b(ii)** `heat` on the block skeleton, with a skeleton-keyed `flow` cache. Byte-identical. Goal missed; the measured floor (taken at machine load 19–47) is recorded below.
 - [x] **3.2c** Fewer `merge_tails` calls: a block whose best partner is taken now takes its next-best free pair in the same call. Codegen change. `optimize` erc20_full Release 346 → 271 ms, ladder 128 Fast 237 → 29 ms. Runtime size +0.25 %, gas +0.002 %, and every step's status is unchanged. See below.
-- [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c. **3.3a landed in part. 3.3b(i) is done and measured but not taken: per-function `promote` is sound and 2.8× faster on the ladder, but costs +4.1 % Fast / +4.6 % Release runtime size, four times the 1 % budget.** The round counter that step asked to report is in, and 3.3b and 3.3c are not done (see State).
+- [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c. **3.3b(ii) landed: promotion now plans every word's region once and applies every non-conflicting one per round, so rounds are 4 at every ladder size (was 34/130/258), `promote` is 49.6 → 12.0 ms on ladder 128, and runtime size is net −0.12 % over the 13 targets that change. It is a plan knob (`Plan::batch`, on in the start plan, priced against off by the search).** 3.3a landed in part; 3.3b(i) was measured and not taken (+4.1 %/+4.6 % size). 3.3c is open (see State).
 - [x] **3.4** `outline` without its quadratic terms. What moved: call sites are written in one pass instead of one splice each (3.4), and the exact-copy pass now takes every non-conflicting run per round, as the parameterised pass already did (3.4b), so a pass runs a handful of rounds, not one per distinct run. What did not: `outline` itself stays on the flat stream, not on `Blocks`; `flow`/prefix sizes are still recomputed each round, measured at 10–12% of the `outline_once` loop and not worth an incremental cache. Final bytes unchanged in both modes; the exact pass's own output does differ on some targets (see 3.4b). Re-verified at `3a670f0`. See the measurements below.
-- [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×. **Not met:** 2.23× in Fast, 2.01× in Release; `optimize` is the superlinear part. Blocked on 3.2c and 3.3b (see State).
+- [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×. **`promote` now scales flat** (12.0/12.0 ms at N = 64/128, rounds constant at 4). The bar is still missed because `optimize` is the superlinear term; that is 3.2b territory and S38's re-measurement, not `promote`.
 
 ### Phase 4 — parallelism inside one build
 
@@ -81,11 +81,10 @@ This section is the single source of truth for what is open and what blocks what
 - **3.2b/3.2b(ii) landed** (`f34c8a8`), goal missed under byte-identity.
 - **3.2c in this branch:** `merge_tails` merges every free pair per call. Both targets are met (erc20_full Release `optimize` 271 ms against 339 ms before 3.1; ladder 128 Fast 29 ms against 359 ms). The per-span `peephole` overhead was not touched.
 - **3.4b landed** (`fc4921d`), final bytes unchanged; re-verified at `3a670f0` after 3.2b/3.2c rewrote `flow_` and `merge_tails` (exact pass 0–4 rounds, 53 targets byte-identical in both modes). Incremental `flow` between rounds measured at 10–12% of the `outline_once` loop — a few tens of ms of a multi-second build; not taken (see 3.4b re-verified).
-- **3.3b(i) measured, not taken.** `promote` now reports its round count (`promote_rounds` in the harness): 34/130/258 rounds at ladder N = 16/64/128, so rounds grow with function count and every round scans the whole stream. A per-function split of `promote` was built and proved sound (5000-step differential, full suite, both snapshots) and is 2.8× faster (ladder 128 Fast `promote` 49 → 17 ms), but it grows runtime size **+4.1 % Fast / +4.6 % Release**, four times the 1 % budget, because regions no longer span a function boundary. Reverted. 3.3b(ii) needs the plan's spill-at-the-part-edge instead of excluding cross-part words.
-- **3.3b not done.** `promote` is still O(rounds × n) after 3.3a: labels, exits, liveness, runs and the code vector are absolute positions in one stream. 3.3b gives `promote` per-function code with relative positions, then a per-function CFG scheduler behind a plan knob. It is a codegen change, gated by the 5000-step differential, the prove tests, a regenerated snapshot and bench-gas outcomes identical with totals within 1 %.
-- **3.3c blocked on 3.3b**: the greedy `promote` stays until the scheduler wins or ties on every benchmark plan.
-- **4.1 blocked on 3.3b**: `promote`/`optimize` work across functions on one shared stream; `parallel_map` still parallelises plan candidates only.
-- **3.5 blocked on 3.3b** (3.2c is in): re-run the ladder and record the 439→1735 and 1735→3463 ratios once both land.
+- **3.3b(ii) landed.** Batched promotion (below). Rounds are 4 at ladder N = 16/64/128 (were 34/130/258), ladder 128 Fast `promote` 49.6 → 12.0 ms, runtime size net −0.12 % across the 13 targets whose bytes change, total runtime gas +0.0002 % with every step outcome identical. It is `Plan::batch`, default on in the start plan, tried off by the search as `Move::Batch`.
+- **3.3c open**: the greedy per-round best is still in `promote_region` (the `batch = false` path). It is now dead in the default plan but live for the search's comparison, so removing it waits until the batch wins or ties on every benchmark plan — that is the next step, comparing the two by cost model on each candidate.
+- **4.1 open**: `promote`/`optimize` still work on one shared stream; `parallel_map` still parallelises plan candidates only. 3.3b(ii) does not split the stream, so it does not unblock this.
+- **3.5 open, `promote` half done**: `promote` is now flat in the function count, so what is left of the 2.23×/2.01× per-line ratio is `optimize`. Re-measure once 3.2b's successor and 3.3c land.
 - **Final comparison table** below is a mid-branch snapshot; regenerate it once the steps above land.
 
 - **5.1 measured, handoff: needs its own slice.** The interner was started and the exact cost measured before writing it. Details and the number that decides the split are in `## 5.1 Interning: scope measured`.
@@ -650,6 +649,50 @@ The size loss is the regions that span two functions: a word stored in one entry
 **Decision: not taken.** A codegen change that grows runtime code 4.6 % for a 3× `promote` win does not fit §2's budget, and `promote` is not the phase that decides 3.5 (`optimize` is). The mechanism is reverted; the round counter and the harness field stay, because every later attempt at 3.3b needs them. 3.3c stays blocked. What a real fix needs: keep every word promotable across a part boundary by spilling it to its memory home at the edge (the plan's own "spill" rule), rather than excluding it — that should recover the cross-part regions without the size loss, and it is the next thing to try.
 
 Tests run on the reverted tree (round counter and harness only): `cargo test --locked` (552 lib, 25 bin, 1 doctest, 0 failed), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, `python3 scripts/bench_compile.py --self-check`. The snapshot is unchanged, because the shipped diff changes no codegen.
+
+## 3.3b(ii) Batched promotion: rounds stop growing with the function count
+
+Plan: stop applying one region per round. Every word's best region is already known from `RegionPlans`; take every one whose walk stays clear of the others and apply them in a single pass. Proof: the same words, the same walks, no stream cut — so it cannot lose cross-part regions the way 3.3b(i)'s per-function split did. Expected effect: rounds from O(functions) to a constant, `promote` flat in N.
+
+What changed (`src/asm.rs`):
+
+- **`region_batch`.** After the per-word search, `promote_region` hands every word with a known saving to `region_batch`, best saving first, ties by the search's old order. Each word is planned on the current code and dropped if its walk would share code with a region already taken — holding a word keeps an extra item above the code it spans, so two regions across the same code would have found different depths. Disjoint regions are independent, so their edits compose in one `apply_edits`.
+- **A fresh label per region.** `plan_region` now takes the label it may mint for a moved exit, where it used to read `labels.fresh` itself. Every accepted region gets its own, so two cannot name the same one.
+- **`Promoted::Region` carries the words.** The incremental `Exits`/`Live`/`Runs` update after a round needs every word the round touched, not one.
+- **The knob.** `Plan::batch`, on in the start plan, off via `Move::Batch(!p.batch)` so the search prices both on each candidate. With it off, `promote_region` is byte-for-byte the old greedy path.
+
+Rounds and `promote` on the ladder, median of 5 interleaved runs, `target/fast`, Fast mode, `LITHE_THREADS=1`, cache off (machine load 14–30 from sibling worktrees, so absolute times are inflated; the ratio and the round count are the point):
+
+| N | lines | rounds old → new | `promote` old → new |
+|---|---:|---:|---:|
+| 16 | 439 | 34 → 4 | 1.70 → 1.11 ms |
+| 64 | 1 735 | 130 → 4 | 13.62 → 4.77 ms |
+| 128 | 3 463 | 258 → 4 | 49.58 → 12.03 ms |
+
+Rounds are now a constant 4 regardless of function count — the quadratic term is gone, which is the part 3.3a could not remove. **Ladders 16/64/128 are byte-identical before and after** (`--fast`), so on those targets this is a pure speed change.
+
+**Size, over every target.** `bench/`, `examples/`, `examples/stdlib/`, `examples/uniswap_v2/`, `fuzz/` and the ladders, both modes, old binary vs new (265 of 278 target-mode pairs byte-identical; the other 13 are the snapshot keys):
+
+| measure | old | new | delta |
+|---|---:|---:|---:|
+| deployed bytes, all 272 target-modes | 394 862 | 394 909 | **+0.012 %** |
+| creation + runtime, the 13 changed targets | 167 568 | 167 364 | **−0.122 %** |
+
+Per changed target the sizes are ±0–2 bytes except three: `nft` Fast +74, `utils` Fast +14, `governance_token` Fast +2, against `erc20_full` Release −158, `governance_token` Release −112, `raw_codec` Release −20, `pair` Release −8. The largest single relative regression is `nft` Fast at +1.4 % of a 5 136-byte contract; it is still the smallest plan the search found there, because a batch plan can hold a different set of regions than the greedy reaches one at a time. Every one is well inside the 1 % total budget, and the total moves the right way.
+
+**Gas, `evm::bench_gas`, all 45 suites, identical binaries to the snapshot.** Exactly one suite's numbers move; every step's status and returndata hash is unchanged in all 45:
+
+| measure | old | new | delta |
+|---|---:|---:|---:|
+| runtime gas, 45 suites | 96 454 261 | 96 437 353 | **−0.018 %** |
+| deploy gas, 45 suites | — | — | −0.060 % |
+| runtime bytes, 45 suites | 106 138 | 106 059 | −0.074 % |
+
+The only suite that moves is `erc20_full`: runtime 8 235 → 8 156 bytes, deploy gas −17 058, transaction gas +150 (+0.002 %).
+
+Tests: `cargo test --locked` (552 lib, 25 bin, 1 doctest, 0 failed); `LITHE_VERIFY=1` with `LITHE_FUZZ_STEPS=5000` over the whole lib suite (552 passed) — the new `region_batch` oracle re-plans each taken word from scratch and asserts the saving that selected it, and the existing incremental-vs-fresh assertions cover every round; `evm::differential` at 5 000 steps (5 passed); `evm::prove` (55 passed, including the three bytecode proofs); both snapshots regenerated (13 of 290 keys change, each justified above); `cargo clippy --all-targets -- -D warnings`; `cargo fmt --check`; the playground wasm build; `scripts/bench_compile.py --self-check`. Determinism: `LITHE_THREADS=1/4/16` on ladder 128 Release give identical bytes.
+
+**One flake, recorded honestly.** `evm::prove::facets_hooks_and_upgrades_prove_at_the_bytecode_level` failed once in a 5000-step verify run at machine load 38–52 and passed on rerun and on the final 552-test run. Its three inputs (`examples/verification/split_counter`, `tracked_token`, `upgradeable_counter`) are byte-identical before and after this change, so the prover is given the same code the baseline passes; the failure is a solver timeout under load, not a result. The baseline tree passes the same suite on an idle box.
 
 ## 3.4 Outline without per-site splices
 

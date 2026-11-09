@@ -637,6 +637,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             vec![Move::Tight(!p.tight)],
             vec![Move::Frames(!p.frames)],
             vec![Move::Sink(!p.sink)],
+            vec![Move::Batch(!p.batch)],
         ];
         if p.tight {
             dims.push(vec![Move::HoldDups(!p.hold_dups)]);
@@ -743,6 +744,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         hold_dups: false,
         frames: true,
         sink: false,
+        batch: true,
         forward_consts: on,
         static_heap: on,
         every_bump: on,
@@ -1074,6 +1076,7 @@ enum Move {
     Frames(bool),
     Sink(bool),
     Abandon(bool),
+    Batch(bool),
     OutlineRaises(bool),
     /// Forward stored constants.
     ForwardConsts,
@@ -1096,6 +1099,7 @@ impl Move {
             Move::Frames(b) => p.frames = *b,
             Move::Sink(b) => p.sink = *b,
             Move::Abandon(b) => p.abandon = *b,
+            Move::Batch(b) => p.batch = *b,
             Move::OutlineRaises(b) => p.outline_raises = *b,
             Move::ForwardConsts => p.forward_consts = true,
             Move::StaticHeap => {
@@ -1844,6 +1848,11 @@ struct Plan {
     /// reverts with an error's fields, whose loads of the word become `DUP`s. Blocks alike
     /// before can then differ, which keeps them from being shared, so it is tried last.
     abandon: bool,
+    /// Whether every word's best region that stays clear of the others is applied in one
+    /// round, instead of only the best. The rounds drop from one per region to a handful,
+    /// but regions applied together can differ from those the greedy would have found one
+    /// at a time, so the search prices both.
+    batch: bool,
 }
 
 impl PartialEq for Plan {
@@ -1877,6 +1886,7 @@ impl PartialEq for Plan {
             && self.every_bump == other.every_bump
             && self.sink == other.sink
             && self.abandon == other.abandon
+            && self.batch == other.batch
     }
 }
 
@@ -1922,6 +1932,7 @@ impl Hash for Plan {
         self.every_bump.hash(state);
         self.sink.hash(state);
         self.abandon.hash(state);
+        self.batch.hash(state);
     }
 }
 

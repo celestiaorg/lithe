@@ -357,6 +357,7 @@ impl<'a> Gen<'a> {
             frames: false,
             sink: false,
             abandon: false,
+            batch: false,
             outline_raises: false,
             forward_consts: false,
             static_heap: false,
@@ -1309,6 +1310,7 @@ impl<'a> Gen<'a> {
                 plan.hold_dups,
                 plan.sink,
                 plan.abandon,
+                plan.batch,
             )
         });
         super::PROMOTE_ROUNDS.fetch_add(rounds, std::sync::atomic::Ordering::Relaxed);
