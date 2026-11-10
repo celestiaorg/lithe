@@ -187,14 +187,28 @@ pub fn compile(sources: &Sources, entry: &Path, opts: &Options) -> Result<Output
         modules::load_specs(sources, entry, &mut prog)?;
     }
     let several = (!prog.siblings.is_empty()).then(|| check::several_contracts(&prog));
-    let mut contracts = Vec::new();
-    let mut errors = Vec::new();
-    for unit in modules::split_units(prog) {
+    let units: Vec<_> = modules::split_units(prog)
+        .into_iter()
+        .map(|unit| std::sync::Mutex::new(Some(unit)))
+        .collect();
+    // Sibling contracts build at once, so one's check and ABI overlap another's codegen; the
+    // pool returns them in declaration order and runs them inline, in order, on one thread.
+    let built = gen::parallel_map(&units, |unit| {
+        let unit = unit
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .expect("each unit is built once");
         let name = artifact_contract_name(&unit, entry);
         let origin = unit.origin.clone();
-        match build(sources, entry, unit, &name, opts) {
+        build(sources, entry, unit, &name, opts).map_err(|err| err.in_file(&origin))
+    });
+    let mut contracts = Vec::new();
+    let mut errors = Vec::new();
+    for result in built {
+        match result {
             Ok(contract) => contracts.push(contract),
-            Err(err) => errors.push(err.in_file(&origin)),
+            Err(err) => errors.push(err),
         }
     }
     if !errors.is_empty() {
@@ -2165,6 +2179,34 @@ pub(crate) fn error(line: u32, column: u32, message: impl Into<String>) -> Error
 
 #[cfg(test)]
 mod evm;
+
+#[cfg(test)]
+mod sibling_units {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn pooled_build_matches_one_thread_in_order() {
+        let sources = Sources::disk();
+        let entry = Path::new("examples/factory.lithe");
+        let opts = Options::default();
+        let pooled = compile(&sources, entry, &opts).expect("factory");
+        let prog = modules::load(&sources, entry).expect("factory");
+        let units = modules::split_units(prog);
+        assert!(units.len() > 1);
+        assert_eq!(pooled.contracts.len(), units.len());
+        for (unit, got) in units.into_iter().zip(&pooled.contracts) {
+            let name = artifact_contract_name(&unit, entry);
+            let want = build(&sources, entry, unit, &name, &opts).expect("unit");
+            assert_eq!(got.name, want.name);
+            assert_eq!(got.bytecode, want.bytecode);
+            assert_eq!(got.deployed_bytecode, want.deployed_bytecode);
+            assert_eq!(got.method_identifiers, want.method_identifiers);
+            assert_eq!(got.warnings, want.warnings);
+        }
+    }
+}
 
 #[cfg(test)]
 mod session_cache {
