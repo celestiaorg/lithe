@@ -384,7 +384,7 @@ impl Checker {
     pub(super) fn raising_hooks(&self, funcs: &[Func], start: usize) -> Vec<usize> {
         let mut out = Vec::new();
         let mut todo = vec![start];
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         while let Some(i) = todo.pop() {
             if !seen.insert(i) {
                 continue;
@@ -838,7 +838,7 @@ pub(crate) fn hook_item(checked: &Checked, (hook, facet): &(usize, Option<String
 /// itself: the module's calls go straight to `f`, so the hook adds no layer of parameter
 /// copies. Tooling still reports the hook, from the call graph built before this.
 pub(super) fn forward_via_hooks(funcs: &mut [Func]) {
-    let mut to: HashMap<usize, (usize, String)> = HashMap::new();
+    let mut to: FxHashMap<usize, (usize, String)> = FxHashMap::default();
     for (h, f) in funcs.iter().enumerate() {
         if !f
             .hook_of
@@ -880,7 +880,7 @@ pub(super) fn forward_via_hooks(funcs: &mut [Func]) {
     if to.is_empty() {
         return;
     }
-    fn stmts(list: &mut [Stmt], to: &HashMap<usize, (usize, String)>) {
+    fn stmts(list: &mut [Stmt], to: &FxHashMap<usize, (usize, String)>) {
         for s in list {
             match s {
                 Stmt::Const { expr: e, .. }
@@ -947,7 +947,7 @@ pub(super) fn forward_via_hooks(funcs: &mut [Func]) {
             }
         }
     }
-    fn expr(e: &mut Expr, to: &HashMap<usize, (usize, String)>) {
+    fn expr(e: &mut Expr, to: &FxHashMap<usize, (usize, String)>) {
         match e {
             Expr::Call {
                 callee,

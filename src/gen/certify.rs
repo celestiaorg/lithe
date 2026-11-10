@@ -358,7 +358,7 @@ fn declared(stmts: &[Stmt], out: &mut Vec<((u32, u32, String), usize)>) {
 }
 
 /// The sites' locals that calldata reads give, wherever they were loaded.
-pub(super) fn from_calldata(from: &HashMap<u32, Vec<Inst>>) {
+pub(super) fn from_calldata(from: &FxHashMap<u32, Vec<Inst>>) {
     track::note(|t| {
         for site in &mut t.sites {
             for (_, _, place) in &mut site.locals {
@@ -375,7 +375,7 @@ pub(super) fn from_calldata(from: &HashMap<u32, Vec<Inst>>) {
 /// Marks the sites' memory words that no code reads.
 pub(super) fn settle(code: &[Inst]) {
     track::note(|t| {
-        let used: HashSet<u32> = code
+        let used: FxHashSet<u32> = code
             .iter()
             .filter_map(|inst| match inst {
                 Inst::Mem(a) => Some(*a),

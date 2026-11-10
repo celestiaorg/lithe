@@ -34,8 +34,7 @@ impl<'a> Gen<'a> {
         let shape = self.shape;
         // Selectors whose code reads no immutable, which a facet with immutables gets
         // without their values.
-        let blind: std::collections::HashSet<[u8; 4]> = if shape.tails.iter().any(|t| !t.is_empty())
-        {
+        let blind: FxHashSet<[u8; 4]> = if shape.tails.iter().any(|t| !t.is_empty()) {
             targets
                 .iter()
                 .filter(|(_, target)| !self.target_reads_immutables(target))
@@ -44,7 +43,7 @@ impl<'a> Gen<'a> {
         } else {
             Default::default()
         };
-        let unpayable: std::collections::HashSet<[u8; 4]> = targets
+        let unpayable: FxHashSet<[u8; 4]> = targets
             .iter()
             .filter(|(_, target)| !self.target_payable(target))
             .map(|(_, target)| target.sel())

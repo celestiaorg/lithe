@@ -45,7 +45,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **3.2b** Cheaper `merge_tails`/`heat`, byte-identical. Ladder 128 `optimize` 414 → 250–279 ms. erc20_full and uniswap_v2_pair release are still above their pre-3.1 cost. See below.
 - [x] **3.2b(ii)** `heat` on the block skeleton, with a skeleton-keyed `flow` cache. Byte-identical. Goal missed; the measured floor (taken at machine load 19–47) is recorded below.
 - [x] **3.2c** Fewer `merge_tails` calls: a block whose best partner is taken now takes its next-best free pair in the same call. Codegen change, gated and recorded in `## 3.2c`. `optimize` erc20_full Release 382.0 → 301.3 ms, ladder 128 Fast 251.1 → 31.0 ms (min of 7, load 2.0), and the pre-3.1 floor 3.2b(ii) owed is re-measured at load 1.6–2.1: erc20_full 340.4 → 306.3 ms, goal met; uniswap_v2_pair 57.8 → 62.4 ms, still 4 % over. Runtime bytes +0.072 % over 304 target-modes, transaction gas +0.0012 %, every step status unchanged. See below.
-- [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c. **3.3b(ii) landed: promotion now plans every word's region once and applies every non-conflicting one per round, so rounds are 4 at every ladder size (was 34/130/258), `promote` is 49.6 → 12.0 ms on ladder 128, and runtime size is −0.027 % over the 272 target-modes (−0.153 % creation + runtime over the 13 whose code changes; the `Fast` increases are the batched start plan's price, not a search result). It is a plan knob (`Plan::batch`, on in the start plan, priced against off by the search).** 3.3a landed in part; 3.3b(i) was measured and not taken (+4.1 %/+4.6 % size). 3.3c is open (see State).
+- [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c. **3.3b(ii) landed: promotion now plans every word's region once and applies every non-conflicting one per round, so rounds are 4 at every ladder size (was 34/130/258), `promote` is 49.6 → 12.0 ms on ladder 128, and runtime size is −0.027 % over the 272 target-modes (−0.153 % creation + runtime over the 13 whose code changes; the `Fast` increases are the batched start plan's price, not a search result). It is a plan knob (`Plan::batch`, on in the start plan, priced against off by the search).** 3.3a landed in part; 3.3b(i) was measured and not taken (+4.1 %/+4.6 % size). 3.3c was measured and not taken: batch loses to the greedy path on 23 of 1 299 Release plans (see `## S40 3.3c priced`).
 - [x] **3.4** `outline` without its quadratic terms. What moved: call sites are written in one pass instead of one splice each (3.4), and the exact-copy pass now takes every non-conflicting run per round, as the parameterised pass already did (3.4b), so a pass runs a handful of rounds, not one per distinct run. What did not: `outline` itself stays on the flat stream, not on `Blocks`; `flow`/prefix sizes are still recomputed each round, measured at 10–12% of the `outline_once` loop and not worth an incremental cache. Final bytes unchanged in both modes; the exact pass's own output does differ on some targets (see 3.4b). Re-verified at `3a670f0`. See the measurements below.
 - [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×. **`promote` now scales flat** (12.0/12.0 ms at N = 64/128, rounds constant at 4). The bar is still missed because `optimize` is the superlinear term; that is 3.2b territory and S38's re-measurement, not `promote`.
 
@@ -59,7 +59,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [ ] **5.1** Identifier interner. **Measured and split: not doable in one slice.** Adding `Symbol`/`Names` and flipping `NameAt.name` alone breaks 184 sites in 19 files, 12 of them outside this slice, and the table has to be shared across merged files before any field can move. Split into 5.1a (table + determinism proof, **landed**), 5.1b (AST fields, needs one owner for `check`/`gen`/`prove`/`evm`), 5.1c (the checker's maps, where the win is). See `## 5.1 Interning: scope measured` and `## 5.1a The table`.
 - [ ] **5.2** `FileId` and byte `Span`. Diagnostics keep `line` and `column`.
 - [ ] **5.3** Remove deep clones. Make `Plan` cheap. **Measured: `Plan` is not where the time is.** A Release `Plan` clone with 640 set members costs **3.0 µs**; `bench/erc20_full.lithe` Release runs 98 emits and 92 finishes totalling 1.66 s. The ~200 plan clones a search does are therefore ~0.6 ms, 0.04 % of the backend. Not taken on its own; the clones that matter are `Program`'s, which 5.1/5.2 already remove. See `## 5.3 Plan clones measured`.
-- [ ] **5.4** Fx hasher. `IndexMap` where order is observable.
+- [x] **5.4** Fx hasher. Every std `HashMap`/`HashSet` in `check`, `gen`, `route`, `split` and `index` (and `asm.rs`'s last few) is now `asm::FxHashMap`/`FxHashSet`; the two whose order was seen are `BTreeMap`s (no `IndexMap`: no new dependency). Both snapshots unchanged; `check` −1.5–2 %. See `## S27 Fx hashing`.
 - [ ] **5.5** Index-arena AST.
 - [ ] **5.6** Parsed and checked module cache across `compile_dir` and `abi_dir`.
 - [ ] **5.7** Lexer slices and statement-level parser recovery. First error unchanged.
@@ -82,7 +82,7 @@ This section is the single source of truth for what is open and what blocks what
 - **3.2c in this branch:** `merge_tails` merges every free pair per call; gated and recorded in `## 3.2c`. erc20_full Release `optimize` 382.0 → 301.3 ms, ladder 128 Fast 251.1 → 31.0 ms (min of 7 alternating runs, load 2.0). Against the **pre-3.1** cost re-measured at load 1.6–2.1, erc20_full is 340.4 → 306.3 ms (goal met) and uniswap_v2_pair is 57.8 → 62.4 ms (**still 4 % over**, from the two extra candidate builds 3.3b(ii)'s `Move::Batch` adds, not from the pass). The per-span `peephole` overhead was not touched.
 - **3.4b landed** (`fc4921d`), final bytes unchanged; re-verified at `3a670f0` after 3.2b/3.2c rewrote `flow_` and `merge_tails` (exact pass 0–4 rounds, 53 targets byte-identical in both modes). Incremental `flow` between rounds measured at 10–12% of the `outline_once` loop — a few tens of ms of a multi-second build; not taken (see 3.4b re-verified).
 - **3.3b(ii) landed.** Batched promotion (below). Rounds are 4 at ladder N = 16/64/128 (were 34/130/258) and ladder 128 Fast `promote` 49.6 → 12.0 ms. It is `Plan::batch`, default on in the start plan, tried off by the search as `Move::Batch`. Sizes: runtime bytes −0.027 % over the 272 target-modes (parent → here), and −0.153 % creation + runtime over the 13 whose code changes; the `Fast` increases behind that (`nft` +74, `utils` +14, `governance_token` +2, `erc20_full` +2) are the batched start plan's own price, since `Fast` builds that plan and nothing else and has no candidate to decline it. Gas: **transaction gas +0.0002 %** (the step totals, 68 121 512 → 68 121 662) and **gas including deploy −0.018 %** (96 454 261 → 96 437 353); every step outcome identical. See `## 3.3b(ii)` for the tables.
-- **3.3c open**: the greedy per-round best is still in `promote_region` (the `batch = false` path). It is now dead in the default plan but live for the search's comparison, so removing it waits until the batch wins or ties on every benchmark plan — that is the next step, comparing the two by cost model on each candidate.
+- **3.3c measured, not taken (S40).** Every plan the Release search builds over the 51 `bench/*.lithe` was priced with `batch` on and off: 109 wins, 1 167 ties, **23 losses** (erc20_full 13, erc721_full 4, erc721 3, fixed_point, uniswap_v2_factory, uniswap_v2_pair 1 each; worst +0.96 % cost on erc721). The deletion's own condition fails, so the greedy `promote_region` path, `Plan::batch` and `Move::Batch` stay. See `## S40 3.3c priced`.
 - **4.1 open**: `promote`/`optimize` still work on one shared stream; `parallel_map` still parallelises plan candidates only. 3.3b(ii) does not split the stream, so it does not unblock this.
 - **3.5 open, `promote` half done**: `promote` is now flat in the function count, so what is left of the 2.23×/2.01× per-line ratio is `optimize`. Re-measure once 3.2b's successor and 3.3c land.
 - **Final comparison table** below is a mid-branch snapshot; regenerate it once the steps above land.
@@ -94,7 +94,8 @@ This section is the single source of truth for what is open and what blocks what
 - **S49 landed:** the `simplify:` list in `src/evm/bench_gas.rs` now matches `Meter`/`charge()` — the seed is EIP-2929's precompile set 1..=0x11, and the two addresses it leaves cold until first touched (`0x100` P256VERIFY, and anything `CREATE`/`CREATE2` made) are named. Doc-only; no gas total moved. See `## S49`.
 - **S51 landed, `make check` green.** S37's three open findings: `split::facet` no longer answers from its process-wide memo while a test forces a codegen knob (`gen::forced()`), `parallel_map` merges a pool's certificates in item order so a proof is the same at any `LITHE_THREADS`, and worker `Track` notes are deliberately not merged (their labels belong to one build) with the caller's track returned untouched. The whole-suite `LITHE_VERIFY` failure this tree carried since `b8fc4fa` is gone: 558 lib tests pass under VERIFY, 0 fail. See `## S51 S37's findings, and make check green`.
 - **S52 landed:** S51's three residual findings. A pool keeps the caller's pre-pool certificates ahead of its items', a worker sees the caller's forced codegen knobs, and the item-order test compares the pool at one thread with the pool at N. See `## S52 S51's residual findings`.
-- **S40 is next:** the greedy `promote_region` path and `Move::Batch` by cost model, as the plan orders it.
+- **S27 landed (5.4):** Fx hashing in `check`/`gen`/`route`/`split`/`index`; `BTreeMap` where order is seen. See `## S27 Fx hashing`.
+- **S40 measured, not taken:** see the 3.3c bullet above.
 
 ## 0.2b baseline
 
@@ -687,6 +688,58 @@ wasm     cd playground && cargo build --release       ok
 - `gen::a_pools_certificates_read_in_item_order`. The one-thread arm is `pool(&items, 1, …)` and the other is `pool(&items, 8, …)`. Its assertions are unchanged.
 
 **`make check`** (16 cores, `LITHE_THREADS` unset), exit 0. fmt and clippy are clean for the crate and `playground/`. `test` and `verify` each pass 560 lib tests (0 failed, 2 ignored), 25 bin tests and 1 doctest. `differential` at 2000 steps passes 5. `snapshot` passes 2, so both bytecode snapshots are unchanged. `bench_gas` passes 2, and the wasm playground builds.
+
+## S27 Fx hashing
+
+**Plan.** Make `asm`'s Fx hasher crate-visible and use it for every std `HashMap`/`HashSet` in `check`, `gen`, `route`, `split` and `index`. Use a `BTreeMap` wherever a map's iteration order reaches output. Bytecode must stay byte-identical.
+
+**What changed.** `asm::{Fx, FxHashMap, FxHashSet}` are `pub(crate)`. Across `src/check/*`, `src/gen/*`, `route.rs`, `split.rs`, `index.rs` and `asm.rs`'s remaining std maps, `HashMap`/`HashSet` became the Fx aliases, and `::new()` became `::default()`. Three places stay std, on purpose:
+- `gen::range`'s two maps keep their own `KeyHasher`.
+- `route::render`/`render_footprints` take the selector map `lib.rs` builds.
+- `asm`'s submodules (`marks`, `track`, `blocks`) are outside 5.4's list.
+
+**Where order is seen.** `clippy::iter_over_hash_type` flags 21 `for` loops in these files (9 in `asm.rs`, over maps that were already Fx). A grep of `.iter()/.keys()/.values()` chains over the converted maps found the rest. Two sites reach output:
+- `check::compose`'s `used`. Its iteration order picked which "unknown module" error is reported when several modules require missing ones. Under SipHash that error was random per process. It is now a `BTreeMap`, so the error is the first module by name.
+- `index`'s `spelled`. Alias completions were pushed in map order, which the LSP returns as is. It is now a `BTreeMap`.
+
+Every other site either sorts before use (`hash_set`, `hash_sorted`, `specs`, `funcs`, `outlined`, `named`, aliased completions), fills another map or set, or computes something order-independent (fixpoints, `any`/`all`, per-key assignments).
+
+**Proof.** `make check` (16 cores). fmt and clippy are clean. `test` and `verify` each pass 560 lib tests (0 failed, 2 ignored), 25 bin tests and 1 doctest. `differential` at 2000 steps passes 5. `snapshot` passes 2, so **release and fast bytecode are byte-identical**. `bench_gas` passes 2, and the wasm playground builds.
+
+The first `make check` run failed one test, `evm::prove::a_selfdestruct_sends_the_ether_away`. The solver ran out of time while a 16-core release build ran beside it. Rerun on an idle machine, every stage from `test` on passed.
+
+**Timing.** Release binaries, parent `9c498a1` against this tree. `check` is the min of 9 `--fast` runs, interleaved, load ≈ 3:
+
+| contract | `check` before | `check` after |
+|---|---|---|
+| erc20_full | 4.97 ms | 4.90 ms |
+| erc1155 | 1.17 ms | 1.15 ms |
+| uniswap_v2_pair | 0.519 ms | 0.509 ms |
+| solady_erc20 | 0.230 ms | 0.226 ms |
+
+erc20_full Release `backend` (3 runs each) went from 475–483 ms to 447–465 ms. That is within noise of the gen-side maps, and recorded rather than claimed.
+
+## S40 3.3c priced
+
+**Plan.** Price `Plan::batch` on against off for every plan the Release search builds. Delete the greedy `promote_region` path, the `batch = false` knob and `Move::Batch` only if batch wins or ties on all of them.
+
+**How.** This used a scratch build that was not committed. `codegen`'s `build_raw` also built each plan's `batch`-flipped twin and logged both `cost()`s (`gas + bytes·byte_gas`, the search's own model). It ran `lithe compile --release` over all 51 `bench/*.lithe`. Twins only add entries to the emit and finish caches. An extra entry can only make the search skip a build that could not have won (`measured_out`).
+
+**Result: 1 299 plans. Batch wins 109, ties 1 167 and loses 23.**
+
+| contract | plans | wins | ties | losses | worst loss (cost, bytes, gas) |
+|---|---|---|---|---|---|
+| erc20_full | 100 | 75 | 12 | 13 | +199 (+0.10 %), −35 B, +374 |
+| erc721 | 40 | 20 | 17 | 3 | +536 (+0.96 %), +42 B, +326 |
+| erc721_full | 68 | 2 | 62 | 4 | +407 (+0.41 %), +30 B, +257 |
+| fixed_point | 22 | 1 | 20 | 1 | +31 (+0.12 %), +5 B, +6 |
+| uniswap_v2_factory | 52 | 0 | 51 | 1 | +94 (+0.07 %), +2 B, +68 |
+| uniswap_v2_pair | 39 | 0 | 38 | 1 | +74 (+0.08 %), +4 B, +54 |
+| the other 45 | 978 | 11 | 967 | 0 | — |
+
+**Decision: not taken.** The greedy path is the cheaper plan in 23 places, so deleting it and the `Move::Batch` dimension would remove a choice the search can use. The Release emit count and time therefore stay as they are. With `Move::Batch` present, Release builds (emits/finishes, `backend`) measured: erc20_full 99/93, 461 ms; erc721_full 66/57, 178 ms; uniswap_v2_factory 50/41, 136 ms; uniswap_v2_pair 37/34, 130 ms; erc721 39/36, 73 ms; fixed_point 22/13, 52 ms.
+
+What would close 3.3c instead: find why the batch walk loses on these plans. One untested hypothesis: the disjoint-walk rule in `region_batch` drops a region whenever its walk overlaps a taken one, so a lower-saving region can block a higher one that the greedy rounds would have reached later. A batch that replans the dropped words in a further round, rather than skipping them, should then tie or win everywhere.
 
 ## 5.1 Interning: scope measured
 

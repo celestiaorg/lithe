@@ -6,7 +6,8 @@
 //! Facets are deployed with `CREATE2` through a factory, so their addresses are known here
 //! and built into the router.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use crate::asm::{FxHashMap, FxHashSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -93,13 +94,13 @@ impl Default for Options {
 #[derive(Clone, Default)]
 pub(crate) struct Shape {
     /// The selectors this code runs itself. `None` runs every one.
-    pub keep: Option<HashSet<[u8; 4]>>,
+    pub keep: Option<FxHashSet<[u8; 4]>>,
     /// Selectors forwarded to a facet, by the facet's index.
     pub forward: Vec<([u8; 4], usize)>,
     /// The addresses of the facets selectors are forwarded to.
     pub parts: Vec<Word>,
     /// Every facet's address, by module, for `Evm.facetAddress`.
-    pub facet_at: HashMap<String, Word>,
+    pub facet_at: FxHashMap<String, Word>,
     /// The ids of the immutables each facet reads after its calldata, in order.
     pub tails: Vec<Vec<String>>,
     /// For each facet whose modules have hooks: which of them this contract implements, a
@@ -194,7 +195,7 @@ impl Split {
     /// each address once.
     pub(crate) fn prerequisites(&self) -> Vec<Facet> {
         let mut out: Vec<Facet> = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         let mut add = |facet: &Facet, out: &mut Vec<Facet>| {
             if seen.insert(facet.address) {
                 out.push(facet.clone());
@@ -405,7 +406,7 @@ fn router_shape(
     if facets.is_empty() {
         return Ok(shape);
     }
-    let mut keep = HashSet::new();
+    let mut keep = FxHashSet::default();
     let mut parts: Vec<usize> = Vec::new();
     for entry in entries {
         match facets
@@ -587,8 +588,8 @@ fn facet(
         module.to_string(),
     );
     prog.scopes = scopes;
-    static BUILT: OnceLock<Mutex<HashMap<([u8; 32], String), Facet>>> = OnceLock::new();
-    let memo = BUILT.get_or_init(|| Mutex::new(HashMap::new()));
+    static BUILT: OnceLock<Mutex<FxHashMap<([u8; 32], String), Facet>>> = OnceLock::new();
+    let memo = BUILT.get_or_init(|| Mutex::new(FxHashMap::default()));
     // A test can force knobs the key cannot see, so its facets are neither read nor kept.
     let memo = (!gen::forced()).then_some(memo);
     if let Some(facet) = memo
@@ -803,7 +804,7 @@ pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing
     // Only the files the modules are written in, and what those import, in an order of
     // their own: the contract's other imports, and the order it imports them, change nothing.
     let mut files = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = FxHashSet::default();
     for decl in prog.modules.iter().filter(|m| order.contains(&m.name)) {
         imports_first(&source.scopes, &decl.origin, &mut seen, &mut files);
     }
@@ -1015,7 +1016,7 @@ fn across(module: &str, decl: &crate::ast::ModuleDecl, func: &Func, crossing: &C
 fn imports_first(
     scopes: &crate::resolve::Scopes,
     file: &str,
-    seen: &mut HashSet<String>,
+    seen: &mut FxHashSet<String>,
     out: &mut Vec<String>,
 ) {
     if !seen.insert(file.to_string()) {
@@ -1069,8 +1070,8 @@ fn module_crossings(
     let mut alone = facet_program(source, module, &[]);
     alone.scopes = Default::default();
     let key = keccak256(format!("{alone:?}\0{:?}", opts.evm).as_bytes());
-    static FOUND: OnceLock<Mutex<HashMap<[u8; 32], Vec<Crossing>>>> = OnceLock::new();
-    let memo = FOUND.get_or_init(|| Mutex::new(HashMap::new()));
+    static FOUND: OnceLock<Mutex<FxHashMap<[u8; 32], Vec<Crossing>>>> = OnceLock::new();
+    let memo = FOUND.get_or_init(|| Mutex::new(FxHashMap::default()));
     if let Some(found) = memo.lock().ok().and_then(|memo| memo.get(&key).cloned()) {
         return Ok(found);
     }
@@ -1084,7 +1085,7 @@ fn module_crossings(
     // entrypoint may raise any error; the copy's own check says which it does.
     let raises: Vec<String> = alone.errors.iter().map(|e| e.name.clone()).collect();
     let site = |f: &Func| (f.origin.clone(), f.line, f.col);
-    let built: HashSet<Site> = alone.prog.funcs.iter().map(site).collect();
+    let built: FxHashSet<Site> = alone.prog.funcs.iter().map(site).collect();
     let rest: Vec<Crossing> = source
         .modules
         .iter()
@@ -1197,7 +1198,7 @@ fn oversized(
     let measured = parallel(&rows, |row| {
         Ok(match row {
             Row::Own(group, idx) => {
-                let keep: HashSet<[u8; 4]> = entries
+                let keep: FxHashSet<[u8; 4]> = entries
                     .iter()
                     .enumerate()
                     .filter(|(i, entry)| !idx.contains(i) && kept(entry))

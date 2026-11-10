@@ -21,7 +21,7 @@ pub(super) struct Fact {
 #[derive(Default)]
 pub(super) struct Facts {
     list: Vec<Fact>,
-    by_key: HashMap<u64, Vec<usize>, std::hash::BuildHasherDefault<KeyHasher>>,
+    by_key: std::collections::HashMap<u64, Vec<usize>, std::hash::BuildHasherDefault<KeyHasher>>,
     /// How many of `by_key`'s entries fall in each of 256 buckets of keys: most lookups
     /// find their bucket empty.
     buckets: Vec<u32>,
@@ -272,7 +272,7 @@ fn reads_but_length(e: &Expr, sym: usize, length: bool) -> bool {
 }
 
 /// `e` with each parameter in `bound` replaced by its argument, if it reads no other local.
-fn subst(e: &Expr, bound: &HashMap<usize, &Expr>) -> Option<Expr> {
+fn subst(e: &Expr, bound: &FxHashMap<usize, &Expr>) -> Option<Expr> {
     let r = |x: &Expr| subst(x, bound).map(Box::new);
     Some(match e {
         Expr::Ident { sym: Some(s), .. } => (*bound.get(s)?).clone(),
@@ -950,7 +950,7 @@ impl<'a> Gen<'a> {
     /// to fixed arguments, said of those arguments: what its guards proved holds once it
     /// returns.
     pub(super) fn proved(&self, idx: usize, args: &[Expr], mark: usize) -> Vec<(Expr, Expr, bool)> {
-        let bound: HashMap<usize, &Expr> = self.checked.prog.funcs[idx]
+        let bound: FxHashMap<usize, &Expr> = self.checked.prog.funcs[idx]
             .params
             .iter()
             .zip(args)
@@ -1041,13 +1041,13 @@ impl<'a> Gen<'a> {
     fn range(&self, e: &Expr, depth: u32, scoped: bool) -> Range {
         // A query reaches the same fact sides at the same depth by many paths. What it
         // walks stays put until it returns, so its results are kept by address meanwhile.
-        thread_local!(static QUERY: std::cell::RefCell<(u32, HashMap<(usize, u32, bool), Range, std::hash::BuildHasherDefault<KeyHasher>>)> = Default::default());
+        thread_local!(static QUERY: std::cell::RefCell<(u32, std::collections::HashMap<(usize, u32, bool), Range, std::hash::BuildHasherDefault<KeyHasher>>)> = Default::default());
         let key = (e as *const Expr as usize, depth, scoped);
         let known = QUERY.with(|q| {
             let mut q = q.borrow_mut();
             if q.0 == 0 {
                 if q.1.capacity() > 1024 {
-                    q.1 = HashMap::default();
+                    q.1 = Default::default();
                 } else {
                     q.1.clear();
                 }

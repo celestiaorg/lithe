@@ -115,7 +115,7 @@ impl Checker {
         }
         for (iface, id) in prog.interfaces.iter().zip(ids) {
             let mut methods = Vec::new();
-            let mut seen = HashSet::new();
+            let mut seen = FxHashSet::default();
             for m in &iface.methods {
                 let mut params = Vec::new();
                 let mut abi = Vec::new();
@@ -173,7 +173,7 @@ impl Checker {
     }
 
     pub(super) fn register_events(&mut self, prog: &Program) -> Result<(), Error> {
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         for ev in &prog.events {
             if !seen.insert(ev.name.clone()) || self.named.contains_key(&ev.name) {
                 return Err(
@@ -207,7 +207,7 @@ impl Checker {
             }
             let mut fields = Vec::new();
             let mut abi = Vec::new();
-            let mut names = HashSet::new();
+            let mut names = FxHashSet::default();
             for f in &ev.fields {
                 if !names.insert(f.name.clone()) {
                     return Err(error(
@@ -240,7 +240,7 @@ impl Checker {
     }
 
     pub(super) fn register_errors(&mut self, prog: &Program) -> Result<(), Error> {
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         for err in &prog.errors {
             if err.name == "none" || err.name == "forwarded" {
                 return Err(error(
@@ -292,7 +292,7 @@ impl Checker {
                 fields,
             });
         }
-        let mut set_names = HashSet::new();
+        let mut set_names = FxHashSet::default();
         for set in &prog.error_sets {
             if set.name == "forwarded" {
                 return Err(
@@ -461,7 +461,7 @@ impl Checker {
         match ty {
             TypeRef::Record { fields, .. } => {
                 let mut built = Vec::with_capacity(fields.len());
-                let mut names = HashSet::new();
+                let mut names = FxHashSet::default();
                 for f in fields {
                     if !names.insert(f.name.clone()) {
                         return Err(error(
@@ -485,7 +485,7 @@ impl Checker {
             }
             TypeRef::Variant { variants, .. } => {
                 let mut built = Vec::with_capacity(variants.len());
-                let mut names = HashSet::new();
+                let mut names = FxHashSet::default();
                 for v in variants {
                     if matches!(v.name.as_str(), "Some" | "None") {
                         return Err(error(
@@ -1273,7 +1273,7 @@ impl Checker {
                 },
             ));
         };
-        let mut env = HashMap::new();
+        let mut env = FxHashMap::default();
         for (param, id) in self.modules[index].params.iter().zip(&ids) {
             env.insert(param.name.clone(), *id);
         }

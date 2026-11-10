@@ -7,7 +7,6 @@
 //! byte. `assemble` then picks the shortest encoding for every constant and
 //! every label push. A label costs a `JUMPDEST` only when a jump refers to it.
 
-use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hash};
 
 use crate::error;
@@ -60,14 +59,15 @@ fn entries(table: &[u32; 8]) -> impl Iterator<Item = u32> + '_ {
     table.iter().copied().take_while(|&l| l != 0)
 }
 
-// The passes hash instructions and labels they made themselves, so a fast hash is safe here.
-// Nothing depends on the order of a map.
-type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
-type FxHashSet<T> = HashSet<T, BuildHasherDefault<Fx>>;
+// The compiler hashes its own instructions and labels and the names in the sources it is
+// given, so a fast hash is safe. Nothing may depend on a map's order: a `BTreeMap` is used
+// where an order is seen.
+pub(crate) type FxHashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<Fx>>;
+pub(crate) type FxHashSet<T> = std::collections::HashSet<T, BuildHasherDefault<Fx>>;
 
 /// The multiply-rotate hash rustc uses for its own tables.
 #[derive(Default)]
-struct Fx(u64);
+pub(crate) struct Fx(u64);
 
 impl std::hash::Hasher for Fx {
     fn write(&mut self, bytes: &[u8]) {
@@ -1094,7 +1094,7 @@ const BREAK: u32 = u32::MAX;
 /// instructions, and each instruction's size.
 #[derive(Default)]
 struct Tokens {
-    ids: HashMap<Inst, u32>,
+    ids: FxHashMap<Inst, u32>,
     tok: Vec<u32>,
     bytes: Vec<usize>,
 }
@@ -1126,7 +1126,7 @@ impl Tokens {
 /// Labels that begin an exit which never reads a stack value it did not push.
 /// Jumps to them are safe from inside a helper, whatever lies below.
 /// `safe_exits`, for the code generator: a branch to one leaves a straight run intact.
-pub(crate) fn exit_labels(code: &[Inst]) -> HashSet<u32> {
+pub(crate) fn exit_labels(code: &[Inst]) -> FxHashSet<u32> {
     safe_exits(code).into_iter().collect()
 }
 
@@ -1718,7 +1718,7 @@ fn outline_once(code: &mut Vec<Inst>, t: &mut Tokens, entries: &[u32], params: b
 }
 
 /// Stack effect of a call to a shared helper: items taken, items left.
-pub(crate) type Calls = HashMap<u32, (usize, usize)>;
+pub(crate) type Calls = FxHashMap<u32, (usize, usize)>;
 
 /// `PUSH ret PUSH helper JUMP ret:` at `i`, with the helper's effect.
 #[inline]
@@ -5295,7 +5295,7 @@ fn hold(
 
 /// A call to a compiled function right before returning what it returns becomes a jump:
 /// the function takes nothing from the stack, so it returns to the caller's caller.
-pub(crate) fn tail_calls(code: &mut Vec<Inst>, funcs: &HashMap<u32, usize>) {
+pub(crate) fn tail_calls(code: &mut Vec<Inst>, funcs: &FxHashMap<u32, usize>) {
     let mut i = 0;
     while i + 4 < code.len() {
         if let [PushLabel(r), PushLabel(f), Op(JUMP), Label(at), rest @ ..] = &code[i..] {
@@ -5342,7 +5342,11 @@ fn runs_other_code(op: u8) -> bool {
 /// anything could see it is dropped. Two writes to one packed slot become one. `opaque` are
 /// helpers that may touch storage themselves. Keys made by hashing never equal these
 /// constants, and an index into a fixed list is bounds-checked, which ends the run.
-pub(crate) fn forward_storage(code: &mut Vec<Inst>, calls: &Calls, opaque: &HashSet<u32>) -> bool {
+pub(crate) fn forward_storage(
+    code: &mut Vec<Inst>,
+    calls: &Calls,
+    opaque: &FxHashSet<u32>,
+) -> bool {
     let mut any = false;
     for _ in 0..MAX_ROUNDS {
         let exits = safe_exits(code);
@@ -5383,7 +5387,7 @@ fn plan_storage(
     (key, store): (Word, u8),
     runs: &Runs,
     calls: &Calls,
-    opaque: &HashSet<u32>,
+    opaque: &FxHashSet<u32>,
     reverts: &FxHashSet<u32>,
 ) -> Option<Vec<(usize, usize, Vec<Inst>)>> {
     let load = if store == SSTORE { SLOAD } else { TLOAD };
@@ -5493,7 +5497,7 @@ fn plan_load(
     (key, load): (Word, u8),
     runs: &Runs,
     calls: &Calls,
-    opaque: &HashSet<u32>,
+    opaque: &FxHashSet<u32>,
 ) -> Option<Vec<(usize, usize, Vec<Inst>)>> {
     let store = if load == SLOAD { SSTORE } else { TSTORE };
     let run = runs.run[i];
