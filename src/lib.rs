@@ -619,15 +619,15 @@ fn analyze_in(path: &Path, src: &str, pass: Pass, cache: &ModuleCache) -> (Analy
         );
     }
     let mut checked = Vec::new();
-    for unit in units.clone() {
-        let name = artifact_contract_name(&unit, path);
+    for unit in &units {
+        let name = artifact_contract_name(unit, path);
         #[cfg(test)]
         cache.note_check();
         match check::check_in(unit.clone(), false, opts.evm) {
             Ok(unit_checked) => {
                 lap.mark("check");
                 if codegen && failed.is_none() {
-                    failed = match build(&sources, path, unit, &name, &opts) {
+                    failed = match build(&sources, path, unit.clone(), &name, &opts) {
                         Err(err)
                             if err.message != route::NO_ENTRIES || !declares_no_contract(src) =>
                         {

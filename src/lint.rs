@@ -365,14 +365,12 @@ fn commit(path: &Path, original: &str, edited: &str) -> bool {
 
 fn units(path: &Path) -> Result<Vec<Program>, Error> {
     let sources = Sources::disk();
-    let prog = modules::load(&sources, path)?;
+    let mut prog = modules::load(&sources, path)?;
     // A spec file can't import, so the file's imports serve its specs too. A spec that
-    // doesn't check is `lithe specs`'s to report, not lint's.
-    let mut with_specs = prog.clone();
-    let prog = match modules::load_specs(&sources, path, &mut with_specs) {
-        Ok(()) => with_specs,
-        Err(_) => prog,
-    };
+    // doesn't check is `lithe specs`'s to report, not lint's, which reloads the file without it.
+    if modules::load_specs(&sources, path, &mut prog).is_err() {
+        prog = modules::load(&sources, path)?;
+    }
     Ok(modules::split_units(prog))
 }
 
