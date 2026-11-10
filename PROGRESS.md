@@ -83,7 +83,7 @@ This section is the single source of truth for what is open and what blocks what
 - **3.4b landed** (`fc4921d`), final bytes unchanged; re-verified at `3a670f0` after 3.2b/3.2c rewrote `flow_` and `merge_tails` (exact pass 0–4 rounds, 53 targets byte-identical in both modes). Incremental `flow` between rounds measured at 10–12% of the `outline_once` loop — a few tens of ms of a multi-second build; not taken (see 3.4b re-verified).
 - **3.3b(ii) landed.** Batched promotion (below). Rounds are 4 at ladder N = 16/64/128 (were 34/130/258) and ladder 128 Fast `promote` 49.6 → 12.0 ms. It is `Plan::batch`, default on in the start plan, tried off by the search as `Move::Batch`. Sizes: runtime bytes −0.027 % over the 272 target-modes (parent → here), and −0.153 % creation + runtime over the 13 whose code changes; the `Fast` increases behind that (`nft` +74, `utils` +14, `governance_token` +2, `erc20_full` +2) are the batched start plan's own price, since `Fast` builds that plan and nothing else and has no candidate to decline it. Gas: **transaction gas +0.0002 %** (the step totals, 68 121 512 → 68 121 662) and **gas including deploy −0.018 %** (96 454 261 → 96 437 353); every step outcome identical. See `## 3.3b(ii)` for the tables.
 - **3.3c measured, not taken (S40, reproduced by S53).** `LITHE_PRICE_BATCH=1` prices every plan the Release search builds with `batch` on and off. Over the 51 `bench/*.lithe`: 1 140 pairs, 103 wins, 1 015 ties, **22 losses** (erc20_full 12, erc721_full 4, erc721 3, fixed_point, uniswap_v2_factory, uniswap_v2_pair 1 each; worst +0.96 % cost on erc721). The deletion's own condition fails, so the greedy `promote_region` path, `Plan::batch` and `Move::Batch` stay. The command and the comparison with S40's scratch count are in `## S40 3.3c priced`.
-- **3.3 closed as not taken (S48).** The value-numbering scheduler is not built. `promote` is 8.9 % of the Fast backend over `bench/` and 3–4 % on the ladder, so the rewrite moves no open target. See `## S48 3.3 closed: not taken`.
+- **3.3 closed as not taken (S48).** The value-numbering scheduler is not built. `promote` is 8.9 % of the Fast backend over `bench/` and 3–4 % on the ladder, so the rewrite moves no open target. The record also covers what 3.3 owed beyond compile time. Size and gas are within budget: runtime −0.027 % and deploy-inclusive gas −0.018 %, but transaction gas is +0.0002 %, so §5's expected gas improvement is not delivered. The stack-too-deep guarantee comes from memory homes plus the `< 16` reach checks in `hold`/`plan_region`/`walk_alias`/`abandon_walk` and the outliner, with no spilling. See `## S48 3.3 closed: not taken`.
 - **4.1 closed as not taken (S23).** Per-body emission, the only per-function unit before `resolve`, is 9.1 % of the Fast backend and 8.2 % of Release (50 `bench/` files, `LITHE_THREADS=1`). The `[time]` line now reports it as `body`. Unlimited threads would give at most 1.10×, and the join would have to rebuild each body's shared emitter state. `parallel_map` still parallelises plan candidates only. Release output is byte-identical at 1 and 16 threads over all 51 `bench/` files and ladder 128. See `## S23 4.1 closed: not taken`.
 - **3.5 open, `promote` half done**: `promote` is now flat in the function count, so what is left of the 2.23×/2.01× per-line ratio is `optimize`. Re-measure once 3.2b's successor and 3.3c land.
 - **Final comparison table** below is a mid-branch snapshot; regenerate it once the steps above land.
@@ -773,14 +773,36 @@ for n in 16 64 128; do python3 scripts/gen_scaling.py $n > /tmp/ladder$n.lithe; 
 | erc20_full Release | 4 602 ms | 1 690 ms | 37 % | 58 |
 | ladder 16 / 64 / 128, Fast (min of 3) | 28 / 88 / 234 ms | 1.1 / 3.4 / 8.4 ms | 3–4 % | 4 / 4 / 4 |
 
-**Why that closes it.** The scheduler's own payoff is bounded by `promote`'s time, and against the program's open targets that bound moves none of them:
+**The three obligations §5 3.3 carries, answered from numbers already in this file.** No new run was needed: the S48 table gives the shares (taken at load 16–19, so its absolute ms are inflated), `## 3.2c`'s first table gives the absolute times at load 2.0, and `## 3.3b(ii)` gives the size and gas of the 3.3 slice that landed.
 
-- **Fast** (the mode §4's compile targets are written for): removing `promote` outright saves at most 8.9 % of the backend, 9 ms of erc20_full's 83 ms. The ≤ 15 ms erc20_full target is missed by `optimize` and `outline`, not by `promote`.
-- **3.5** (ladder linearity): `promote` is already flat at 4 rounds per emit and 3–4 % of the backend; the superlinear term is `optimize` (`## 3.5 Ladder after 3.4b`).
-- **Release** has no compile-time target in §4. Its 29 % is real, but it is paid per candidate, so the lever is the 17 rounds per emit, not a new algorithm.
-- **Size/gas**: the only cut-at-function-edge variant measured cost +4.1 % Fast / +4.6 % Release runtime bytes (`## 3.3b(i)`); a scheduler has to beat today's greedy on every knob (`tight`, `hold_dups`, `sink`, `abandon`, alias copies) within 1 % over every target-mode to land at all.
+**1. Compile time.** What 3.3 delivered is 3.3a and 3.3b(ii): ladder 128 Fast `promote` 32.5 → 20.1 ms (3.3a, byte-identical) → 12.0 ms (3.3b(ii)), rounds 258 → 4, and rounds are now 4 at every ladder size. What the unbuilt scheduler could still add is bounded by `promote`'s remaining time, and that bound reaches none of the open compile-time targets:
 
-So the rewrite buys at most 9 % of a Fast build and risks the 1 % size gate. That is not taken.
+- **erc20_full Fast ≤ 15 ms (§4, after Phase 3).** At load 2.0 the backend is 40.3 ms with `promote` 5.1 ms (`## 3.2c`). Deleting `promote` outright leaves 35.2 ms, still 2.3× the target; the rest is `optimize` (12.6 ms) and `outline+` (9.9 ms). The S48 share, 11 % of erc20_full and 8.9 % over all 51 `bench/` Fast, says the same.
+- **Synthetic 1 735-line build ≤ 25 ms (§4).** That is ladder 64: backend 43.5 ms with `promote` 1.9 ms at load 2.0 (`## 3.2c`). Without `promote` it is 41.6 ms, still over.
+- **3.5 (ladder linearity).** `promote` is flat at 4 rounds per emit and 3–4 % of the backend; the superlinear term is `optimize` (`## 3.5 Ladder after 3.4b`).
+- **Release** has no compile-time target in §4. Its 29 % `promote` share is real, but it is paid per candidate at 17 rounds per emit (58 on erc20_full), so the lever is the round count, not a new algorithm (see "What would reopen it").
+
+**2. Size and gas, the ≤ 1 % budget and its "expect improvement".** The codegen 3.3 landed is 3.3a (byte-identical) and 3.3b(ii); its gate is `## 3.3b(ii)`:
+
+| measure | delta | budget |
+|---|---:|---|
+| runtime bytes, 272 target-modes | **−0.027 %** | within, and improved |
+| creation + runtime, the 13 that change | −0.153 % | within, and improved |
+| deploy gas, 45 suites | −0.060 % | within, and improved |
+| gas including deploy | **−0.018 %** | within, and improved |
+| transaction gas, 45 suites | **+0.0002 %** (+150 gas, `erc20_full` only) | within, **not** improved |
+
+Every step's status and returndata hash is unchanged in all 45 suites. One per-target entry is over 1 %: `nft` Fast +1.4 %, the batched start plan's price in the mode that cannot decline it; Release leaves `nft` unchanged. So the §2 budget passes on totals and size and deploy gas improve as §5 expected, but transaction gas does not: it is flat to +0.0002 %. The improvement §5 expected from a scheduler with planned block-entry layouts is not delivered, because that scheduler is not built. The only stream-cutting variant measured, 3.3b(i), cost +4.1 % Fast / +4.6 % Release runtime bytes and was not taken. To land at all, a scheduler has to beat today's greedy on every knob (`tight`, `hold_dups`, `sink`, `abandon`, alias copies) within 1 % over every target-mode.
+
+**3. Where the stack-too-deep guarantee lives.** §5 3.3 asked for a guarantee through spilling to the memory home. Without the scheduler there is no spill. The guarantee is instead that promotion never takes a word out of its home where an access would be out of reach:
+
+- **Every local has a memory home.** `gen` places every local in memory, so the unpromoted stream is valid at any number of locals.
+- **Every promotion rewrite checks reach.** `hold` only rewrites an access whose value is within 16 items (`src/asm.rs`, `(0..16).contains(&above)`). The checks in `plan_region` (`d < 16`), `walk_alias` (`d < 16`) and `abandon_walk` (`d >= 16` refuses) do the same. An out-of-reach access stays an `MLOAD`/`MSTORE` on the home.
+- **The outliner obeys the same limit.** `run_effect` refuses a run that takes or leaves more than 16 items, `fetches` refuses one whose arguments sit deeper than 16, and `outline_once` refuses a prologue over 16.
+
+The user-facing statement is `docs/src/pages/guide/architecture.mdx`, "Why stack-too-deep cannot occur". 3.3a and 3.3b(ii) changed which regions are chosen and how many are applied per round, not these checks. 3.3b(ii)'s `region_batch` takes only regions with disjoint walks, so each region's depths are the ones its plan computed. The `LITHE_VERIFY` oracle re-plans every taken word from scratch.
+
+So the rewrite buys at most 5 ms of erc20_full's 40 ms Fast backend, closes no compile-time target, and risks the 1 % size gate. The guarantee it was to carry already holds without it. It is not taken.
 
 **What would reopen it.** Spill-at-part-edge is untested. This record does not show it fails; it shows it does not pay against the open targets. Release's 58 rounds per emit on erc20_full is the cheaper lever: `region_batch` drops regions whose walks overlap, so real contracts still take 10–60 rounds where the ladder takes 4. Re-planning the dropped words in the same round is S40's open hypothesis. `LITHE_PRICE_BATCH` prices it with no extra tooling.
 

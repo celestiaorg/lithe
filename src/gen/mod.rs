@@ -643,7 +643,9 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     };
     // Under `LITHE_PRICE_BATCH`, each plan is built with `batch` flipped too and both costs
     // are logged once per pair. The twins only add cache entries, so the search still
-    // picks the same plan.
+    // picks the same plan. Twins bypass `note_big` on purpose: the search never picks a
+    // twin, so recording an oversized twin's outline set in `too_big` would prune
+    // candidates the search would otherwise try.
     let priced_pairs = std::sync::Mutex::new(FxHashSet::<Plan>::default());
     let build_raw = |plans: &[Plan]| -> Vec<Result<Candidate, Error>> {
         if !price_batch() {
