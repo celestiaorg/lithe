@@ -208,7 +208,7 @@ impl<'a> Gen<'a> {
         let mut picks = Vec::new();
         let mut defined = Vec::new();
         // Constants bound to a settled value, which a query issued early reads in their place.
-        let mut known: HashMap<usize, Expr> = HashMap::new();
+        let mut known: FxHashMap<usize, Expr> = FxHashMap::default();
         let written = std::cell::RefCell::new(Vec::new());
         let record = |node: Node<'_>| {
             if let Node::Stmt(Stmt::Assign {
@@ -295,7 +295,7 @@ impl<'a> Gen<'a> {
         e: &Expr,
         defined: &[usize],
         written: &[(usize, u32, u32)],
-        known: &HashMap<usize, Expr>,
+        known: &FxHashMap<usize, Expr>,
     ) -> bool {
         fn plain(e: &Expr) -> bool {
             match e {
@@ -761,7 +761,7 @@ impl<'a> Gen<'a> {
 }
 
 /// `e` with each constant in `known` replaced by the value it was bound to.
-fn substitute(e: &Expr, known: &HashMap<usize, Expr>) -> Expr {
+fn substitute(e: &Expr, known: &FxHashMap<usize, Expr>) -> Expr {
     if let Expr::Ident { sym: Some(sym), .. } = e {
         if let Some(value) = known.get(sym) {
             return value.clone();
@@ -835,7 +835,7 @@ fn eager_queries<'e>(e: &'e Expr, called: &mut bool, out: &mut Vec<(u32, u32, &'
 /// reach its body, and the immutable constants folded into it.
 #[derive(Default)]
 pub(super) struct BodyMemo {
-    map: HashMap<BodyKey, Rec>,
+    map: FxHashMap<BodyKey, Rec>,
     #[cfg(test)]
     hits: usize,
 }
@@ -888,7 +888,7 @@ struct Rec {
     /// Error head this body allocated or wrote. The revert helper reads that region.
     revert_head: Option<i32>,
     /// Early queries known when this body was compiled; its queries may load their buffers.
-    hoisted0: HashMap<(u32, u32), i32>,
+    hoisted0: FxHashMap<(u32, u32), i32>,
     /// Early queries this body issued or reissued.
     hoisted: Vec<((u32, u32), i32)>,
     /// Data, literals, peers, and tail blobs already embedded when this body was compiled.
@@ -930,23 +930,23 @@ pub(super) struct BodyBefore {
     space0: usize,
     fixed: usize,
     mid: Vec<(Region, u32)>,
-    func_keys: HashSet<FuncKey>,
+    func_keys: FxHashSet<FuncKey>,
     subs: Vec<Sub>,
     fails: Vec<Option<u64>>,
     raises: Vec<String>,
-    anchors: HashMap<u32, Anchor>,
-    func_calls: HashSet<(usize, usize)>,
-    shared_temps: HashSet<usize>,
-    drain_spaces: HashSet<usize>,
-    blobs: HashSet<usize>,
-    rooms: HashMap<i32, i32>,
-    owned: HashMap<(usize, String), i32>,
+    anchors: FxHashMap<u32, Anchor>,
+    func_calls: FxHashSet<(usize, usize)>,
+    shared_temps: FxHashSet<usize>,
+    drain_spaces: FxHashSet<usize>,
+    blobs: FxHashSet<usize>,
+    rooms: FxHashMap<i32, i32>,
+    owned: FxHashMap<(usize, String), i32>,
     cache_words: Vec<i32>,
     leaf_words: Vec<(i32, Word)>,
     needs: usize,
     data: Vec<Word>,
-    literals: HashMap<Vec<u8>, Word>,
-    peer_built: HashMap<String, Vec<u8>>,
+    literals: FxHashMap<Vec<u8>, Word>,
+    peer_built: FxHashMap<String, Vec<u8>>,
     tail_blobs: usize,
     revert_kinds: u64,
     return_sites: usize,
@@ -963,13 +963,13 @@ pub(super) struct BodyBefore {
     bytes_rep: Option<(usize, u32)>,
     dyn_key: Option<(u32, i32)>,
     revert_head: Option<i32>,
-    hoisted: HashMap<(u32, u32), i32>,
+    hoisted: FxHashMap<(u32, u32), i32>,
     embed: u64,
 }
 
 impl<'a> Gen<'a> {
     pub(super) fn body_before(&self) -> BodyBefore {
-        let mut anchors = HashMap::new();
+        let mut anchors = FxHashMap::default();
         for &(sub, label, _) in &self.subs {
             anchors.insert(label, Anchor::Sub(sub));
         }
@@ -1290,7 +1290,7 @@ impl<'a> Gen<'a> {
                 return false;
             }
         }
-        let mut old_labels = HashMap::new();
+        let mut old_labels = FxHashMap::default();
         for (label, anchor) in &rec.anchors {
             let Some(now) = self.anchor_label(anchor) else {
                 return false;
@@ -1557,8 +1557,8 @@ fn reaching_bits(gen: &Gen, idx: usize) -> u64 {
 
 fn embed_hash(
     data: &[(Word, Vec<u8>, String)],
-    literals: &HashMap<Vec<u8>, Word>,
-    peers: &HashMap<String, Vec<u8>>,
+    literals: &FxHashMap<Vec<u8>, Word>,
+    peers: &FxHashMap<String, Vec<u8>>,
     tails: &[(Word, Vec<u32>)],
 ) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -1596,7 +1596,7 @@ fn imm_hash(consts: &[Option<Word>]) -> u64 {
     hasher.finish()
 }
 
-fn hash_sorted<T: Ord + Hash>(set: &HashSet<T>, hasher: &mut impl Hasher) {
+fn hash_sorted<T: Ord + Hash>(set: &FxHashSet<T>, hasher: &mut impl Hasher) {
     let mut items: Vec<&T> = set.iter().collect();
     items.sort();
     items.len().hash(hasher);
@@ -1646,7 +1646,7 @@ fn map_label(
     label0: u32,
     new0: u32,
     count: u32,
-    old: &HashMap<u32, u32>,
+    old: &FxHashMap<u32, u32>,
 ) -> Option<u32> {
     if label == 0 {
         return Some(0);
@@ -1663,7 +1663,7 @@ fn remap_code(
     label0: u32,
     new0: u32,
     count: u32,
-    old: &HashMap<u32, u32>,
+    old: &FxHashMap<u32, u32>,
     space0: usize,
     base: usize,
 ) -> Option<Vec<Inst>> {
@@ -1705,7 +1705,7 @@ fn remap_mem(addr: u32, space0: usize, base: usize) -> Option<u32> {
     Some(((n as u32 + 1) << REGION_SHIFT) | off)
 }
 
-fn set_delta<T: Clone + Eq + Hash>(before: &HashSet<T>, after: &HashSet<T>) -> SetDelta<T> {
+fn set_delta<T: Clone + Eq + Hash>(before: &FxHashSet<T>, after: &FxHashSet<T>) -> SetDelta<T> {
     SetDelta {
         add: after
             .iter()
@@ -1721,8 +1721,8 @@ fn set_delta<T: Clone + Eq + Hash>(before: &HashSet<T>, after: &HashSet<T>) -> S
 }
 
 fn map_added<K: Clone + Eq + Hash, V: Clone + PartialEq>(
-    before: &HashMap<K, V>,
-    after: &HashMap<K, V>,
+    before: &FxHashMap<K, V>,
+    after: &FxHashMap<K, V>,
 ) -> Option<Vec<(K, V)>> {
     if after.len() < before.len() || before.iter().any(|(k, v)| after.get(k) != Some(v)) {
         return None;
@@ -1737,8 +1737,8 @@ fn map_added<K: Clone + Eq + Hash, V: Clone + PartialEq>(
 }
 
 fn map_delta<K: Clone + Eq + Hash, V: Clone + PartialEq>(
-    before: &HashMap<K, V>,
-    after: &HashMap<K, V>,
+    before: &FxHashMap<K, V>,
+    after: &FxHashMap<K, V>,
 ) -> Option<MapDelta<K, V>> {
     if before
         .iter()
@@ -1796,7 +1796,7 @@ fn remap_map<K: Clone, V>(
     })
 }
 
-fn apply_set<T: Clone + Eq + Hash>(set: &mut HashSet<T>, delta: &SetDelta<T>) {
+fn apply_set<T: Clone + Eq + Hash>(set: &mut FxHashSet<T>, delta: &SetDelta<T>) {
     for v in &delta.sub {
         set.remove(v);
     }
@@ -1805,7 +1805,7 @@ fn apply_set<T: Clone + Eq + Hash>(set: &mut HashSet<T>, delta: &SetDelta<T>) {
     }
 }
 
-fn apply_map<K: Eq + Hash + Clone, V: Clone>(map: &mut HashMap<K, V>, delta: &MapDelta<K, V>) {
+fn apply_map<K: Eq + Hash + Clone, V: Clone>(map: &mut FxHashMap<K, V>, delta: &MapDelta<K, V>) {
     for k in &delta.sub {
         map.remove(k);
     }

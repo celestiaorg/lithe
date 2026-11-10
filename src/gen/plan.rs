@@ -8,9 +8,9 @@ impl<'a> Gen<'a> {
             shape,
             needs: Vec::new(),
             entry_labels: Vec::new(),
-            inlined: HashMap::new(),
-            funcs: HashMap::new(),
-            const_sites: HashSet::new(),
+            inlined: FxHashMap::default(),
+            funcs: FxHashMap::default(),
+            const_sites: FxHashSet::default(),
             shared: false,
             log_sites: 0,
             return_sites: 0,
@@ -37,8 +37,8 @@ impl<'a> Gen<'a> {
             fire_loop: false,
             next_share: None,
             share: None,
-            hoisted: HashMap::new(),
-            skip_queries: std::collections::HashSet::new(),
+            hoisted: FxHashMap::default(),
+            skip_queries: FxHashSet::default(),
             scratch_a: 0,
             scratch_b: 0,
             scratch_c: 0,
@@ -47,7 +47,7 @@ impl<'a> Gen<'a> {
             key_scratch: 0,
             base64_tbl: 0,
             imm_consts: Vec::new(),
-            imm_stores: HashMap::new(),
+            imm_stores: FxHashMap::default(),
             init: false,
             code_args: 0,
             code_end: Word::from_u64(0),
@@ -56,38 +56,38 @@ impl<'a> Gen<'a> {
             value_sites: [0; 3],
             eq_sites: 0,
             slice_sites: [0; 2],
-            base64_opts: std::collections::HashSet::new(),
+            base64_opts: FxHashSet::default(),
             mul_sites: 0,
             exp_sites: [0; 2],
             queued_sites: 0,
-            queue_sites: HashMap::new(),
+            queue_sites: FxHashMap::default(),
             queues_begun: 0,
             trusted_index: false,
-            cd_lists: std::collections::HashSet::new(),
-            cd_bytes: std::collections::HashSet::new(),
-            rd_first: std::collections::HashSet::new(),
-            cd_words: std::collections::HashSet::new(),
-            inst_syms: std::collections::HashSet::new(),
+            cd_lists: FxHashSet::default(),
+            cd_bytes: FxHashSet::default(),
+            rd_first: FxHashSet::default(),
+            cd_words: FxHashSet::default(),
+            inst_syms: FxHashSet::default(),
             ret_out: None,
-            cd_trees: std::collections::HashSet::new(),
-            cd_checked: std::collections::HashSet::new(),
+            cd_trees: FxHashSet::default(),
+            cd_checked: FxHashSet::default(),
             slot_hint: None,
             bytes_rep: None,
             dyn_key: None,
-            slot_binds: HashMap::new(),
-            key_names: HashMap::new(),
-            const_params: HashMap::new(),
-            const_strs: HashMap::new(),
-            shared_temps: std::collections::HashSet::new(),
+            slot_binds: FxHashMap::default(),
+            key_names: FxHashMap::default(),
+            const_params: FxHashMap::default(),
+            const_strs: FxHashMap::default(),
+            shared_temps: FxHashSet::default(),
             func_ctx: None,
-            func_calls: std::collections::HashSet::new(),
+            func_calls: FxHashSet::default(),
             transient_slot: false,
             data: Vec::new(),
-            peer_built: HashMap::new(),
-            literals: HashMap::new(),
+            peer_built: FxHashMap::default(),
+            literals: FxHashMap::default(),
             returned: None,
-            slot_cache: HashMap::new(),
-            val_cache: HashMap::new(),
+            slot_cache: FxHashMap::default(),
+            val_cache: FxHashMap::default(),
             kept_store: false,
             cache_words: Vec::new(),
             leaf_words: Vec::new(),
@@ -100,9 +100,9 @@ impl<'a> Gen<'a> {
             journal_at: 0,
             journal_base: 0,
             blob_ptr: 0,
-            rooms: HashMap::new(),
-            owners: HashMap::new(),
-            owned: HashMap::new(),
+            rooms: FxHashMap::default(),
+            owners: FxHashMap::default(),
+            owned: FxHashMap::default(),
             sharing: Vec::new(),
             blob_base: 0,
             heap: None,
@@ -111,8 +111,8 @@ impl<'a> Gen<'a> {
             compiling: Vec::new(),
             fails: Vec::new(),
             raises: Vec::new(),
-            raise_sites: HashMap::new(),
-            inst_sites: HashMap::new(),
+            raise_sites: FxHashMap::default(),
+            inst_sites: FxHashMap::default(),
             subs: Vec::new(),
             revert_kinds: 0,
             revert_head: None,
@@ -121,14 +121,14 @@ impl<'a> Gen<'a> {
             body: None,
             bodies: 0,
             loop_syms: Vec::new(),
-            header_locals: std::collections::HashSet::new(),
-            span_temps: HashMap::new(),
-            mask_temps: HashMap::new(),
-            blobs: std::collections::HashSet::new(),
-            blob_sites: HashMap::new(),
-            ret_sites: HashMap::new(),
+            header_locals: FxHashSet::default(),
+            span_temps: FxHashMap::default(),
+            mask_temps: FxHashMap::default(),
+            blobs: FxHashSet::default(),
+            blob_sites: FxHashMap::default(),
+            ret_sites: FxHashMap::default(),
             append_to: None,
-            appendable: HashMap::new(),
+            appendable: FxHashMap::default(),
             loop_counters: Vec::new(),
             facts: Default::default(),
             imm_mem: 0,
@@ -137,7 +137,7 @@ impl<'a> Gen<'a> {
             tail_blobs: Vec::new(),
             crossed: false,
             drains: Vec::new(),
-            drain_spaces: HashSet::new(),
+            drain_spaces: FxHashSet::default(),
             queued_call: Stmt::Defer {
                 line: 0,
                 col: 0,
@@ -151,7 +151,7 @@ impl<'a> Gen<'a> {
                 gas: None,
                 then: None,
             },
-            untested_hooks: HashSet::new(),
+            untested_hooks: FxHashSet::default(),
             body_memo: None,
             fixed_spaces: 0,
             mem_notes: None,
@@ -326,9 +326,9 @@ impl<'a> Gen<'a> {
     /// gas each run of a call adds priced at `asm::byte_gas`. One transaction runs one
     /// body, so the body that runs the calls most counts.
     pub(super) fn plan(&self) -> Plan {
-        let mut outline = std::collections::HashSet::new();
-        let mut looped = std::collections::HashSet::new();
-        let mut outlinable = std::collections::HashSet::new();
+        let mut outline = FxHashSet::default();
+        let mut looped = FxHashSet::default();
+        let mut outlinable = FxHashSet::default();
         for (&idx, (calls, bytes, runs)) in &self.inlined {
             let (calls, bytes) = (*calls, *bytes);
             let runs = runs.values().fold(0.0, |a: f64, &b| a.max(b));
@@ -466,8 +466,8 @@ impl<'a> Gen<'a> {
 
     /// Hooks without a result this facet calls back, through a call whose arguments aren't
     /// all inert. Every other call tests the hook's bit before its arguments.
-    fn find_untested_hooks(&self) -> HashSet<usize> {
-        let found = std::cell::RefCell::new(HashSet::new());
+    fn find_untested_hooks(&self) -> FxHashSet<usize> {
+        let found = std::cell::RefCell::new(FxHashSet::default());
         let note = |node: Node<'_>| {
             if let Node::Expr(Expr::Call {
                 callee: Some(idx),
@@ -572,7 +572,7 @@ impl<'a> Gen<'a> {
     /// function is the same everywhere.
     fn outline_safe(&self, idx: usize, seen: &mut Vec<usize>) -> bool {
         // The interface call a query makes: `expr_any` visits the query before it.
-        let queried = std::cell::RefCell::new(std::collections::HashSet::new());
+        let queried = std::cell::RefCell::new(FxHashSet::default());
         let bad = |node: Node<'_>| match node {
             Node::Stmt(st) => matches!(st, Stmt::Defer { .. }),
             Node::Expr(e) => match e {
@@ -1186,7 +1186,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Each compiled function's label, and how many words it returns on the stack.
-    pub(super) fn func_leaves_by_label(&self) -> HashMap<u32, usize> {
+    pub(super) fn func_leaves_by_label(&self) -> FxHashMap<u32, usize> {
         // A call that passes arguments needs its own return address.
         self.funcs
             .values()
@@ -1316,7 +1316,7 @@ impl<'a> Gen<'a> {
         super::add_promote_rounds(rounds);
         // String helpers reach storage through a slot they are given, and others write
         // slots they are given, which may be a fixed list's.
-        let opaque: std::collections::HashSet<u32> = self
+        let opaque: FxHashSet<u32> = self
             .funcs
             .values()
             .map(|f| f.label)
@@ -1356,9 +1356,9 @@ impl<'a> Gen<'a> {
     /// Calldata cannot change, and the one store precedes every load of its word. A word
     /// the read also shifts stays when it is loaded more than once.
     fn read_calldata(&mut self, tracked: &dyn Fn(u32) -> bool) {
-        let mut stores: HashMap<u32, Vec<usize>> = HashMap::new();
-        let mut first_load: HashMap<u32, usize> = HashMap::new();
-        let mut loads: HashMap<u32, usize> = HashMap::new();
+        let mut stores: FxHashMap<u32, Vec<usize>> = FxHashMap::default();
+        let mut first_load: FxHashMap<u32, usize> = FxHashMap::default();
+        let mut loads: FxHashMap<u32, usize> = FxHashMap::default();
         for i in 0..self.code.len() {
             let Inst::Mem(addr) = self.code[i] else {
                 continue;
@@ -1392,7 +1392,7 @@ impl<'a> Gen<'a> {
                 _ => None,
             }
         };
-        let mut from: HashMap<u32, Vec<Inst>> = HashMap::new();
+        let mut from: FxHashMap<u32, Vec<Inst>> = FxHashMap::default();
         for (addr, at) in &stores {
             let [i] = at.as_slice() else { continue };
             if first_load.get(addr).is_some_and(|l| l < i) {
@@ -1460,7 +1460,7 @@ impl<'a> Gen<'a> {
         });
         order.sort_by_key(|&i| self.spaces[i].region != Region::Base64);
         // Each user and the functions that can run while it does.
-        let mut reach: HashMap<usize, std::collections::HashSet<usize>> = HashMap::new();
+        let mut reach: FxHashMap<usize, FxHashSet<usize>> = FxHashMap::default();
         for &(from, to) in &self.func_calls {
             reach.entry(from).or_default().insert(to);
         }

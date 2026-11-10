@@ -1,7 +1,8 @@
 //! What an editor asks of a checked program: the declaration each name refers to, what
 //! hovering it shows, what may be typed next, and the parameters of the call being typed.
 
-use std::collections::{HashMap, HashSet};
+use crate::asm::{FxHashMap, FxHashSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::ast::*;
@@ -16,11 +17,11 @@ pub struct Index {
     pub defs: Vec<Def>,
     pub refs: Vec<Ref>,
     /// Each type's declaring definition, whose children are its fields, variants, or methods.
-    shapes: HashMap<usize, usize>,
+    shapes: FxHashMap<usize, usize>,
     tys: Vec<Ty>,
     /// The names the indexed file sees, as it writes them, and the canonical name each
     /// stands for: `Math`, `Fees.apply`, `Chain.Evm`.
-    spelled: HashMap<String, String>,
+    spelled: BTreeMap<String, String>,
 }
 
 pub struct File {
@@ -199,27 +200,27 @@ pub(crate) fn build(root: &str, text: &str, units: &[Checked]) -> Index {
             files: Vec::new(),
             defs: Vec::new(),
             refs: Vec::new(),
-            shapes: HashMap::new(),
+            shapes: FxHashMap::default(),
             tys: Vec::new(),
-            spelled: HashMap::new(),
+            spelled: BTreeMap::new(),
         },
         root: root.to_string(),
         text,
-        file_ids: HashMap::new(),
+        file_ids: FxHashMap::default(),
         starts: Vec::new(),
-        def_at: HashMap::new(),
-        ref_at: HashSet::new(),
-        kids: HashMap::new(),
-        stored: HashSet::new(),
-        builtins: HashMap::new(),
-        contracts: HashMap::new(),
+        def_at: FxHashMap::default(),
+        ref_at: FxHashSet::default(),
+        kids: FxHashMap::default(),
+        stored: FxHashSet::default(),
+        builtins: FxHashMap::default(),
+        contracts: FxHashMap::default(),
         c: None,
         base: 0,
-        names: HashMap::new(),
+        names: FxHashMap::default(),
         funcs: Vec::new(),
-        storage_params: HashMap::new(),
-        syms: HashMap::new(),
-        type_names: HashMap::new(),
+        storage_params: FxHashMap::default(),
+        syms: FxHashMap::default(),
+        type_names: FxHashMap::default(),
         file: 0,
         func: None,
         module: None,
@@ -252,24 +253,24 @@ struct Builder<'a> {
     ix: Index,
     root: String,
     text: &'a str,
-    file_ids: HashMap<String, usize>,
+    file_ids: FxHashMap<String, usize>,
     starts: Vec<Vec<usize>>,
-    def_at: HashMap<(usize, u32, u32), usize>,
-    ref_at: HashSet<(usize, u32, u32)>,
-    kids: HashMap<(usize, String), usize>,
+    def_at: FxHashMap<(usize, u32, u32), usize>,
+    ref_at: FxHashSet<(usize, u32, u32)>,
+    kids: FxHashMap<(usize, String), usize>,
     /// Fields declared inside storage, whose hover already says where they are stored.
-    stored: HashSet<usize>,
-    builtins: HashMap<String, usize>,
-    contracts: HashMap<String, usize>,
+    stored: FxHashSet<usize>,
+    builtins: FxHashMap<String, usize>,
+    contracts: FxHashMap<String, usize>,
     // The unit being indexed. A file with several contracts has one per contract.
     c: Option<&'a Checked>,
     base: usize,
-    names: HashMap<(char, String), usize>,
+    names: FxHashMap<(char, String), usize>,
     funcs: Vec<usize>,
     /// Each function's `storage` parameters, which the checker substitutes away.
-    storage_params: HashMap<(usize, String), usize>,
-    syms: HashMap<usize, usize>,
-    type_names: HashMap<usize, String>,
+    storage_params: FxHashMap<(usize, String), usize>,
+    syms: FxHashMap<usize, usize>,
+    type_names: FxHashMap<usize, String>,
     file: usize,
     func: Option<usize>,
     module: Option<String>,
@@ -3443,7 +3444,7 @@ impl Index {
     }
 
     fn by_kind(&self, kinds: &[Kind]) -> Vec<Completion> {
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         (0..self.defs.len())
             .filter(|&d| kinds.contains(&self.defs[d].kind) && seen.insert(&self.defs[d].name))
             .map(|d| self.item(d))
@@ -3524,7 +3525,7 @@ impl Index {
     }
 
     fn scope(&self, line: u32) -> Vec<Completion> {
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         let mut out = Vec::new();
         for d in self.locals(line).into_iter().rev() {
             if seen.insert(self.defs[d].name.clone()) {

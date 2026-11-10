@@ -1,11 +1,11 @@
 //! ABI flattening. Nested `case` dispatch becomes one selector per leaf.
 
+use crate::asm::FxHashMap;
 use crate::ast::*;
 use crate::check::{abi_fields, abi_parts, AbiField, Checked, Note, RType, RVariant, TyKind};
 use crate::error;
 use crate::keccak::selector;
 use crate::Error;
-use std::collections::HashMap;
 
 pub(crate) struct Route {
     pub name: String,
@@ -168,7 +168,10 @@ fn has_hooks(checked: &Checked) -> bool {
 
 /// Each entrypoint's dispatch path, guards, and effects. `parts` names where each selector
 /// runs when the contract is split.
-pub(crate) fn render(checked: &Checked, parts: Option<&HashMap<[u8; 4], String>>) -> String {
+pub(crate) fn render(
+    checked: &Checked,
+    parts: Option<&std::collections::HashMap<[u8; 4], String>>,
+) -> String {
     let mut out = String::new();
     let hooked = has_hooks(checked);
     for r in shown_routes(checked) {
@@ -1460,7 +1463,7 @@ pub(crate) fn fmt_expr(e: &Expr) -> String {
 /// module, when the contract is split.
 pub(crate) fn render_footprints(
     checked: &Checked,
-    parts: Option<&HashMap<[u8; 4], String>>,
+    parts: Option<&std::collections::HashMap<[u8; 4], String>>,
 ) -> String {
     let part = |sel: [u8; 4]| -> Vec<(&str, Vec<String>)> {
         match parts.and_then(|parts| parts.get(&sel)) {
@@ -1869,7 +1872,7 @@ fn params(fields: &[AbiField], names: &InternalNames) -> Vec<Param> {
 /// library, resolve one record naming another. Other types keep their ABI type.
 struct InternalNames<'a> {
     types: &'a [RType],
-    names: HashMap<usize, String>,
+    names: FxHashMap<usize, String>,
 }
 
 impl<'a> InternalNames<'a> {
@@ -1878,7 +1881,7 @@ impl<'a> InternalNames<'a> {
         let contract = crate::artifact_contract_name(prog, std::path::Path::new(&prog.origin));
         let mut named: Vec<(&String, &usize)> = checked.named.iter().collect();
         named.sort();
-        let mut names = HashMap::new();
+        let mut names = FxHashMap::default();
         for (name, &id) in named {
             let t = &checked.types[id];
             let shown = crate::modules::shown(name);

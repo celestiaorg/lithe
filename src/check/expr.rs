@@ -996,7 +996,7 @@ impl Checker {
                 } else {
                     return Err(error(*line, *col, "`case` expects a variant"));
                 };
-                let mut seen = HashSet::new();
+                let mut seen = FxHashSet::default();
                 let mut result = None;
                 let expect = self.expect;
                 // Arms that take their type from context wait for the others' type when

@@ -251,7 +251,7 @@ impl Checker {
         let id = self.scopes.len();
         self.scopes.push(Scope {
             parent: Some(parent),
-            vars: HashMap::new(),
+            vars: FxHashMap::default(),
         });
         id
     }

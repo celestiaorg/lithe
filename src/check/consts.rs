@@ -14,8 +14,8 @@ impl Checker {
         let mut fold = Fold {
             c: self,
             funcs,
-            locals: HashMap::new(),
-            named: HashMap::new(),
+            locals: FxHashMap::default(),
+            named: FxHashMap::default(),
         };
         for idx in 0..funcs.len() {
             fold.func(idx)
@@ -50,7 +50,7 @@ impl Checker {
             "a list length",
             size,
             None,
-            &HashMap::new(),
+            &FxHashMap::default(),
             &mut Vec::new(),
         )?;
         crate::parse::list_len(w, size.line(), size.col())
@@ -59,7 +59,7 @@ impl Checker {
     /// A loop's `bound`, a constant as a list length is.
     pub(super) fn loop_bound(&mut self, bound: &Expr) -> Result<u64, Error> {
         let what = "a loop bound";
-        let w = self.size_value(what, bound, None, &HashMap::new(), &mut Vec::new())?;
+        let w = self.size_value(what, bound, None, &FxHashMap::default(), &mut Vec::new())?;
         if w.0[1..] != [0; 3] {
             return Err(error(
                 bound.line(),
@@ -75,7 +75,7 @@ impl Checker {
         what: &str,
         e: &Expr,
         module: Option<&str>,
-        locals: &HashMap<String, Word>,
+        locals: &FxHashMap<String, Word>,
         busy: &mut Vec<String>,
     ) -> Result<Word, Error> {
         let (line, col) = (e.line(), e.col());
@@ -182,7 +182,7 @@ impl Checker {
                 }
                 busy.push(key);
                 let module = f.module.as_deref();
-                let mut own = HashMap::new();
+                let mut own = FxHashMap::default();
                 for stmt in &f.stmts {
                     match stmt {
                         Stmt::Const {
@@ -209,9 +209,9 @@ impl Checker {
 struct Fold<'a> {
     c: &'a Checker,
     funcs: &'a [Func],
-    locals: HashMap<usize, Word>,
+    locals: FxHashMap<usize, Word>,
     /// Each function once walked, with its value when it is a named constant.
-    named: HashMap<usize, Option<Word>>,
+    named: FxHashMap<usize, Option<Word>>,
 }
 
 /// A constant as its sign and magnitude, and whether the magnitude passed 256 bits.

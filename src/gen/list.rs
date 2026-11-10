@@ -1319,8 +1319,8 @@ impl<'a> Gen<'a> {
     }
 
     /// The locals whose lists some nested write copies, and the paths to those lists.
-    pub(super) fn find_owners(&self) -> HashMap<usize, Vec<String>> {
-        let found = std::cell::RefCell::new(HashMap::<usize, Vec<String>>::new());
+    pub(super) fn find_owners(&self) -> FxHashMap<usize, Vec<String>> {
+        let found = std::cell::RefCell::new(FxHashMap::<usize, Vec<String>>::default());
         let note = |node: Node<'_>| {
             if let Node::Stmt(Stmt::Assign {
                 target: Some(target),

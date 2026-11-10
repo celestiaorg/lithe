@@ -145,7 +145,7 @@ pub(super) fn mentions_params(ty: &TypeRef, params: &[TypeParam]) -> bool {
 }
 
 pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
-    let mut by_name = HashMap::new();
+    let mut by_name = FxHashMap::default();
     for (i, module) in prog.modules.iter().enumerate() {
         if by_name.insert(module.name.clone(), i).is_some() {
             return Err(error(
@@ -178,7 +178,7 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
         }
     }
     publish_generic(prog)?;
-    let mut used = HashMap::new();
+    let mut used = std::collections::BTreeMap::new();
     for use_ in &prog.compose {
         if !by_name.contains_key(&use_.name) {
             return Err(error(
@@ -382,7 +382,7 @@ pub(super) fn reject_mixed_names(funcs: &[Func]) -> Result<(), Error> {
 pub(super) fn name_overloads(
     funcs: &mut [Func],
     prefix: &str,
-    overloads: &mut HashMap<String, Vec<String>>,
+    overloads: &mut FxHashMap<String, Vec<String>>,
 ) -> Result<(), Error> {
     let internal = |kind: ItemKind| {
         matches!(

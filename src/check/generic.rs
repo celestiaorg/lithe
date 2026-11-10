@@ -199,7 +199,7 @@ impl Checker {
                     Some(index) => self.modules[*index].params.clone(),
                     None => func.type_params.clone(),
                 };
-                let mut env = HashMap::new();
+                let mut env = FxHashMap::default();
                 for (param, arg) in func.params.iter().zip(args) {
                     let (line, col) = (arg.line(), arg.col());
                     if self
@@ -261,7 +261,7 @@ impl Checker {
                 Expr::Lit { .. } | Expr::List { .. } | Expr::Record { .. }
             )
         };
-        let mut env = HashMap::new();
+        let mut env = FxHashMap::default();
         for pass in [false, true] {
             for (param, arg) in template.params.iter().zip(args.iter_mut()) {
                 if literal(arg) != pass {
@@ -497,7 +497,7 @@ impl Checker {
         &mut self,
         target: &GenericCall,
         template: &Func,
-        env: &HashMap<String, usize>,
+        env: &FxHashMap<String, usize>,
         places: &[(String, Vec<Seg>)],
         keep: &[Param],
     ) -> Result<usize, Error> {
@@ -585,7 +585,7 @@ impl Checker {
         arg: usize,
         module: Option<usize>,
         params: &[TypeParam],
-        env: &mut HashMap<String, usize>,
+        env: &mut FxHashMap<String, usize>,
         line: u32,
         col: u32,
     ) -> Result<(), Error> {
@@ -704,7 +704,7 @@ impl Checker {
         ty: &TypeRef,
         module: Option<usize>,
         params: &[TypeParam],
-        _env: &HashMap<String, usize>,
+        _env: &FxHashMap<String, usize>,
     ) -> Result<TypeRef, Error> {
         let TypeRef::Name { name, line, col } = ty else {
             return Ok(ty.clone());
@@ -731,7 +731,7 @@ impl Checker {
         &mut self,
         ty: &TypeRef,
         module: Option<usize>,
-        env: &HashMap<String, usize>,
+        env: &FxHashMap<String, usize>,
     ) -> Result<usize, Error> {
         let params = match module {
             Some(index) => self.modules[index].params.clone(),
@@ -746,7 +746,7 @@ impl Checker {
         &mut self,
         func: &mut Func,
         module: Option<usize>,
-        env: &HashMap<String, usize>,
+        env: &FxHashMap<String, usize>,
     ) -> Result<(), Error> {
         let params = match module {
             Some(index) => self.modules[index].params.clone(),
@@ -766,7 +766,7 @@ impl Checker {
     }
 }
 
-fn subst_bound(ty: &TypeRef, env: &HashMap<String, usize>) -> TypeRef {
+fn subst_bound(ty: &TypeRef, env: &FxHashMap<String, usize>) -> TypeRef {
     match ty {
         TypeRef::Name { name, line, col } => {
             if let Some(id) = env.get(name) {
@@ -871,7 +871,7 @@ fn subst_stmts(
     stmts: &mut [Stmt],
     module: Option<usize>,
     params: &[TypeParam],
-    env: &HashMap<String, usize>,
+    env: &FxHashMap<String, usize>,
     cx: &mut Checker,
 ) -> Result<(), Error> {
     for stmt in stmts {
@@ -926,7 +926,7 @@ fn subst_expr_types(
     _expr: &mut Expr,
     _module: Option<usize>,
     _params: &[TypeParam],
-    _env: &HashMap<String, usize>,
+    _env: &FxHashMap<String, usize>,
     _cx: &mut Checker,
 ) -> Result<(), Error> {
     Ok(())

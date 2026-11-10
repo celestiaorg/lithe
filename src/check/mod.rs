@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::asm::{FxHashMap, FxHashSet};
 
 use crate::ast::*;
 use crate::error;
@@ -235,30 +235,30 @@ pub(crate) struct Checked {
     pub immutable_from: usize,
     /// Every block of immutables, in storage or in the code, and the symbols naming them.
     pub immutables: Vec<ImmutableBlock>,
-    pub immutable_syms: HashSet<usize>,
+    pub immutable_syms: FxHashSet<usize>,
     /// Blocks of a plain contract that hold more than words: locals in memory while `deploy`
     /// runs, each read marked `ImmutableRead`.
-    pub immutable_values: HashSet<usize>,
-    pub ifaces: HashMap<usize, Vec<IfaceMethod>>,
+    pub immutable_values: FxHashSet<usize>,
+    pub ifaces: FxHashMap<usize, Vec<IfaceMethod>>,
     pub events: Vec<EventInfo>,
     pub errors: Vec<ErrInfo>,
     pub routes: Vec<crate::route::Route>,
     /// Warnings the checker found, such as stale values captured by a continuation.
     pub warnings: Vec<Note>,
     /// Every type name in scope, and its type.
-    pub named: HashMap<String, usize>,
+    pub named: FxHashMap<String, usize>,
     /// Each storage domain's record type, by qualified name: `Module.name` inside a module.
-    pub domain_tys: HashMap<String, usize>,
+    pub domain_tys: FxHashMap<String, usize>,
     /// Each `list(T)(xs)` target and its file, which the built program no longer shows.
     pub conversions: Vec<(String, TypeRef)>,
     /// The program as it came in, before its modules were composed. A module's facet is
     /// built from it. It is everything a build depends on besides the compiler and its options.
     pub source: Program,
     /// Map parameters that hold their map's slot, and whether that map is transient.
-    pub slot_syms: HashMap<usize, bool>,
+    pub slot_syms: FxHashMap<usize, bool>,
     /// A name a pattern binds to a field of a payload: the payload's hidden binding, and
     /// the field's index.
-    pub field_of: HashMap<usize, (usize, usize)>,
+    pub field_of: FxHashMap<usize, (usize, usize)>,
     /// The ERC-165 ids the contract answers for: ERC-165's, then each interface `supports`
     /// lists.
     pub interface_ids: Vec<u32>,
@@ -354,7 +354,7 @@ struct VisibleDomain {
 
 struct Scope {
     parent: Option<usize>,
-    vars: HashMap<String, usize>,
+    vars: FxHashMap<String, usize>,
 }
 
 struct FnSig {
@@ -368,11 +368,11 @@ struct FnSig {
 struct Checker {
     evm: crate::EvmVersion,
     types: Vec<RType>,
-    named: HashMap<String, usize>,
-    decls: HashMap<String, TypeRef>,
-    decl_at: HashMap<String, (u32, u32)>,
+    named: FxHashMap<String, usize>,
+    decls: FxHashMap<String, TypeRef>,
+    decl_at: FxHashMap<String, (u32, u32)>,
     /// The file each type declaration is in.
-    decl_origin: HashMap<String, String>,
+    decl_origin: FxHashMap<String, String>,
     syms: Vec<Sym>,
     scopes: Vec<Scope>,
     scope: usize,
@@ -381,14 +381,14 @@ struct Checker {
     /// The function being checked is an `external pure function`.
     external_pure: bool,
     in_query: bool,
-    ifaces: HashMap<usize, Vec<IfaceMethod>>,
+    ifaces: FxHashMap<usize, Vec<IfaceMethod>>,
     events: Vec<EventInfo>,
     errors: Vec<ErrInfo>,
     error_sets: Vec<(String, Vec<usize>)>,
     pieces: Vec<Vec<Piece>>,
     declared: Vec<Option<Vec<usize>>>,
     cur_fn: usize,
-    visiting: HashSet<String>,
+    visiting: FxHashSet<String>,
     sigs: Vec<FnSig>,
     fn_names: Vec<String>,
     /// The file's other contracts, which `defer create` may name.
@@ -412,11 +412,11 @@ struct Checker {
     /// Earlier symbols belong to an earlier transition phase.
     phase_floors: Vec<usize>,
     /// A `const` holding an interface call, and what that call returns.
-    op_returns: HashMap<usize, usize>,
+    op_returns: FxHashMap<usize, usize>,
     /// `const`s computed from storage or other reentry-sensitive reads.
-    state_syms: HashSet<usize>,
+    state_syms: FxHashSet<usize>,
     /// Snapshot warnings already given: (continuation floor, symbol).
-    warned: HashSet<(usize, usize)>,
+    warned: FxHashSet<(usize, usize)>,
     warnings: Vec<Note>,
     conversions: Vec<(String, TypeRef)>,
     /// File of the function being checked. Empty while checking the root file's guard.
@@ -427,38 +427,38 @@ struct Checker {
     /// Some function calls `Abi.supportsInterface`.
     asks_interfaces: bool,
     requires: Vec<String>,
-    known_modules: HashSet<String>,
+    known_modules: FxHashSet<String>,
     /// The modules the contract uses `delegated`.
     delegated: Vec<String>,
     /// The modules the contract's own code may name: those it `use`s.
-    used_modules: HashSet<String>,
+    used_modules: FxHashSet<String>,
     modules: Vec<ModuleDecl>,
     /// The functions a list length may name: pure, with no parameters, by name and by
     /// `M.f` for a module's.
-    const_fns: HashMap<String, Func>,
+    const_fns: FxHashMap<String, Func>,
     generic_fns: Vec<Func>,
     /// Each overloaded internal function's name, and the names its overloads go by.
-    overloads: HashMap<String, Vec<String>>,
+    overloads: FxHashMap<String, Vec<String>>,
     work: Vec<Func>,
     /// Instantiated `Module(args).member` type ids. An empty member is `Self`.
-    inst: HashMap<(String, String, Vec<usize>), usize>,
+    inst: FxHashMap<(String, String, Vec<usize>), usize>,
     /// Specialized function indexes, keyed by types and storage paths.
-    specs: HashMap<String, usize>,
+    specs: FxHashMap<String, usize>,
     busy: Vec<String>,
     /// Generic module whose body is currently being specialized.
     spec_module: Option<String>,
     /// Checking a module function's copy for storage paths passed in: where each starts,
     /// `storage` or another module, which the copy may then use.
     spec_places: Vec<String>,
-    domain_tys: HashMap<String, usize>,
+    domain_tys: FxHashMap<String, usize>,
     /// Map parameters that hold their map's slot, and whether that map is transient.
-    slot_syms: HashMap<usize, bool>,
-    field_of: HashMap<usize, (usize, usize)>,
+    slot_syms: FxHashMap<usize, bool>,
+    field_of: FxHashMap<usize, (usize, usize)>,
     /// The map parameters of the copy about to be checked, and whether each map is transient.
     slot_params: Vec<(String, bool)>,
     transient_from: usize,
     /// Symbols naming a block of immutables.
-    imm_syms: HashSet<usize>,
+    imm_syms: FxHashSet<usize>,
     /// Checking a spec block, which `crate::spec` has made a function no code calls.
     in_spec: bool,
 }
@@ -474,14 +474,14 @@ enum Piece {
     Write(u32, u32, String),
 }
 
-fn const_fns(prog: &Program) -> HashMap<String, Func> {
+fn const_fns(prog: &Program) -> FxHashMap<String, Func> {
     let candidate = |f: &&Func| {
         f.kind == ItemKind::Pure
             && f.params.is_empty()
             && f.type_params.is_empty()
             && f.hook_of.is_none()
     };
-    let mut fns: HashMap<String, Func> = prog
+    let mut fns: FxHashMap<String, Func> = prog
         .funcs
         .iter()
         .filter(candidate)
@@ -532,7 +532,7 @@ fn check_program(
         reject_mixed_names(&module.funcs)?;
     }
     compose(&mut prog)?;
-    let mut overloads = HashMap::new();
+    let mut overloads = FxHashMap::default();
     name_overloads(&mut prog.funcs, "", &mut overloads)?;
     for module in prog.modules.iter_mut().filter(|m| !m.params.is_empty()) {
         let prefix = format!("{}.", module.name);
@@ -549,28 +549,28 @@ fn check_program(
     });
     let mut c = Checker {
         types: Vec::new(),
-        named: HashMap::new(),
-        decls: HashMap::new(),
-        decl_at: HashMap::new(),
-        decl_origin: HashMap::new(),
+        named: FxHashMap::default(),
+        decls: FxHashMap::default(),
+        decl_at: FxHashMap::default(),
+        decl_origin: FxHashMap::default(),
         syms: Vec::new(),
         scopes: vec![Scope {
             parent: None,
-            vars: HashMap::new(),
+            vars: FxHashMap::default(),
         }],
         scope: 0,
         storage: 0,
         kind: ItemKind::Function,
         external_pure: false,
         in_query: false,
-        ifaces: HashMap::new(),
+        ifaces: FxHashMap::default(),
         events: Vec::new(),
         errors: Vec::new(),
         error_sets: Vec::new(),
         pieces: Vec::new(),
         declared: Vec::new(),
         cur_fn: 0,
-        visiting: HashSet::new(),
+        visiting: FxHashSet::default(),
         sigs: Vec::new(),
         fn_names: Vec::new(),
         peers: prog
@@ -596,9 +596,9 @@ fn check_program(
         forwarding: false,
         evm,
         phase_floors: Vec::new(),
-        op_returns: HashMap::new(),
-        state_syms: HashSet::new(),
-        warned: HashSet::new(),
+        op_returns: FxHashMap::default(),
+        state_syms: FxHashSet::default(),
+        warned: FxHashSet::default(),
         warnings: Vec::new(),
         conversions: Vec::new(),
         origin: String::new(),
@@ -620,17 +620,17 @@ fn check_program(
         generic_fns,
         overloads,
         work: Vec::new(),
-        inst: HashMap::new(),
-        specs: HashMap::new(),
+        inst: FxHashMap::default(),
+        specs: FxHashMap::default(),
         busy: Vec::new(),
         spec_module: None,
         spec_places: Vec::new(),
-        domain_tys: HashMap::new(),
-        slot_syms: HashMap::new(),
-        field_of: HashMap::new(),
+        domain_tys: FxHashMap::default(),
+        slot_syms: FxHashMap::default(),
+        field_of: FxHashMap::default(),
         slot_params: Vec::new(),
         transient_from: 0,
-        imm_syms: HashSet::new(),
+        imm_syms: FxHashSet::default(),
         in_spec: false,
     };
     c.types.push(prim(TyKind::Unit, 0));
@@ -691,7 +691,7 @@ fn check_program(
     c.named.insert("bytes".into(), bytes_id);
     debug_assert!(c.named["uint8"] == TY_UINT8 && bytes_id == TY_BYTES);
 
-    let mut seen = HashSet::new();
+    let mut seen = FxHashSet::default();
     for d in &prog.types {
         if !seen.insert(d.name.clone()) {
             return Err(
@@ -777,7 +777,7 @@ fn check_program(
     let mut leaf_pack = Vec::new();
     let mut layout_info = Vec::new();
     let declared_storage = c.decl_at.contains_key("storage");
-    let mut seen_ids: HashMap<String, (String, String, String)> = HashMap::new();
+    let mut seen_ids: FxHashMap<String, (String, String, String)> = FxHashMap::default();
     if declared_storage {
         let root = if prog.storage_id.is_empty() {
             Word::from_u64(0)
@@ -804,7 +804,7 @@ fn check_program(
             (&leaf_keys, &leaf_pack),
         )?);
     }
-    let mut seen_names = HashSet::new();
+    let mut seen_names = FxHashSet::default();
     let domains = prog.domains.clone();
     let mut immutables = Vec::new();
     let mut code_immutables = Vec::new();
@@ -1090,7 +1090,7 @@ fn check_program(
     let nfuncs = prog.funcs.len();
     c.pieces = vec![Vec::new(); nfuncs];
     c.declared = vec![None; nfuncs];
-    let mut names = HashSet::new();
+    let mut names = FxHashSet::default();
     for f in &prog.funcs {
         // External functions may share a name: nothing inside calls them, and each
         // overload's ABI signature must still differ.
@@ -1173,7 +1173,7 @@ fn check_program(
         known.push((named.clone(), sigs));
     }
     strip_list_casts(&mut prog, &c.types);
-    let imm_mem: HashSet<usize> = c
+    let imm_mem: FxHashSet<usize> = c
         .imm_syms
         .iter()
         .copied()
@@ -1536,12 +1536,12 @@ fn strip_list_casts(prog: &mut Program, types: &[RType]) {
 /// it is. A loop over one reads it once, into a hidden local.
 fn mark_immutable_reads(
     prog: &mut Program,
-    imm: &HashSet<usize>,
+    imm: &FxHashSet<usize>,
     syms: &mut Vec<Sym>,
     types: &[RType],
 ) {
     struct Pass<'a> {
-        imm: &'a HashSet<usize>,
+        imm: &'a FxHashSet<usize>,
         syms: &'a mut Vec<Sym>,
         types: &'a [RType],
     }

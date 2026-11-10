@@ -789,7 +789,7 @@ impl<'a> Gen<'a> {
         }
         let mut found = Vec::new();
         self.fixed_map_keys(body, None, None, &mut Vec::new(), &mut found);
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = FxHashSet::default();
         for (sym, leaf, keys) in found {
             let mut deps = Vec::new();
             let Some(names) = keys
@@ -825,7 +825,7 @@ impl<'a> Gen<'a> {
         &self,
         stmts: &[Stmt],
         tail: Option<&Expr>,
-        args: Option<&HashMap<usize, Expr>>,
+        args: Option<&FxHashMap<usize, Expr>>,
         calls: &mut Vec<usize>,
         out: &mut Vec<(usize, u32, Vec<Expr>)>,
     ) {
@@ -908,7 +908,7 @@ impl<'a> Gen<'a> {
                     ..
                 } if self.inlines(*idx) && !calls.contains(idx) && calls.len() < 4 => {
                     let func = &self.checked.prog.funcs[*idx];
-                    let bound: HashMap<usize, Expr> = func
+                    let bound: FxHashMap<usize, Expr> = func
                         .params
                         .iter()
                         .zip(given)
@@ -2673,7 +2673,7 @@ impl<'a> Gen<'a> {
                 }
             }
         }
-        let read: std::collections::HashSet<u32> = self
+        let read: FxHashSet<u32> = self
             .code
             .windows(2)
             .filter_map(|w| match w {

@@ -1838,7 +1838,7 @@ impl<'a> Gen<'a> {
     /// Statements as their code depends on them: without source positions, and with the
     /// names they declare numbered in order, so two copies of the same code match.
     pub(super) fn shape(&self, stmts: &[Stmt]) -> String {
-        let declared = std::cell::RefCell::new(std::collections::HashSet::<usize>::new());
+        let declared = std::cell::RefCell::new(FxHashSet::<usize>::default());
         let note = |node: Node<'_>| {
             let mut d = declared.borrow_mut();
             match node {
@@ -1882,7 +1882,7 @@ impl<'a> Gen<'a> {
         let declared = declared.into_inner();
         let raw = format!("{stmts:?}");
         let mut out = String::with_capacity(raw.len());
-        let mut names: HashMap<usize, usize> = HashMap::new();
+        let mut names: FxHashMap<usize, usize> = FxHashMap::default();
         let mut in_list = false;
         let bytes = raw.as_bytes();
         let mut i = 0;

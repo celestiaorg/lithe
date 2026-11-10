@@ -1175,7 +1175,7 @@ impl Checker {
             _ => false,
         });
         let writes = keys_vary || self.varies(value);
-        let known: HashMap<usize, Expr> = bound
+        let known: FxHashMap<usize, Expr> = bound
             .iter_mut()
             .filter_map(|st| match st {
                 Stmt::Const {
@@ -1385,7 +1385,7 @@ fn place_of(
 }
 
 /// `e` with each local in `known` replaced by the expression it was bound to.
-fn put_back(e: &mut Expr, known: &HashMap<usize, Expr>) {
+fn put_back(e: &mut Expr, known: &FxHashMap<usize, Expr>) {
     if let Expr::Ident { sym: Some(sym), .. } = e {
         if let Some(value) = known.get(sym) {
             *e = value.clone();

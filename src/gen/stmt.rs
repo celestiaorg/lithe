@@ -1442,7 +1442,7 @@ impl<'a> Gen<'a> {
         body: &[Stmt],
         until: Option<&Expr>,
         written: &[usize],
-    ) -> Result<(HashMap<usize, (i32, i32)>, HashMap<usize, i32>), Error> {
+    ) -> Result<(FxHashMap<usize, (i32, i32)>, FxHashMap<usize, i32>), Error> {
         let outer = (self.span_temps.clone(), self.mask_temps.clone());
         let defers = body.iter().any(|st| {
             self.stmt_any(

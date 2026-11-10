@@ -7,7 +7,7 @@
 //! after storage. Memory is laid out last, hottest words first, with regions that
 //! no body shares overlapping.
 
-use std::collections::{HashMap, HashSet};
+use crate::asm::{FxHashMap, FxHashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -467,8 +467,8 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         Ok((emitted, std::mem::take(&mut g.needs)))
     };
     let limit = shape.opts.size_limit;
-    let opt_cache: std::sync::Mutex<HashMap<u64, Vec<OptSaved>>> =
-        std::sync::Mutex::new(HashMap::new());
+    let opt_cache: std::sync::Mutex<FxHashMap<u64, Vec<OptSaved>>> =
+        std::sync::Mutex::new(FxHashMap::default());
     let finish = |e: &Emitted, both: bool| -> Result<Finished, Error> {
         let cacheable = !both && !asm::track::on();
         if cacheable {
@@ -497,7 +497,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             let _t = time(Phase::Optimize);
             asm::optimize(&mut code);
         }
-        let leaves: HashMap<u32, usize> = e.leaves.iter().copied().collect();
+        let leaves: FxHashMap<u32, usize> = e.leaves.iter().copied().collect();
         let outline = time(Phase::Outline);
         asm::outline(&mut code, &e.entries, both, |code| {
             asm::track::pass(code, |c| asm::tail_calls(c, &leaves));
@@ -526,9 +526,9 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         priced(e, &code, flow.as_deref(), limit)
     };
     // Plans often emit the same program, which is optimized once.
-    let done = std::sync::Mutex::new(HashMap::<Arc<Emitted>, Arc<Finished>>::new());
-    let emitted_cache: std::sync::Mutex<HashMap<Plan, EmitHit>> =
-        std::sync::Mutex::new(HashMap::new());
+    let done = std::sync::Mutex::new(FxHashMap::<Arc<Emitted>, Arc<Finished>>::default());
+    let emitted_cache: std::sync::Mutex<FxHashMap<Plan, EmitHit>> =
+        std::sync::Mutex::new(FxHashMap::default());
     // The outline sets of builds over the limit. Inlining more only grows code, so later
     // rounds skip the sets that inline at least as much, whose builds are also the slowest.
     let too_big = std::sync::Mutex::new(Vec::<Big>::new());
@@ -545,7 +545,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             let mut unique = Vec::new();
             {
                 let cache = emitted_cache.lock().unwrap_or_else(|err| err.into_inner());
-                let mut index: HashMap<&Plan, usize> = HashMap::new();
+                let mut index: FxHashMap<&Plan, usize> = FxHashMap::default();
                 for plan in plans {
                     if let Some(hit) = cache.get(plan) {
                         slots.push(Slot::Hit(hit.clone()));
@@ -584,7 +584,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         };
         let todo: Vec<&Arc<Emitted>> = {
             let done = done.lock().unwrap_or_else(|e| e.into_inner());
-            let mut seen = HashSet::new();
+            let mut seen = FxHashSet::default();
             emitted
                 .iter()
                 .flatten()
@@ -593,7 +593,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                 .collect()
         };
         let finished = parallel_map(&todo, |e| finish(e, false));
-        let mut failed = HashMap::new();
+        let mut failed = FxHashMap::default();
         let mut done = done.lock().unwrap_or_else(|e| e.into_inner());
         for (e, f) in todo.into_iter().zip(finished) {
             match f {
@@ -750,7 +750,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         // outline set inside another tried with it, which inlines more, is built after that
         // one, and not at all if that one is over the limit. Elsewhere waiting would cost
         // time for builds that fit.
-        fn outline(m: &Move) -> Option<&std::collections::HashSet<usize>> {
+        fn outline(m: &Move) -> Option<&FxHashSet<usize>> {
             match m {
                 Move::Outline(o) => Some(o),
                 _ => None,
@@ -1097,7 +1097,7 @@ struct Emitted {
 }
 
 /// The outline sets of builds over the size limit.
-type Big = std::collections::HashSet<usize>;
+type Big = FxHashSet<usize>;
 
 /// An optimized runtime, and its estimated gas plus bytes weighed by `asm::byte_gas`, plus
 /// `OVER_LIMIT` when it is over the size limit, twice that when it can't be assembled at all.
@@ -1147,7 +1147,7 @@ impl Candidate {
 /// A change to a plan that `codegen` tries.
 #[derive(Clone)]
 enum Move {
-    Outline(std::collections::HashSet<usize>),
+    Outline(FxHashSet<usize>),
     Slice([bool; 2]),
     CacheSlots(bool),
     Tight(bool),
@@ -1387,14 +1387,14 @@ fn place_data(code: &[Inst], data: &[(Word, Vec<u8>, String)]) -> Result<Vec<u8>
 fn place_marked(
     code: &[Inst],
     data: &[(Word, Vec<u8>, String)],
-) -> Result<(Vec<u8>, Vec<Mark>, HashMap<Word, usize>), Error> {
+) -> Result<(Vec<u8>, Vec<Mark>, FxHashMap<Word, usize>), Error> {
     if data.is_empty() {
         let (bytes, marks) = asm::assemble_marked(code)?;
-        return Ok((bytes, marks, HashMap::new()));
+        return Ok((bytes, marks, FxHashMap::default()));
     }
     let mut guess = asm::assemble(code)?.len();
     for _ in 0..16 {
-        let mut offsets = HashMap::new();
+        let mut offsets = FxHashMap::default();
         let mut at = guess;
         for (marker, bytes, _) in data {
             offsets.insert(*marker, at);
@@ -1813,7 +1813,7 @@ pub(crate) fn callback_rules(checked: &Checked, facets: &[String]) -> Result<(),
                 && matches!(g.crossing(j), Ok(Some(_)))
         };
         let mut todo = vec![(deploy, false)];
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         while let Some((i, across)) = todo.pop() {
             if !seen.insert((i, across)) {
                 continue;
@@ -1968,7 +1968,7 @@ pub(crate) fn stray_call(
             found.push((j, line, col, checked.prog.origin.clone()));
         }
     }
-    let mut done = HashSet::new();
+    let mut done = FxHashSet::default();
     let mut crossed = Vec::new();
     loop {
         for (j, line, col, origin) in std::mem::take(&mut found) {
@@ -2070,23 +2070,23 @@ struct Space {
 struct Plan {
     /// Whether a map slot with fixed keys is hashed once per body and kept.
     cache_slots: bool,
-    outline: std::collections::HashSet<usize>,
+    outline: FxHashSet<usize>,
     /// The outlined functions called in a loop, where a call's arguments and jumps cost
     /// each run, and inlined copies may read their arguments in place.
-    looped: std::collections::HashSet<usize>,
+    looped: FxHashSet<usize>,
     /// Every function called more than once that can be outlined, for builds too big to fit.
-    outlinable: std::collections::HashSet<usize>,
+    outlinable: FxHashSet<usize>,
     /// The functions some call passes a constant, as the first pass, which inlines every
     /// call, found them.
-    specializable: std::collections::HashSet<usize>,
+    specializable: FxHashSet<usize>,
     /// The outlined functions compiled once for each set of constants their calls pass,
     /// rather than once for all.
-    specialize: std::collections::HashSet<usize>,
+    specialize: FxHashSet<usize>,
     /// The parameters every call binds to blobs only, as the first pass, which inlines every
     /// call, found them.
-    blob_params: std::collections::HashSet<usize>,
+    blob_params: FxHashSet<usize>,
     /// The functions whose every result is blobs only, found the same way.
-    blob_rets: std::collections::HashSet<usize>,
+    blob_rets: FxHashSet<usize>,
     /// Whether stored strings are written, and read, through one shared helper each.
     shared_bytes: (bool, bool),
     /// Whether `string` and `bytes` arguments are decoded by one shared helper.
@@ -2108,12 +2108,12 @@ struct Plan {
     /// Queues with one `defer` site, by the order bodies begin them: their nodes carry no
     /// site number, and their walk needs no dispatch. Not by their words' address, which
     /// moves when the plan adds or drops a region before them.
-    single_queues: std::collections::HashSet<u32>,
+    single_queues: FxHashSet<u32>,
     /// The bodies, by id, and functions inlined in them more than once whose continuations
     /// read their parameters or constants: each call binds those to words of its own.
-    split_insts: std::collections::HashSet<(usize, usize)>,
+    split_insts: FxHashSet<(usize, usize)>,
     /// Constant raises with several sites, which share one block.
-    shared_raises: std::collections::HashSet<String>,
+    shared_raises: FxHashSet<String>,
     /// Whether a constant raise with one site also goes out of line, so the code around it
     /// stays one straight run whose values can stay on the stack.
     outline_raises: bool,
@@ -2188,7 +2188,7 @@ impl PartialEq for Plan {
 
 impl Eq for Plan {}
 
-fn hash_set<T: Ord + Hash>(set: &HashSet<T>, state: &mut impl Hasher) {
+fn hash_set<T: Ord + Hash>(set: &FxHashSet<T>, state: &mut impl Hasher) {
     let mut items: Vec<&T> = set.iter().collect();
     items.sort();
     state.write_u64(items.len() as u64);
@@ -2551,17 +2551,17 @@ struct Gen<'a> {
     entry_labels: Vec<u32>,
     /// Inlined calls per function, the most bytes one inlined body took, and how often the
     /// calls in each body run, each loop around one multiplying it by `asm::LOOP_RUNS`.
-    inlined: HashMap<usize, (usize, usize, HashMap<usize, f64>)>,
-    funcs: HashMap<FuncKey, FuncSub>,
+    inlined: FxHashMap<usize, (usize, usize, FxHashMap<usize, f64>)>,
+    funcs: FxHashMap<FuncKey, FuncSub>,
     /// The functions some call passes a constant.
-    const_sites: HashSet<usize>,
+    const_sites: FxHashSet<usize>,
     /// Code shared by every body: its memory overlaps only what never runs while it does.
     shared: bool,
     /// The function compiled once whose code is being emitted, as a region user.
     func_ctx: Option<usize>,
     /// Calls between region users: a body or function, or `usize::MAX` for code outside
     /// both, and the function it calls.
-    func_calls: std::collections::HashSet<(usize, usize)>,
+    func_calls: FxHashSet<(usize, usize)>,
     log_sites: usize,
     return_sites: usize,
     /// The body reads and writes storage in place. Nothing outside can run while it
@@ -2607,9 +2607,9 @@ struct Gen<'a> {
     share: Option<(String, u32, usize)>,
     /// Queries issued at the start of the body, by source position: their buffer holds
     /// whether each succeeded, then its word.
-    hoisted: HashMap<(u32, u32), i32>,
+    hoisted: FxHashMap<(u32, u32), i32>,
     /// Queries a body will issue first, which may follow its writes in the source.
-    skip_queries: std::collections::HashSet<(u32, u32)>,
+    skip_queries: FxHashSet<(u32, u32)>,
     scratch_a: i32,
     scratch_b: i32,
     scratch_c: i32,
@@ -2633,13 +2633,13 @@ struct Gen<'a> {
     eq_sites: usize,
     slice_sites: [usize; 2],
     /// The option sets `Base64` encodings use: `None` for options known only at runtime.
-    base64_opts: std::collections::HashSet<Option<[bool; 2]>>,
+    base64_opts: FxHashSet<Option<[bool; 2]>>,
     mul_sites: usize,
     exp_sites: [usize; 2],
     /// `defer` sites inside loops, whose calls are queued.
     queued_sites: usize,
     /// How many sites each queue, by the order bodies begin them, gathered.
-    queue_sites: HashMap<u32, usize>,
+    queue_sites: FxHashMap<u32, usize>,
     /// How many queues bodies have begun so far.
     queues_begun: u32,
     /// The index being compiled is a loop counter below the list's length.
@@ -2649,63 +2649,63 @@ struct Gen<'a> {
     slot_hint: Option<(usize, u32, Expr, i32)>,
     /// List parameters left in calldata: each local holds its length word's position.
     /// A parameter stays there when it is only walked by `for` and asked for its length.
-    cd_lists: std::collections::HashSet<usize>,
+    cd_lists: FxHashSet<usize>,
     /// `bytes` and `string` parameters left in calldata for `Abi.decode`: each local holds
     /// its length word's position.
-    cd_bytes: std::collections::HashSet<usize>,
+    cd_bytes: FxHashSet<usize>,
     /// Raw query answers read in place: `.length` is the return data's size, and the first
     /// word is at `ret_scratch`.
-    rd_first: std::collections::HashSet<usize>,
+    rd_first: FxHashSet<usize>,
     /// Static parameters of the entrypoint being compiled, decoded from calldata.
-    cd_words: std::collections::HashSet<usize>,
+    cd_words: FxHashSet<usize>,
     /// Parameters and constants of inlined calls that continuations read, bound to fresh
     /// arena words for the call.
-    inst_syms: std::collections::HashSet<usize>,
+    inst_syms: FxHashSet<usize>,
     /// Where the call just emitted writes its result, for `after_call` to decode.
     ret_out: Option<i32>,
     /// Arguments with nested dynamic values left in calldata: each local holds the value's
     /// calldata position, and encoding it copies from there.
-    cd_trees: std::collections::HashSet<usize>,
+    cd_trees: FxHashSet<usize>,
     /// Lists and records left in calldata, checked where they were decoded as decoding
     /// would check them: each local holds the value's calldata position, and every read
     /// is a calldata read.
-    cd_checked: std::collections::HashSet<usize>,
+    cd_checked: FxHashSet<usize>,
     bytes_rep: Option<(usize, u32)>,
     /// A leaf whose slot is read from memory instead of pushed, inside a shared helper.
     dyn_key: Option<(u32, i32)>,
     /// Map parameters of an inlined call, bound to the stored map the call passes: the
     /// body reaches it as if it named the map. An outlined body reads the slot instead.
-    slot_binds: HashMap<usize, (usize, u32)>,
+    slot_binds: FxHashMap<usize, (usize, u32)>,
     /// Parameters of an inlined call that the call passes a local: the local, which cannot
     /// change while the body runs, so a slot or word kept by one's name serves the other.
-    key_names: HashMap<usize, usize>,
+    key_names: FxHashMap<usize, usize>,
     /// Parameters of an inlined call that the call passes a literal word: the word.
-    const_params: HashMap<usize, Word>,
+    const_params: FxHashMap<usize, Word>,
     /// Parameters of an inlined call that the call passes a string literal: its bytes.
-    const_strs: HashMap<usize, Vec<u8>>,
+    const_strs: FxHashMap<usize, Vec<u8>>,
     /// Temporaries of shared code. Each serves one site, so only the code that made it
     /// names it, and it can live on the stack as a body's words do.
-    shared_temps: std::collections::HashSet<usize>,
+    shared_temps: FxHashSet<usize>,
     /// The slot on the stack is a transient map entry's, for the next load or store.
     transient_slot: bool,
     /// Creation code of contracts this one creates, appended after its own code: each
     /// one's placeholder, its bytes, and its contract's name.
     data: Vec<(Word, Vec<u8>, String)>,
     /// Creation code of the contracts this one creates or hashes, by name.
-    peer_built: HashMap<String, Vec<u8>>,
+    peer_built: FxHashMap<String, Vec<u8>>,
     /// Long literals among `data`, by their padded bytes.
-    literals: HashMap<Vec<u8>, Word>,
+    literals: FxHashMap<Vec<u8>, Word>,
     /// An `Error` binding read straight from the return data: its phase only measures it
     /// or raises it again, and makes no call that would replace it.
     returned: Option<usize>,
     /// Map slots already hashed on every path to here in the body: where each is kept,
     /// the locals its keys read, and the `branch` it was kept at.
-    slot_cache: HashMap<(usize, u32, Vec<String>), (i32, Vec<usize>, u32)>,
+    slot_cache: FxHashMap<(usize, u32, Vec<String>), (i32, Vec<usize>, u32)>,
     /// Storage words already read or written on every path to here, each kept in a memory
     /// word, by the place they are read from, with the locals the place's keys read and
     /// the `branch` it was kept at.
     /// Anything that may write storage it does not account for drops them all.
-    val_cache: HashMap<String, (i32, Vec<usize>, u32)>,
+    val_cache: FxHashMap<String, (i32, Vec<usize>, u32)>,
     /// Set around a store `val_cache` already accounts for.
     kept_store: bool,
     /// Words holding a cached slot or value. A word nothing reads drops its store.
@@ -2723,11 +2723,11 @@ struct Gen<'a> {
     journal_base: i32,
     blob_ptr: i32,
     /// For each local holding a list, the words `room` names.
-    rooms: HashMap<i32, i32>,
+    rooms: FxHashMap<i32, i32>,
     /// For each local that nested writes pass through lists of, the paths to those lists.
-    owners: HashMap<usize, Vec<String>>,
+    owners: FxHashMap<usize, Vec<String>>,
     /// The words `room` names for each local and path in `owners`.
-    owned: HashMap<(usize, String), i32>,
+    owned: FxHashMap<(usize, String), i32>,
     /// Locals the statements being compiled read lists out of: writes through them copy.
     sharing: Vec<usize>,
     blob_base: i32,
@@ -2740,10 +2740,10 @@ struct Gen<'a> {
     /// Constant raises, each compiled once: its key, its block, and the raise.
     raises: Vec<(String, u32, Raised)>,
     /// Sites of each constant raise, for the plan.
-    raise_sites: HashMap<String, usize>,
+    raise_sites: FxHashMap<String, usize>,
     /// Calls inlined in each body, by body id and function, of functions whose
     /// continuations read their parameters or constants.
-    inst_sites: HashMap<(usize, usize), usize>,
+    inst_sites: FxHashMap<(usize, usize), usize>,
     subs: Vec<(Sub, u32, bool)>,
     /// The payloads some encoded error reverts with: 1 for string or bytes values, 2 for
     /// lists, and 4 for string literals, which reach it still packed in their words.
@@ -2756,7 +2756,7 @@ struct Gen<'a> {
     imm_consts: Vec<Option<Word>>,
     /// While building creation code: each immutable's value where every store so far
     /// runs whenever `deploy` does and pushes a constant.
-    imm_stores: HashMap<u32, Option<Word>>,
+    imm_stores: FxHashMap<u32, Option<Word>>,
     /// The `branch` of code that runs whenever the current body or shared function does.
     top_branch: u32,
     body: Option<Body>,
@@ -2765,24 +2765,24 @@ struct Gen<'a> {
     loop_syms: Vec<Vec<usize>>,
     /// Loop elements from a stored string list that are only asked for their length:
     /// each holds its slot's word, not a copy of the string.
-    header_locals: std::collections::HashSet<usize>,
+    header_locals: FxHashSet<usize>,
     /// `bytes` and `string` locals a loop reads and never writes, with the words their
     /// length and data address were read into before it.
-    span_temps: HashMap<usize, (i32, i32)>,
+    span_temps: FxHashMap<usize, (i32, i32)>,
     /// Widths `k` that a loop cuts `bytesN(b[i:i + k])` by and never writes, with the word
     /// the mask of `k` leading bytes was computed into before it.
-    mask_temps: HashMap<usize, i32>,
+    mask_temps: FxHashMap<usize, i32>,
     /// `bytes` and `string` locals that hold a blob, never the empty word, as a decoded
     /// argument does.
-    blobs: std::collections::HashSet<usize>,
+    blobs: FxHashSet<usize>,
     /// Whether each parameter bound so far was bound to blobs only, at every call.
-    blob_sites: HashMap<usize, bool>,
+    blob_sites: FxHashMap<usize, bool>,
     /// Whether each function inlined so far left blobs only, at every call.
-    ret_sites: HashMap<usize, bool>,
+    ret_sites: FxHashMap<usize, bool>,
     /// The local whose blob the `Bytes.concat` being compiled may grow in place.
     append_to: Option<usize>,
     /// Whether each `bytes` or `string` local is `appendable`.
-    appendable: HashMap<usize, bool>,
+    appendable: FxHashMap<usize, bool>,
     /// The counters of the enclosing loops: each is below its limit while its loop runs.
     loop_counters: Vec<usize>,
     /// Orderings the enclosing guards prove, innermost last.
@@ -2804,13 +2804,13 @@ struct Gen<'a> {
     /// label its queue runs from when the owner drains it.
     drains: Vec<(usize, u32)>,
     /// Regions drained code reads, which must stay in the memory a queue saves.
-    drain_spaces: HashSet<usize>,
+    drain_spaces: FxHashSet<usize>,
     /// What a stateful hook a facet calls back counts as for the walks that look for
     /// deferred calls: the contract's implementation may defer.
     queued_call: Stmt,
     /// Hooks the facet calls back that some call passes an argument other than an inert
     /// one: their bodies test the hook's bit after the arguments, not each call before them.
-    untested_hooks: HashSet<usize>,
+    untested_hooks: FxHashSet<usize>,
     /// Outlined bodies remembered for later plans of this codegen.
     body_memo: Option<Arc<std::sync::Mutex<body::BodyMemo>>>,
     /// Regions allocated in `Gen::new`. Their indices do not depend on the plan.
