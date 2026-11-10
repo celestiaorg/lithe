@@ -354,6 +354,15 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// Whether this thread's codegen knobs are forced by a test, so the same program builds
+/// something other than what its options alone say.
+pub(crate) fn forced() -> bool {
+    #[cfg(test)]
+    return FORCE_STATIC_HEAP.get().is_some() || FORCE_SPECIALIZE.get().is_some();
+    #[cfg(not(test))]
+    return false;
+}
+
 fn priced(
     e: &Emitted,
     code: &[Inst],
@@ -1206,8 +1215,17 @@ impl Move {
 /// the queue is off the budget at once rather than when the pool ends. A worker also takes
 /// the caller's byte weight, certifying and tracking, so a pooled build runs the same passes
 /// — `asm::optimize`'s tracked path, `finish`'s uncached path, the body memo's keys — that
-/// it runs with no budget to pool. Its counters and certificates are handed back, so one
-/// `[time]` line and one proof cover the whole build.
+/// it runs with no budget to pool.
+///
+/// Each item's certificates are its own, and the pool merges them in item order, which is
+/// the order they were made in at one thread, so one proof covers the whole build whatever
+/// thread took which item.
+///
+/// Track notes are not merged, and the caller's track is set aside while the pool runs. A
+/// note is keyed by a label of the one build that made it, and only that build reads it, so
+/// notes made here can only be read by the next item on the same thread — a different
+/// build's labels. Dropping them is what one thread's caller does too, since a build's own
+/// notes are taken by the build itself.
 pub(crate) fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let byte_gas = asm::byte_gas();
     let certify = certify::wanted();
@@ -1216,13 +1234,25 @@ pub(crate) fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + 
     let done = std::sync::Mutex::new(Vec::with_capacity(items.len()));
     let work = |unit: Option<Unit>| {
         let _unit = unit;
+        // The caller's notes are neither read nor added to: they name its own labels.
+        let outer = track.then(asm::track::take).flatten();
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
             let Some(item) = items.get(i) else { break };
+            if track {
+                asm::track::start();
+            }
             let out = f(item);
+            let certs = certify.then(certify::take_certs).unwrap_or_default();
+            if track {
+                drop(asm::track::take());
+            }
             done.lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .push((i, out));
+                .push((i, out, certs));
+        }
+        if let Some(outer) = outer {
+            asm::track::put(outer);
         }
     };
     std::thread::scope(|s| {
@@ -1237,33 +1267,28 @@ pub(crate) fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + 
                     if certify {
                         certify::certifying(true);
                     }
-                    if track {
-                        asm::track::start();
-                    }
                     asm::with_byte_gas(byte_gas, || work(Some(unit)));
-                    // A facet built by this worker makes its certificates here, as it would
-                    // on the calling thread, so they are handed back with its counters.
-                    (certify.then(certify::take_certs), take_counts())
+                    take_counts()
                 }) {
                 Ok(handle) => spawned.push(handle),
                 Err(_) => break,
             }
         }
         asm::with_byte_gas(byte_gas, || work(None));
-        // In spawn order, so the sums and certificates read the same however they raced.
+        // In spawn order, so the sums read the same however they raced.
         for handle in spawned {
-            let (certs, counts) = handle
+            let counts = handle
                 .join()
                 .unwrap_or_else(|e| std::panic::resume_unwind(e));
-            if let Some(certs) = certs {
-                certify::keep(certs);
-            }
             add_counts(counts);
         }
     });
     let mut done = done.into_inner().unwrap_or_else(|e| e.into_inner());
-    done.sort_by_key(|(i, _)| *i);
-    done.into_iter().map(|(_, out)| out).collect()
+    done.sort_by_key(|(i, ..)| *i);
+    for (_, _, certs) in &mut done {
+        certify::keep(std::mem::take(certs));
+    }
+    done.into_iter().map(|(_, out, _)| out).collect()
 }
 
 /// The creation code for a runtime: a `deploy` compiled around it, or a plain copy. A
@@ -1429,6 +1454,96 @@ fn a_pools_work_is_the_callers_build() {
     reset_timing();
     parallel_map(&[0usize; 8], |_| note(|n| n.emits += 1));
     assert_eq!(counts().emits, 8, "{}", counts().emits);
+}
+
+/// A pool's certificates read in the order the items were asked for, the order a build with
+/// no thread to pool in makes them, so a proof is the same at `LITHE_THREADS=1` and N. The
+/// pool's notes stay with their item: the caller's track comes back as it went in.
+#[cfg(test)]
+#[test]
+fn a_pools_certificates_read_in_item_order() {
+    use crate::asm::track::{Kind, Site};
+
+    let n = 8usize;
+    let items: Vec<usize> = (0..n).collect();
+    let item = |i: usize| {
+        // The first item is the slowest, so the queue is drained in an order the items do
+        // not certify in.
+        std::thread::sleep(std::time::Duration::from_millis((n - i) as u64 * 2));
+        asm::track::note(|t| {
+            t.sites.push(Site {
+                kind: Kind::Loop,
+                func: i.to_string(),
+                line: 0,
+                col: 0,
+                top: 0,
+                done: 0,
+                counter: false,
+                locals: Vec::new(),
+            })
+        });
+        let mut made = certify::Certs::default();
+        made.loops.push(certify::LoopCert {
+            func: i.to_string(),
+            line: 0,
+            col: 0,
+            creation: false,
+            head: i,
+            exit: None,
+            counter: None,
+            locals: Vec::new(),
+        });
+        certify::keep(made);
+    };
+
+    // What a build with no thread to pool in makes, in the order the items are asked for.
+    certify::certifying(true);
+    asm::track::start();
+    asm::track::note(|t| {
+        t.sites.push(Site {
+            kind: Kind::Loop,
+            func: "caller".to_string(),
+            line: 0,
+            col: 0,
+            top: 0,
+            done: 0,
+            counter: false,
+            locals: Vec::new(),
+        })
+    });
+    items.iter().copied().for_each(item);
+    let one = certify::take_certs();
+    let notes = asm::track::take().expect("the caller's track");
+    certify::certifying(false);
+
+    // The same items on the shared budget.
+    certify::certifying(true);
+    asm::track::start();
+    asm::track::note(|t| t.sites.clone_from(&notes.sites));
+    let order = parallel_map(&items, |&i| {
+        item(i);
+        i
+    });
+    let pooled = certify::take_certs();
+    let notes_after = asm::track::take().expect("the caller's track");
+    certify::certifying(false);
+
+    assert_eq!(order, items);
+    let funcs = |certs: &certify::Certs| {
+        certs
+            .loops
+            .iter()
+            .map(|c| c.func.clone())
+            .collect::<Vec<_>>()
+    };
+    let want: Vec<String> = items.iter().map(|i| i.to_string()).collect();
+    assert_eq!(funcs(&one), want);
+    assert_eq!(funcs(&pooled), want, "certificates in item order");
+    assert_eq!(
+        notes_after.sites.len(),
+        notes.sites.len(),
+        "the caller's notes"
+    );
 }
 
 #[cfg(test)]
