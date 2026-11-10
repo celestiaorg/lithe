@@ -51,7 +51,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 
 ### Phase 4 — parallelism inside one build
 
-- [ ] **4.1** Per-function parallel emit, schedule, and optimize. Deterministic join. Wasm stays single-threaded. Test `LITHE_THREADS=1` vs N. Blocked on 3.3b (see State).
+- [x] **4.1** Per-function parallel emit, schedule, and optimize. Deterministic join. Wasm stays single-threaded. Test `LITHE_THREADS=1` vs N. **Not taken (S23):** the emitter's per-body work, the only part that exists per function before `resolve` joins the stream, is 9.1 % of the Fast backend and 8.2 % of Release over 50 `bench/` files. Even with unlimited threads and a free join, that caps the speedup at 1.10×. The join would also have to relocate every piece of shared emitter state that `recall_body` relocates, including the 21 cases where it gives up today. See `## S23 4.1 closed: not taken`.
 - [ ] **4.2** Overlap sibling `check` and `route::abi` with codegen. Determinism test.
 
 ### Phase 5 — frontend hygiene and caching
@@ -84,7 +84,7 @@ This section is the single source of truth for what is open and what blocks what
 - **3.3b(ii) landed.** Batched promotion (below). Rounds are 4 at ladder N = 16/64/128 (were 34/130/258) and ladder 128 Fast `promote` 49.6 → 12.0 ms. It is `Plan::batch`, default on in the start plan, tried off by the search as `Move::Batch`. Sizes: runtime bytes −0.027 % over the 272 target-modes (parent → here), and −0.153 % creation + runtime over the 13 whose code changes; the `Fast` increases behind that (`nft` +74, `utils` +14, `governance_token` +2, `erc20_full` +2) are the batched start plan's own price, since `Fast` builds that plan and nothing else and has no candidate to decline it. Gas: **transaction gas +0.0002 %** (the step totals, 68 121 512 → 68 121 662) and **gas including deploy −0.018 %** (96 454 261 → 96 437 353); every step outcome identical. See `## 3.3b(ii)` for the tables.
 - **3.3c measured, not taken (S40, reproduced by S53).** `LITHE_PRICE_BATCH=1` prices every plan the Release search builds with `batch` on and off. Over the 51 `bench/*.lithe`: 1 140 pairs, 103 wins, 1 015 ties, **22 losses** (erc20_full 12, erc721_full 4, erc721 3, fixed_point, uniswap_v2_factory, uniswap_v2_pair 1 each; worst +0.96 % cost on erc721). The deletion's own condition fails, so the greedy `promote_region` path, `Plan::batch` and `Move::Batch` stay. The command and the comparison with S40's scratch count are in `## S40 3.3c priced`.
 - **3.3 closed as not taken (S48).** The value-numbering scheduler is not built. `promote` is 8.9 % of the Fast backend over `bench/` and 3–4 % on the ladder, so the rewrite moves no open target. See `## S48 3.3 closed: not taken`.
-- **4.1 open**: `promote`/`optimize` still work on one shared stream; `parallel_map` still parallelises plan candidates only. 3.3b(ii) does not split the stream, so it does not unblock this.
+- **4.1 closed as not taken (S23).** Per-body emission, the only per-function unit before `resolve`, is 9.1 % of the Fast backend and 8.2 % of Release (50 `bench/` files, `LITHE_THREADS=1`). The `[time]` line now reports it as `body`. Unlimited threads would give at most 1.10×, and the join would have to rebuild each body's shared emitter state. `parallel_map` still parallelises plan candidates only. Release output is byte-identical at 1 and 16 threads over all 51 `bench/` files and ladder 128. See `## S23 4.1 closed: not taken`.
 - **3.5 open, `promote` half done**: `promote` is now flat in the function count, so what is left of the 2.23×/2.01× per-line ratio is `optimize`. Re-measure once 3.2b's successor and 3.3c land.
 - **Final comparison table** below is a mid-branch snapshot; regenerate it once the steps above land.
 
@@ -785,6 +785,49 @@ So the rewrite buys at most 9 % of a Fast build and risks the 1 % size gate. Tha
 **What would reopen it.** Spill-at-part-edge is untested. This record does not show it fails; it shows it does not pay against the open targets. Release's 58 rounds per emit on erc20_full is the cheaper lever: `region_batch` drops regions whose walks overlap, so real contracts still take 10–60 rounds where the ladder takes 4. Re-planning the dropped words in the same round is S40's open hypothesis. `LITHE_PRICE_BATCH` prices it with no extra tooling.
 
 Nothing in codegen changed for this step, so both snapshots are unchanged.
+
+## S23 4.1 closed: not taken
+
+Plan: measure the one unit §5 4.1 can split after S48: the emitter's per-function bodies, before `resolve` joins them. Close 4.1 with that number if the split cannot pay or cannot be byte-identical cheaply. Proof: the new counter only reads the clock when `LITHE_TIME` is set, so bytecode does not change. Both snapshots are unchanged and `make check` is green.
+
+**The instrument.** `gen::Counts::body_ns` (`Phase::Body`) times every `Gen::emit` and `Gen::emit_init`, the scouting passes in `codegen` included. This is all the emitter's own work, before `drop_unread_caches`, `promote`, and `resolve`. The `[time]` line ends in `| body X`. `scripts/bench_compile.py` parses it as `body_s`, and `None` on older lines; `--self-check` covers both. When `LITHE_TIME` is unset, `time()` still returns `None` before touching the clock.
+
+**The measurement.** `target/release/lithe`, `LITHE_THREADS=1`, `LITHE_CACHE_DIR=` empty, min-of-3 `backend` per file, load 1.2–1.7. The command (sums use `scripts/bench_compile.py`'s `phases`):
+
+```
+python3 -c '
+import os,subprocess,sys; sys.path.insert(0,"scripts"); from bench_compile import phases
+mode,files=sys.argv[1],sys.argv[2:]; env=dict(os.environ,LITHE_TIME="1",LITHE_THREADS="1",LITHE_CACHE_DIR="")
+run=lambda f: phases(subprocess.run(["target/release/lithe","compile",mode,f],env=env,capture_output=True,text=True).stderr)
+rows=[min((run(f) for _ in range(3)),key=lambda p:p["backend_s"]) for f in files]
+t=lambda k: sum(p[k] for p in rows); print(t("backend_s"),t("body_s"),t("promote_s"),t("finish_s"))
+' --fast $(ls bench/*.lithe | grep -v uniswap_v2_factory)
+```
+
+I re-ran the command exactly as written, Fast, while `make check` was running (load 8.7). The absolute times were inflated (695 ms backend) and `body` came out at 8.8 %.
+
+`uniswap_v2_factory` is left out. It is the only `bench/` file whose Fast build runs two emits, because it embeds `uniswap_v2_pair` as a peer build. That whole build runs inside the factory's `Gen::emit`, so `body` counts a complete backend: 21.8 of 23.0 ms Fast, 336 of 321 ms Release.
+
+| target | backend | `body` | share | `promote` | `finish` | ceiling at ∞ threads |
+|---|---:|---:|---:|---:|---:|---:|
+| 50 `bench/`, Fast | 301.3 ms | 27.3 ms | **9.1 %** | 8.8 % | 71.2 % | **1.10×** |
+| 50 `bench/`, Release | 4 187 ms | 342 ms | **8.2 %** | 29.1 % | 56.5 % | **1.09×** |
+| erc20_full Fast / Release | 35.9 / 1 427 ms | 5.6 / 99.5 ms | 15.7 / 7.0 % | | | 1.19× / 1.08× |
+| uniswap_v2_pair Fast / Release | 18.2 / 330 ms | 1.9 / 28.2 ms | 10.3 / 8.5 % | | | 1.11× / 1.09× |
+| ladder 16 / 64 / 128, Fast | 10.8 / 40.8 / 107.9 ms | 0.8 / 5.3 / 17.5 ms | 7.4 / 12.9 / 16.2 % | | | ≤ 1.19× |
+| ladder 16 / 64 / 128, Release | 21.1 / 129 / 432 ms | 4.5 / 32.5 / 106 ms | 21–25 % | | | ≤ 1.33× |
+
+**Why this closes 4.1.** Each of its obligations, in turn:
+
+- **Emit per function in parallel.** The bound is the `body` share. Fast, the mode §4's compile targets are written for, has at most 1.10× to gain over `bench/` and 1.19× on erc20_full, and that assumes unlimited threads and a join that costs nothing. Release reaches 21–25 % only on the ladder. Release builds already run their candidate plans in parallel across the same thread budget: erc20_full Release goes 1 848 → 624 ms from 1 to 16 threads (`## Comparison with baseline.json`). With `parallel_map` already using the threads, splitting each candidate's bodies adds no CPUs.
+- **Schedule (`promote`) per function.** There is no per-function scheduler unit (S48). The only split measured, `promote` cut at function edges, costs +4.1 % Fast and +4.6 % Release runtime bytes (`## 3.3b(i)`). That is four times the §2 budget, and the loss comes from cutting the stream, not from tuning (`## 3.3b(i)`).
+- **Optimize per function.** `optimize` takes `resolve`'s output, and `resolve` places every memory region using heat counted over the whole joined stream (`Gen::resolve` in `src/gen/plan.rs`). One function's addresses depend on every other function, so per-function input to `optimize` does not exist before the join. The cross-function passes it runs (`merge_tails`, `dedup_blocks`) and `outline` run on the joined stream anyway.
+- **Deterministic, byte-identical join.** A body is not self-contained. Bodies take labels and memory spaces from shared counters. The first body that needs a helper (`subs`), a panic or raise stub, the error head, an embedded datum, or an early query creates it, and later bodies reuse it. The machinery that already re-installs one body in another build is `recall_body` (1.4's `BodyMemo`). It records 38 fields per body, and in 21 cases it declines rather than relocates: an earlier helper already exists, the embedded-data prefix differs, an early query moved, or the error head does not line up. A parallel join would have to handle all 21 by relocating instead of declining. That is a rewrite of the memo path, for a speedup of at most 1.10×.
+- **Wasm fallback and determinism.** Nothing new runs in parallel, so the wasm build stays single-threaded and `make check`'s `wasm` target still builds the playground. With the existing candidate pool, `--release` output is byte-identical at `LITHE_THREADS=1` and `LITHE_THREADS=16` for all 51 `bench/*.lithe` and ladder 128 (sha256 of stdout per file).
+
+**What would reopen it.** Per-body emission growing to about a third of the Fast backend, so that the ceiling passes 1.5×. That could happen once `optimize`/`outline` (71 % of Fast) become linear: ladder 128 Fast is already at 16 %. The design would then be `recall_body` extended to relocate where it now declines, run on forks of one `Gen`, and joined in target order.
+
+Tests: `make check` (fmt, clippy, test, verify, differential, snapshot, bench-gas, wasm); `python3 scripts/bench_compile.py --self-check`. Both snapshots are unchanged, because the change only reads the clock under `LITHE_TIME`.
 
 ## 5.1 Interning: scope measured
 
