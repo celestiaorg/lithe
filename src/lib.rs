@@ -338,7 +338,7 @@ fn build(
         let counts = gen::counts();
         let d = |ns: u64| std::time::Duration::from_nanos(ns);
         eprintln!(
-            "[time] check={:?} backend={:?} | emits={} sum={:?} (promote {:?}, {} rounds) | finishes={} sum={:?} (optimize {:?}, outline+ {:?})",
+            "[time] check={:?} backend={:?} | emits={} sum={:?} (promote {:?}, {} rounds) | finishes={} sum={:?} (optimize {:?}, outline+ {:?}) | body {:?}",
             t_check,
             t_split.elapsed(),
             counts.emits,
@@ -348,7 +348,8 @@ fn build(
             counts.finishes,
             d(counts.finish_ns),
             d(counts.opt_ns),
-            d(counts.outline_ns)
+            d(counts.outline_ns),
+            d(counts.body_ns)
         );
     }
     let prerequisites = split.prerequisites();

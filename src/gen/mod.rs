@@ -177,6 +177,9 @@ pub(crate) struct Counts {
     pub finishes: usize,
     /// Rounds `asm::promote` took, summed over every emit.
     pub promote_rounds: usize,
+    /// Time in the emitter itself (`Gen::emit`, `Gen::emit_init`), scouting passes included:
+    /// the work that runs before `promote` and `resolve` see the joined stream.
+    pub body_ns: u64,
     pub emit_ns: u64,
     pub promote_ns: u64,
     pub opt_ns: u64,
@@ -190,6 +193,7 @@ thread_local! {
             emits: 0,
             finishes: 0,
             promote_rounds: 0,
+            body_ns: 0,
             emit_ns: 0,
             promote_ns: 0,
             opt_ns: 0,
@@ -212,6 +216,7 @@ fn price_batch() -> bool {
 /// A phase of the backend, as the timers name it.
 #[derive(Clone, Copy)]
 enum Phase {
+    Body,
     Emit,
     Finish,
     Promote,
@@ -226,6 +231,7 @@ impl Drop for Timer {
     fn drop(&mut self) {
         let ns = self.1.elapsed().as_nanos() as u64;
         note(|n| match self.0 {
+            Phase::Body => n.body_ns += ns,
             Phase::Emit => n.emit_ns += ns,
             Phase::Finish => n.finish_ns += ns,
             Phase::Promote => n.promote_ns += ns,
@@ -253,7 +259,7 @@ fn time(phase: Phase) -> Option<Timer> {
     match phase {
         Phase::Emit => note(|n| n.emits += 1),
         Phase::Finish => note(|n| n.finishes += 1),
-        Phase::Promote | Phase::Optimize | Phase::Outline => {}
+        Phase::Body | Phase::Promote | Phase::Optimize | Phase::Outline => {}
     }
     Some(Timer(phase, std::time::Instant::now()))
 }
@@ -278,6 +284,7 @@ fn add_counts(o: Counts) {
         n.emits += o.emits;
         n.finishes += o.finishes;
         n.promote_rounds += o.promote_rounds;
+        n.body_ns += o.body_ns;
         n.emit_ns += o.emit_ns;
         n.promote_ns += o.promote_ns;
         n.opt_ns += o.opt_ns;
@@ -433,7 +440,10 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
             let mut g = Gen::new(checked, known.clone(), shape)?;
             g.body_memo = Some(Arc::clone(&body_memo));
             g.imm_consts = imm_consts.clone();
-            g.emit()?;
+            {
+                let _t = time(Phase::Body);
+                g.emit()?;
+            }
             let plan = g.plan();
             let grew = plan.blob_params.len() + plan.blob_rets.len()
                 > known.blob_params.len() + known.blob_rets.len();
@@ -452,7 +462,10 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
         let mut g = Gen::new(checked, plan.clone(), shape)?;
         g.body_memo = Some(Arc::clone(&body_memo));
         g.imm_consts = imm_consts.clone();
-        g.emit()?;
+        {
+            let _t = time(Phase::Body);
+            g.emit()?;
+        }
         g.drop_unread_caches();
         {
             let _t = time(Phase::Promote);
@@ -1366,7 +1379,10 @@ fn creation(
         }
         return Ok((wrap_init(&runtime, &parts)?, Vec::new()));
     };
-    g.emit_init(func, runtime, marks)?;
+    {
+        let _t = time(Phase::Body);
+        g.emit_init(func, runtime, marks)?;
+    }
     if optimize {
         g.drop_unread_caches();
         let _t = time(Phase::Promote);
