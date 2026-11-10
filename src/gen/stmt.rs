@@ -185,12 +185,11 @@ impl<'a> Gen<'a> {
                 cap,
                 list,
                 declared,
-                line,
-                col,
+                span,
                 ..
             } => {
                 let (Some(counter), Some(limit)) = (*counter, *limit) else {
-                    return Err(error(*line, *col, "unbound loop"));
+                    return Err(error(*span, "unbound loop"));
                 };
                 let _ = limit;
                 let signed = self.checked.types[self.peel_nominal(self.checked.syms[counter].ty)]
@@ -333,7 +332,7 @@ impl<'a> Gen<'a> {
                                         Expr::Index { base, .. } => Some(base.ty()),
                                         _ => None,
                                     })
-                                    .ok_or_else(|| error(*line, *col, "unbound loop"))?;
+                                    .ok_or_else(|| error(*span, "unbound loop"))?;
                                 let n = self.checked.types[self.peel_nominal(list_ty)].bits;
                                 self.push_u64(u64::from(n));
                             }
@@ -500,8 +499,7 @@ impl<'a> Gen<'a> {
                 self.loop_counters.push(counter);
                 let mark = self.facts.len();
                 let counter_expr = Expr::Ident {
-                    line: *line,
-                    col: *col,
+                    span: *span,
                     name: String::new(),
                     sym: Some(counter),
                     builtin: None,
@@ -733,8 +731,7 @@ impl<'a> Gen<'a> {
                 expr,
                 sym,
                 part_syms,
-                line,
-                col,
+                span,
                 name,
                 ..
             } => {
@@ -749,7 +746,7 @@ impl<'a> Gen<'a> {
                     return self.compile_effect(expr);
                 }
                 let Some(sym) = *sym else {
-                    return Err(error(*line, *col, "unbound local"));
+                    return Err(error(*span, "unbound local"));
                 };
                 if self.fresh_zero(sym, expr) {
                     return Ok(());
@@ -775,15 +772,14 @@ impl<'a> Gen<'a> {
                 expr,
                 sym,
                 part_syms,
-                line,
-                col,
+                span,
                 ..
             } => {
                 if !part_syms.is_empty() {
                     return self.scatter(expr, part_syms);
                 }
                 let Some(sym) = *sym else {
-                    return Err(error(*line, *col, "unbound local"));
+                    return Err(error(*span, "unbound local"));
                 };
                 if self.fresh_zero(sym, expr) {
                     return Ok(());
@@ -799,14 +795,13 @@ impl<'a> Gen<'a> {
                 fields,
                 root,
                 leaf,
-                line,
-                col,
+                span,
                 target,
                 push,
                 ..
             } => {
                 let Some(root) = *root else {
-                    return Err(error(*line, *col, "unbound assignment"));
+                    return Err(error(*span, "unbound assignment"));
                 };
                 if let Expr::Call {
                     builtin: Some(Builtin::ListPop),
@@ -904,12 +899,7 @@ impl<'a> Gen<'a> {
                 }
                 Ok(())
             }
-            Stmt::Emit {
-                name,
-                fields,
-                line,
-                col,
-            } => self.compile_emit(*line, *col, name, fields),
+            Stmt::Emit { name, fields, span } => self.compile_emit(*span, name, fields),
             Stmt::Defer {
                 expr,
                 value,
@@ -1328,7 +1318,7 @@ impl<'a> Gen<'a> {
                 .fields
                 .iter()
                 .find(|f| f.name == *name)
-                .ok_or_else(|| error(expr.line(), expr.col(), format!("no field `{name}`")))?;
+                .ok_or_else(|| error(expr.span(), format!("no field `{name}`")))?;
             start += field.slot;
             ty = field.ty;
         }
@@ -1416,8 +1406,7 @@ impl<'a> Gen<'a> {
             }
             let (len, data) = (self.temp(), self.temp());
             let ident = Expr::Ident {
-                line: 0,
-                col: 0,
+                span: Span::NONE,
                 name: String::new(),
                 sym: Some(sym),
                 builtin: None,
@@ -1489,8 +1478,7 @@ impl<'a> Gen<'a> {
             }
             let (len, data) = (self.temp(), self.temp());
             let ident = Expr::Ident {
-                line: 0,
-                col: 0,
+                span: Span::NONE,
                 name: String::new(),
                 sym: Some(sym),
                 builtin: None,
@@ -1847,13 +1835,9 @@ impl<'a> Gen<'a> {
             | Expr::Call { iface: Some(_), .. } => self.compile_defer(e, None, None, None),
             Expr::Lit { lit: Lit::Unit, .. } => Ok(()),
             Expr::Case {
-                scrut,
-                arms,
-                line,
-                col,
-                ..
-            } => self.compile_case(scrut, arms, *line, *col, Sink::Discard),
-            other => Err(error(other.line(), other.col(), "expected a transition")),
+                scrut, arms, span, ..
+            } => self.compile_case(scrut, arms, *span, Sink::Discard),
+            other => Err(error(other.span(), "expected a transition")),
         }
     }
 
@@ -1874,7 +1858,7 @@ impl<'a> Gen<'a> {
         // nothing: with inert arguments, not even bind them.
         let Some(bit) = self.site_tested(idx, args) else {
             if self.skippable_hook(idx).is_some() && !self.untested_hooks.contains(&idx) {
-                return Err(error(
+                return Err(error_at(
                     0,
                     0,
                     "internal: a hook's call binds its arguments untested",
@@ -1907,11 +1891,10 @@ impl<'a> Gen<'a> {
         if self.compiling.contains(&idx) {
             let f = &self.checked.prog.funcs[idx];
             return Err(error(
-                f.line,
-                f.col,
+                f.span,
                 "recursion is not supported: iteration is bounded, write a `for` loop",
             )
-            .in_file(&f.origin));
+            .in_file(f.file));
         }
         let inline = always || !self.plan.outline.contains(&idx);
         let consts: Vec<(usize, Word)> = self.checked.prog.funcs[idx]
@@ -2713,33 +2696,30 @@ impl<'a> Gen<'a> {
             let module = f.module.clone().unwrap_or_default();
             if cross.bit.is_some() {
                 return Err(error(
-                    f.line,
-                    f.col,
+                    f.span,
                     format!(
                         "hook `{}` runs in the contract, which `{module}`'s facet calls back, but a body that calls it runs a query after writing storage, so it keeps its writes until it ends; query before the first write, or use `{module}` without `{}`",
                         crate::split::display_name(&f.name),
                         crate::parse::DELEGATED
                     ),
                 )
-                .in_file(&f.origin));
+                .in_file(f.file));
             }
             return Err(error(
-                f.line,
-                f.col,
+                f.span,
                 format!(
                     "`{}` runs in `{module}`'s facet, which sees storage as it is when called, but a body that calls it runs a query after writing storage, so it keeps its writes until it ends; query before the first write, or use `{module}` without `{}`",
                     crate::split::display_name(&f.name),
                     crate::parse::DELEGATED
                 ),
             )
-            .in_file(&f.origin));
+            .in_file(f.file));
         }
         let args: Vec<Expr> = f
             .params
             .iter()
             .map(|p| Expr::Ident {
-                line: p.line,
-                col: p.col,
+                span: p.span,
                 name: p.name.clone(),
                 sym: p.sym,
                 builtin: None,

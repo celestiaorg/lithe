@@ -306,8 +306,7 @@ fn subst(e: &Expr, bound: &FxHashMap<usize, &Expr>) -> Option<Expr> {
 /// `base.length`, typed as `like`.
 pub(super) fn length_of(base: &Expr, like: &Expr) -> Expr {
     Expr::Field {
-        line: base.line(),
-        col: base.col(),
+        span: base.span(),
         base: Box::new(base.clone()),
         name: "length".to_string(),
         root: None,
@@ -496,8 +495,7 @@ impl<'a> Gen<'a> {
                     && self.range_of(right).0.is_zero()
                 {
                     let zero = Expr::Lit {
-                        line: right.line(),
-                        col: right.col(),
+                        span: right.span(),
                         lit: Lit::Uint(Word::from_u64(0)),
                         ty: right.ty(),
                     };
@@ -911,8 +909,7 @@ impl<'a> Gen<'a> {
         {
             if !self.checked.syms[sym].storage && self.fixed(&args[1]) {
                 let x = Expr::Ident {
-                    line: e.line(),
-                    col: e.col(),
+                    span: e.span(),
                     name: String::new(),
                     sym: Some(sym),
                     builtin: None,
@@ -934,8 +931,7 @@ impl<'a> Gen<'a> {
             return;
         }
         let x = Expr::Ident {
-            line: e.line(),
-            col: e.col(),
+            span: e.span(),
             name: String::new(),
             sym: Some(sym),
             builtin: None,

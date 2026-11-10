@@ -13,14 +13,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::ast::{
-    Exposing, Expr, Func, HookForm, ItemKind, Lit, NameAt, Program, Raises, Stmt, TypeDecl, TypeRef,
+    Exposing, Expr, FileId, Func, HookForm, ItemKind, Lit, NameAt, Program, Raises, Span, Stmt,
+    TypeDecl, TypeRef,
 };
 use crate::check::Checked;
 use crate::gen::{self, Built, Entrypoint, Group};
 use crate::keccak::{keccak256, selector};
 use crate::word::Word;
 use crate::{
-    error, Abi, AbiError, AbiItem, Constructor, Error, Event, EventParam, Fallback, Function,
+    error_at, Abi, AbiError, AbiItem, Constructor, Error, Event, EventParam, Fallback, Function,
     Param, Receive, StateMutability,
 };
 
@@ -161,6 +162,12 @@ pub(crate) struct Hidden {
 /// Where a function is declared: its file, line, and column.
 pub(crate) type Site = (String, u32, u32);
 
+/// Where `f` is declared, as `files` places it.
+pub(crate) fn site(files: &crate::ast::SourceMap, f: &Func) -> Site {
+    let (line, col) = files.line_col(f.file, f.span);
+    (files.path(f.file).to_string(), line, col)
+}
+
 /// A function contract code can call across into its module's facet: where it is declared,
 /// whether it runs with `delegatecall`, and the errors it raises.
 #[derive(Clone, Debug)]
@@ -240,6 +247,15 @@ pub(crate) fn build_from(
     name: &str,
     opts: &Options,
 ) -> Result<Split, Error> {
+    build_from_unplaced(checked, plain, name, opts).map_err(|err| checked.place(err))
+}
+
+fn build_from_unplaced(
+    checked: &Checked,
+    plain: &Checked,
+    name: &str,
+    opts: &Options,
+) -> Result<Split, Error> {
     // A cached build has no loop certificates.
     if gen::certify::wanted() {
         return build_uncached(checked, plain, name, opts);
@@ -300,7 +316,7 @@ fn build_uncached(
     );
     let built = gen::codegen(checked, &shape).map_err(|err| {
         if too_large(&err) {
-            error(
+            error_at(
                 0,
                 0,
                 format!(
@@ -451,7 +467,7 @@ fn router_shape(
         else {
             continue;
         };
-        let at = (func.origin.clone(), func.line, func.col);
+        let at = site(&checked.prog.files, func);
         if let Some(hidden) = facet.hidden.iter().find(|h| h.at == at) {
             shape.cross.insert(
                 idx,
@@ -519,7 +535,7 @@ fn stand_ins(checked: &Checked, crossing: &[(String, Vec<Crossing>)]) -> BTreeMa
         else {
             continue;
         };
-        let at = (func.origin.clone(), func.line, func.col);
+        let at = site(&checked.prog.files, func);
         if let Some(c) = crossing.iter().find(|c| c.at == at) {
             out.insert(
                 idx,
@@ -572,9 +588,7 @@ fn facet(
         .flat_map(|m| &m.funcs)
         .any(|f| matches!(f.kind, ItemKind::Entry | ItemKind::View));
     if crossing.is_empty() && !externals {
-        return Err(error(
-            0,
-            0,
+        return Err(error_at(0, 0,
             format!(
                 "module `{module}` has nothing to run from a facet: no externals, and no function contract code can call across; use it without `{}`",
                 crate::parse::DELEGATED
@@ -649,7 +663,7 @@ fn facet(
         .collect();
     stubs.sort();
     if stubs.len() > HOOK_BITS {
-        return Err(error(
+        return Err(error_at(
             0,
             0,
             format!(
@@ -681,7 +695,7 @@ fn facet(
     };
     let built = gen::codegen(&checked, &shape).map_err(|err| {
         if too_large(&err) {
-            error(
+            error_at(
                 0,
                 0,
                 format!("module `{module}`'s facet is over 65,535 bytes, which can't be assembled"),
@@ -709,7 +723,7 @@ fn facet(
                     .map(|r| r.sel),
             })
             .ok_or_else(|| {
-                error(
+                error_at(
                     0,
                     0,
                     format!("internal: `{module}`'s facet lost an entrypoint"),
@@ -782,7 +796,7 @@ fn entry_name(module: &str, at: &Site, checked: &Checked) -> Option<String> {
         .find(|f| {
             f.module.as_deref() == Some(module)
                 && f.exported.is_none()
-                && (f.origin.as_str(), f.line, f.col) == (at.0.as_str(), at.1, at.2)
+                && site(&checked.prog.files, f) == *at
         })
         .map(|f| format!("{}{HIDDEN}", f.name))
 }
@@ -798,7 +812,8 @@ pub(crate) fn display_name(name: &str) -> &str {
 /// its modules is gone; what imported files declare stays, for their modules.
 pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing]) -> Program {
     let mut prog = source.clone();
-    let own = source.origin.as_str();
+    let path = |file: FileId| source.files.path(file);
+    let own = path(source.file);
     let mut order = Vec::new();
     closure(&prog.modules, module, &mut order);
     // Only the files the modules are written in, and what those import, in an order of
@@ -806,12 +821,12 @@ pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing
     let mut files = Vec::new();
     let mut seen = FxHashSet::default();
     for decl in prog.modules.iter().filter(|m| order.contains(&m.name)) {
-        imports_first(&source.scopes, &decl.origin, &mut seen, &mut files);
+        imports_first(&source.scopes, path(decl.file), &mut seen, &mut files);
     }
     let rank = |origin: &str| files.iter().position(|file| file == origin);
     let keep = |origin: &str| origin != own && rank(origin).is_some();
-    prog.funcs.retain(|f| f.constant && keep(&f.origin));
-    prog.funcs.sort_by_key(|f| rank(&f.origin));
+    prog.funcs.retain(|f| f.constant && keep(path(f.file)));
+    prog.funcs.sort_by_key(|f| rank(path(f.file)));
     prog.domains.clear();
     prog.exposes.clear();
     prog.facets.clear();
@@ -819,27 +834,25 @@ pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing
     prog.peers.clear();
     prog.specs.clear();
     prog.types
-        .retain(|decl| decl.name != "storage" && keep(&decl.origin));
-    prog.errors.retain(|decl| keep(&decl.origin));
-    prog.error_sets.retain(|decl| keep(&decl.origin));
-    prog.events.retain(|decl| keep(&decl.origin));
-    prog.interfaces.retain(|decl| keep(&decl.origin));
-    prog.modules.retain(|decl| rank(&decl.origin).is_some());
-    prog.types.sort_by_key(|decl| rank(&decl.origin));
-    prog.errors.sort_by_key(|decl| rank(&decl.origin));
-    prog.error_sets.sort_by_key(|decl| rank(&decl.origin));
-    prog.events.sort_by_key(|decl| rank(&decl.origin));
-    prog.interfaces.sort_by_key(|decl| rank(&decl.origin));
-    prog.modules.sort_by_key(|decl| rank(&decl.origin));
+        .retain(|decl| decl.name != "storage" && keep(path(decl.file)));
+    prog.errors.retain(|decl| keep(path(decl.file)));
+    prog.error_sets.retain(|decl| keep(path(decl.file)));
+    prog.events.retain(|decl| keep(path(decl.file)));
+    prog.interfaces.retain(|decl| keep(path(decl.file)));
+    prog.modules.retain(|decl| rank(path(decl.file)).is_some());
+    prog.types.sort_by_key(|decl| rank(path(decl.file)));
+    prog.errors.sort_by_key(|decl| rank(path(decl.file)));
+    prog.error_sets.sort_by_key(|decl| rank(path(decl.file)));
+    prog.events.sort_by_key(|decl| rank(path(decl.file)));
+    prog.interfaces.sort_by_key(|decl| rank(path(decl.file)));
+    prog.modules.sort_by_key(|decl| rank(path(decl.file)));
     prog.types.push(TypeDecl {
-        line: 0,
-        col: 0,
+        span: Span::NONE,
         private: false,
-        origin: String::new(),
+        file: FileId::NONE,
         name: "storage".to_string(),
         ty: TypeRef::Record {
-            line: 0,
-            col: 0,
+            span: Span::NONE,
             fields: Vec::new(),
         },
     });
@@ -847,18 +860,15 @@ pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing
         .into_iter()
         .filter(|name| name != module)
         .map(|name| NameAt {
-            line: 0,
-            col: 0,
+            span: Span::NONE,
             name,
         })
         .collect();
     if let Some(decl) = prog.modules.iter().find(|decl| decl.name == module) {
-        prog.origin = decl.origin.clone();
-        prog.contract_line = decl.line;
-        prog.contract_col = decl.col;
+        prog.file = decl.file;
+        prog.contract_span = decl.span;
         prog.compose.push(NameAt {
-            line: decl.line,
-            col: decl.col,
+            span: decl.span,
             name: module.to_string(),
         });
         let externals: Vec<Func> = decl
@@ -873,8 +883,7 @@ pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing
             .collect();
         if !externals.is_empty() {
             prog.exposes.push(Exposing {
-                line: decl.line,
-                col: decl.col,
+                span: decl.span,
                 module: module.to_string(),
                 interfaces: Vec::new(),
                 decls: externals,
@@ -884,10 +893,7 @@ pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing
             .iter()
             .filter_map(|crossing| {
                 let at = &crossing.at;
-                let func = decl
-                    .funcs
-                    .iter()
-                    .find(|f| (f.origin.as_str(), f.line, f.col) == (at.0.as_str(), at.1, at.2))?;
+                let func = decl.funcs.iter().find(|f| site(&source.files, f) == *at)?;
                 Some(across(module, decl, func, crossing))
             })
             .collect();
@@ -917,7 +923,7 @@ pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing
 /// value through, and returning `true` for a pure or view function with no result, as an
 /// external must return something.
 fn across(module: &str, decl: &crate::ast::ModuleDecl, func: &Func, crossing: &Crossing) -> Func {
-    let (line, col) = (func.line, func.col);
+    let span = func.span;
     let overloads: Vec<&Func> = decl
         .funcs
         .iter()
@@ -928,15 +934,13 @@ fn across(module: &str, decl: &crate::ast::ModuleDecl, func: &Func, crossing: &C
         _ => format!("{module}.{}", func.name),
     };
     let call = Expr::Call {
-        line,
-        col,
+        span,
         name: callee.clone(),
         args: func
             .params
             .iter()
             .map(|p| Expr::Ident {
-                line: p.line,
-                col: p.col,
+                span: p.span,
                 name: p.name.clone(),
                 sym: None,
                 builtin: None,
@@ -974,8 +978,7 @@ fn across(module: &str, decl: &crate::ast::ModuleDecl, func: &Func, crossing: &C
                 .raises
                 .iter()
                 .map(|name| NameAt {
-                    line,
-                    col,
+                    span,
                     name: name.clone(),
                 })
                 .collect(),
@@ -990,20 +993,14 @@ fn across(module: &str, decl: &crate::ast::ModuleDecl, func: &Func, crossing: &C
     if func.ret.is_some() {
         entry.tail = Some(call);
     } else {
-        entry.stmts.push(Stmt::Call {
-            line,
-            col,
-            expr: call,
-        });
+        entry.stmts.push(Stmt::Call { span, expr: call });
         if entry.kind == ItemKind::View {
             entry.ret = Some(TypeRef::Name {
-                line,
-                col,
+                span,
                 name: "bool".to_string(),
             });
             entry.tail = Some(Expr::Lit {
-                line,
-                col,
+                span,
                 lit: Lit::Bool(true),
                 ty: 0,
             });
@@ -1084,7 +1081,7 @@ fn module_crossings(
     // calls gets its copy from an entrypoint of its own, unless that doesn't check. The
     // entrypoint may raise any error; the copy's own check says which it does.
     let raises: Vec<String> = alone.errors.iter().map(|e| e.name.clone()).collect();
-    let site = |f: &Func| (f.origin.clone(), f.line, f.col);
+    let site = |f: &Func| site(&source.files, f);
     let built: FxHashSet<Site> = alone.prog.funcs.iter().map(site).collect();
     let rest: Vec<Crossing> = source
         .modules
@@ -1151,14 +1148,15 @@ fn groups(checked: &Checked, entries: &[Entrypoint]) -> Vec<(Group, Vec<usize>)>
 /// `path:line:col: warning: message`, at the contract's name, and a hint after it.
 fn warning(checked: &Checked, message: &str, hint: &str) -> String {
     let prog = &checked.prog;
-    let at = if prog.contract_line > 0 {
-        format!(":{}:{}", prog.contract_line, prog.contract_col)
+    let at = if prog.contract_span != Span::NONE {
+        let (line, col) = prog.files.line_col(prog.file, prog.contract_span);
+        format!(":{line}:{col}")
     } else {
         String::new()
     };
     format!(
         "{}{at}: warning: {message}\n\n{hint}\n",
-        crate::shown_path(&prog.origin)
+        crate::shown_path(prog.files.path(prog.file))
     )
 }
 

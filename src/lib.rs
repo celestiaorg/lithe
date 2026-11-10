@@ -110,13 +110,49 @@ pub struct Error {
     pub line: u32,
     pub column: u32,
     pub message: String,
+    /// Where the error is until [`Error::placed`] reads `line` and `column` from a source map.
+    pub(crate) span: Option<ast::Span>,
+    /// The file [`Error::in_file`] named, until [`Error::placed`] writes its path to `file`.
+    pub(crate) at: Option<ast::FileId>,
 }
 
 impl Error {
+    /// An error at `line` and `column` of no file yet; line 0 has no place.
+    pub fn new(line: u32, column: u32, message: impl Into<String>) -> Self {
+        error_at(line, column, message)
+    }
+
     /// Places the error in `file`, unless it already has one.
-    pub(crate) fn in_file(mut self, file: &str) -> Self {
-        if self.file.is_none() && !file.is_empty() {
-            self.file = Some(file.to_string());
+    pub(crate) fn in_file(mut self, file: ast::FileId) -> Self {
+        if self.file.is_none() && self.at.is_none() && file != ast::FileId::NONE {
+            self.at = Some(file);
+        }
+        self
+    }
+
+    /// Places the error in the file at `path`, unless it already has one.
+    pub(crate) fn in_path(mut self, path: &str) -> Self {
+        if self.file.is_none() && self.at.is_none() && !path.is_empty() {
+            self.file = Some(path.to_string());
+        }
+        self
+    }
+
+    /// The error with its file, line, and column read from `files`: a place in no file
+    /// [`Error::in_file`] named is in `own`, which names no file for it.
+    pub(crate) fn placed(mut self, files: &ast::SourceMap, own: ast::FileId) -> Self {
+        let at = self.at.take();
+        if let (None, Some(id)) = (&self.file, at) {
+            let path = files.path(id);
+            if !path.is_empty() {
+                self.file = Some(path.to_string());
+            }
+        }
+        if let Some(span) = self.span.take() {
+            let id = at
+                .or_else(|| self.file.as_deref().and_then(|path| files.find(path)))
+                .unwrap_or(own);
+            (self.line, self.column) = files.line_col(id, span);
         }
         self
     }
@@ -200,8 +236,9 @@ pub fn compile(sources: &Sources, entry: &Path, opts: &Options) -> Result<Output
             .take()
             .expect("each unit is built once");
         let name = artifact_contract_name(&unit, entry);
-        let origin = unit.origin.clone();
-        build(sources, entry, unit, &name, opts).map_err(|err| err.in_file(&origin))
+        let (file, files) = (unit.file, unit.files.clone());
+        build(sources, entry, unit, &name, opts)
+            .map_err(|err| err.in_file(file).placed(&files, file))
     });
     let mut contracts = Vec::new();
     let mut errors = Vec::new();
@@ -718,12 +755,7 @@ fn size_warning(warning: &str) -> Error {
             }
         }
     }
-    Error {
-        file: None,
-        line,
-        column,
-        message: warning.trim_end().to_string(),
-    }
+    error_at(line, column, warning.trim_end())
 }
 
 /// Each external function's footprint: its writes, events, deferred calls, and errors, with
@@ -862,7 +894,7 @@ fn module_contract(
     }
     let canon = sources
         .canonicalize(entry)
-        .map_err(|err| error(1, 1, format!("cannot read `{}`: {err}", entry.display())))?;
+        .map_err(|err| error_at(1, 1, format!("cannot read `{}`: {err}", entry.display())))?;
     let origin = canon.display().to_string();
     let find = |name: &str| prog.modules.iter().find(|decl| decl.name == name);
     let mut order: Vec<&ast::ModuleDecl> = Vec::new();
@@ -881,16 +913,21 @@ fn module_contract(
         }
         order.push(decl);
     }
-    for decl in prog.modules.iter().filter(|decl| decl.origin == origin) {
+    let mine = |decl: &ast::ModuleDecl| prog.files.path(decl.file) == origin;
+    for decl in prog.modules.iter().filter(|decl| mine(decl)) {
         visit(decl, &find, &mut order);
     }
     if order.is_empty() {
-        return Err(error(1, 1, "the file declares no contract and no module"));
+        return Err(error_at(
+            1,
+            1,
+            "the file declares no contract and no module",
+        ));
     }
     let stem = canon.file_stem().unwrap_or_default().to_string_lossy();
     let import = format!("./{stem}");
     if !parse::module_path(&import) {
-        return Err(error(
+        return Err(error_at(
             1,
             1,
             format!("`{stem}` is not a module name, so no contract can import this file's modules"),
@@ -899,7 +936,7 @@ fn module_contract(
     // The file's own imports name what its modules' externals raise and take.
     let text = sources
         .read(entry)
-        .map_err(|err| error(1, 1, format!("cannot read `{}`: {err}", entry.display())))?;
+        .map_err(|err| error_at(1, 1, format!("cannot read `{}`: {err}", entry.display())))?;
     let mut src = format!("import \"{import}\";\n");
     for used in parse::parse(&text, &ast::Names::shared())?.uses {
         match used.alias {
@@ -913,16 +950,16 @@ fn module_contract(
     for decl in order {
         if let Some(param) = decl.params.first() {
             return Err(error(
-                param.line,
-                param.col,
+                param.span,
                 format!(
                     "module `{}` takes type parameters; prove a contract that uses it",
                     decl.name
                 ),
-            ));
+            )
+            .placed(&prog.files, decl.file));
         }
         // A module another file declares is there for those that require it.
-        let used = match exposing(decl).filter(|_| decl.origin == origin) {
+        let used = match exposing(decl).filter(|_| mine(decl)) {
             Some((text, _)) => text,
             None => format!("use {}", decl.name),
         };
@@ -931,13 +968,13 @@ fn module_contract(
         for hook in &decl.hooks {
             if hook.ret.is_some() {
                 return Err(error(
-                    hook.line,
-                    hook.col,
+                    hook.span,
                     format!(
                         "module `{}`'s hook `{}` returns a value; prove a contract that implements it",
                         decl.name, hook.name
                     ),
-                ));
+                )
+                .placed(&prog.files, decl.file));
             }
             hooks.push((decl.name.clone(), hook.name.clone()));
         }
@@ -1138,20 +1175,20 @@ pub fn stubs(
 ) -> Result<String, Error> {
     let prog = modules::load(sources, entry)?;
     let Some(decl) = prog.modules.iter().find(|decl| decl.name == module) else {
-        return Err(error(0, 0, format!("unknown module `{module}`")));
+        return Err(error_at(0, 0, format!("unknown module `{module}`")));
     };
     let (out, notes) = if interfaces.is_empty() {
         exposing(decl).ok_or_else(|| {
             error(
-                decl.line,
-                decl.col,
+                decl.span,
                 format!("module `{module}` declares no external functions"),
             )
+            .placed(&prog.files, decl.file)
         })?
     } else {
         for name in interfaces {
             if !prog.interfaces.iter().any(|iface| &iface.name == name) {
-                return Err(error(0, 0, format!("unknown interface `{name}`")));
+                return Err(error_at(0, 0, format!("unknown interface `{name}`")));
             }
         }
         (
@@ -1207,7 +1244,11 @@ fn hook_stubs(
     {
         return Ok(Vec::new());
     }
-    let checked = check::check_in(facet, false, evm_near(Path::new(&prog.origin)))?;
+    let checked = check::check_in(
+        facet,
+        false,
+        evm_near(Path::new(prog.files.path(prog.file))),
+    )?;
     let funcs = &checked.prog.funcs;
     let mut reached: Vec<usize> = Vec::new();
     let mut todo: Vec<usize> = (0..funcs.len())
@@ -1225,7 +1266,8 @@ fn hook_stubs(
             todo.push(j);
         }
     }
-    reached.sort_by_key(|&j| (&funcs[j].origin, funcs[j].line, funcs[j].col));
+    let files = &checked.prog.files;
+    reached.sort_by_key(|&j| (files.path(funcs[j].file), funcs[j].span));
     let mut out: Vec<(String, String)> = Vec::new();
     for j in reached {
         let Some(of) = &funcs[j].hook_of else {
@@ -1457,7 +1499,7 @@ fn emit_dir(
             if let Some((_, first)) = folders.iter().find(|(seen, _)| *seen == name) {
                 all.failed.push(SourceError {
                     path: source,
-                    error: error(
+                    error: error_at(
                         0,
                         0,
                         format!(
@@ -1473,7 +1515,7 @@ fn emit_dir(
             if let Err(err) = std::fs::create_dir_all(&folder) {
                 all.failed.push(SourceError {
                     path: source,
-                    error: error(0, 0, err.to_string()),
+                    error: error_at(0, 0, err.to_string()),
                 });
                 continue;
             }
@@ -1483,7 +1525,7 @@ fn emit_dir(
                 Ok(()) => all.wrote.push(dest),
                 Err(err) => all.failed.push(SourceError {
                     path: source.clone(),
-                    error: error(0, 0, err.to_string()),
+                    error: error_at(0, 0, err.to_string()),
                 }),
             }
         }
@@ -1533,7 +1575,7 @@ fn write_facets(out_dir: &Path, facets: Vec<(String, Facet)>, all: &mut DirOutpu
             Ok(()) => all.wrote.push(dest),
             Err(err) => all.failed.push(SourceError {
                 path: source.clone(),
-                error: error(0, 0, err.to_string()),
+                error: error_at(0, 0, err.to_string()),
             }),
         }
     }
@@ -1576,7 +1618,7 @@ fn emit_file(
     let opts = match opts(path) {
         Ok(opts) => opts,
         Err(msg) => {
-            out.failed.push(failed(error(0, 0, msg)));
+            out.failed.push(failed(error_at(0, 0, msg)));
             return (out, writes, facets);
         }
     };
@@ -1790,11 +1832,16 @@ pub(crate) fn is_spec_file(path: &Path) -> bool {
 
 fn lithe_sources(dir: &Path) -> Result<Vec<PathBuf>, Error> {
     let mut files = Vec::new();
-    lithe_files(dir, &mut files).map_err(|err| error(0, 0, format!("{}: {err}", dir.display())))?;
+    lithe_files(dir, &mut files)
+        .map_err(|err| error_at(0, 0, format!("{}: {err}", dir.display())))?;
     files.retain(|path| !is_spec_file(path));
     files.sort();
     if files.is_empty() {
-        return Err(error(0, 0, format!("no .lithe files in {}", dir.display())));
+        return Err(error_at(
+            0,
+            0,
+            format!("no .lithe files in {}", dir.display()),
+        ));
     }
     Ok(files)
 }
@@ -1895,7 +1942,7 @@ pub fn upgrade_plan(
     let contract = compile(sources, entry, opts)?.single()?;
     let Some(plan) = &contract.plan else {
         let Some(implementation) = implementation else {
-            return Err(error(0, 0, "upgrade requires --impl <address>").into());
+            return Err(error_at(0, 0, "upgrade requires --impl <address>").into());
         };
         let data = upgrade_calldata(sources, entry, migrate, implementation, args)?;
         return Ok(format!("to: {proxy}\ndata: {data}\n"));
@@ -1920,7 +1967,7 @@ pub fn upgrade_calldata(
 ) -> Result<String, Error> {
     let checked = checked(sources, entry)?;
     if !checked.prog.upgradeable {
-        return Err(error(1, 1, "contract is not upgradeable"));
+        return Err(error_at(1, 1, "contract is not upgradeable"));
     }
     let Some(func) = checked
         .prog
@@ -1928,14 +1975,14 @@ pub fn upgrade_calldata(
         .iter()
         .find(|func| func.kind == ast::ItemKind::Migrate && func.name == migrate)
     else {
-        return Err(error(1, 1, format!("unknown migration `{migrate}`")));
+        return Err(error_at(1, 1, format!("unknown migration `{migrate}`")));
     };
     if args.len() != func.params.len() {
         return Err(error(
-            func.line,
-            func.col,
+            func.span,
             format!("`{migrate}` expects {} arguments", func.params.len()),
-        ));
+        )
+        .placed(&checked.prog.files, func.file));
     }
     let parts: Vec<String> = migration_params(&checked, func)?
         .into_iter()
@@ -1974,11 +2021,10 @@ fn migration_params(
     for param in &func.params {
         let fields = check::abi_fields(&checked.types, param.ty_id, &param.name)?;
         if fields.len() != 1 {
-            return Err(error(
-                param.line,
-                param.col,
-                "migration arguments must be a single word",
-            ));
+            return Err(
+                error(param.span, "migration arguments must be a single word")
+                    .placed(&checked.prog.files, func.file),
+            );
         }
         out.push((param.name.clone(), fields[0].ty.clone()));
     }
@@ -2121,7 +2167,7 @@ fn parse_word(text: &str) -> Result<word::Word, Error> {
     } else {
         word::Word::from_dec(text)
     };
-    word.ok_or_else(|| error(0, 0, format!("cannot encode `{text}`")))
+    word.ok_or_else(|| error_at(0, 0, format!("cannot encode `{text}`")))
 }
 
 fn word_hex(word: word::Word) -> String {
@@ -2168,12 +2214,23 @@ pub(crate) fn closest<'a>(
         .map(|(_, option)| option)
 }
 
-pub(crate) fn error(line: u32, column: u32, message: impl Into<String>) -> Error {
+/// An error at `span`, in the file a later [`Error::in_file`] names.
+pub(crate) fn error(span: ast::Span, message: impl Into<String>) -> Error {
+    Error {
+        span: Some(span),
+        ..error_at(0, 0, message)
+    }
+}
+
+/// An error at a line and column already known.
+pub(crate) fn error_at(line: u32, column: u32, message: impl Into<String>) -> Error {
     Error {
         file: None,
         line,
         column,
         message: message.into(),
+        span: None,
+        at: None,
     }
 }
 

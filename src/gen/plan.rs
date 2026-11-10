@@ -139,11 +139,9 @@ impl<'a> Gen<'a> {
             drains: Vec::new(),
             drain_spaces: FxHashSet::default(),
             queued_call: Stmt::Defer {
-                line: 0,
-                col: 0,
+                span: Span::NONE,
                 expr: Expr::Lit {
-                    line: 0,
-                    col: 0,
+                    span: Span::NONE,
                     lit: Lit::Zero,
                     ty: 0,
                 },
@@ -1655,7 +1653,7 @@ impl<'a> Gen<'a> {
                 Inst::Mem(addr) => {
                     let ix = (addr >> REGION_SHIFT) as usize;
                     if ix == 0 || ix > self.spaces.len() {
-                        return Err(error(0, 0, "internal: bad memory address"));
+                        return Err(error_at(0, 0, "internal: bad memory address"));
                     }
                     Inst::Push(Word::from_u64(base[ix - 1] + u64::from(addr & mask)))
                 }

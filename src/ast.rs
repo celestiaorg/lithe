@@ -66,6 +66,104 @@ impl Names {
     }
 }
 
+/// Where a node is in its file: the bytes of the token it starts at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub(crate) struct Span {
+    pub lo: u32,
+    pub hi: u32,
+}
+
+impl Span {
+    /// No place in any file: a node the compiler wrote, which reads as line 0.
+    pub const NONE: Span = Span {
+        lo: u32::MAX,
+        hi: u32::MAX,
+    };
+}
+
+/// A file of one compilation, as its [`SourceMap`] numbers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub(crate) struct FileId(pub u32);
+
+impl FileId {
+    /// No file: a declaration the compiler wrote. Its path is empty.
+    pub const NONE: FileId = FileId(u32::MAX);
+}
+
+/// The files one compilation reads: each one's path, and where each of its lines starts.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SourceMap {
+    files: Vec<SourceFile>,
+}
+
+#[derive(Clone)]
+struct SourceFile {
+    path: String,
+    hash: u64,
+    starts: Vec<u32>,
+}
+
+/// A file's path and content hash say which file it is; `Debug` keys leave the lines out.
+impl std::fmt::Debug for SourceFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}#{:016x}", self.path, self.hash)
+    }
+}
+
+impl SourceMap {
+    /// A map of the one file `src`, as `FileId::default()`.
+    pub fn of(path: &str, src: &str) -> Self {
+        let mut map = SourceMap::default();
+        map.add(path, src);
+        map
+    }
+
+    /// The id of `src` at `path`, added once per path and content.
+    pub fn add(&mut self, path: &str, src: &str) -> FileId {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        src.hash(&mut hasher);
+        let hash = hasher.finish();
+        if let Some(i) = self
+            .files
+            .iter()
+            .position(|f| f.hash == hash && f.path == path)
+        {
+            return FileId(i as u32);
+        }
+        self.files.push(SourceFile {
+            path: path.to_string(),
+            hash,
+            starts: crate::parse::line_starts(src),
+        });
+        FileId(self.files.len() as u32 - 1)
+    }
+
+    /// The file's path as the compiler read it; empty for text with no file.
+    pub fn path(&self, file: FileId) -> &str {
+        self.files.get(file.0 as usize).map_or("", |f| &f.path)
+    }
+
+    /// The file at `path`, the first one added there.
+    pub fn find(&self, path: &str) -> Option<FileId> {
+        let i = self.files.iter().position(|f| f.path == path)?;
+        Some(FileId(i as u32))
+    }
+
+    /// The 1-based line and byte column `span` starts at; `(0, 0)` for [`Span::NONE`].
+    pub fn line_col(&self, file: FileId, span: Span) -> (u32, u32) {
+        let Some(f) = self.files.get(file.0 as usize) else {
+            return (0, 0);
+        };
+        if span == Span::NONE {
+            return (0, 0);
+        }
+        let line = f.starts.partition_point(|&s| s <= span.lo);
+        let start = f.starts[line.max(1) - 1];
+        (line as u32, span.lo - start + 1)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Program {
     pub uses: Vec<UseDecl>,
@@ -106,14 +204,13 @@ pub(crate) struct Program {
     /// Set when the file names its contract. An implicit file leaves this empty;
     /// tooling may still label artifacts from the file name.
     pub contract_name: Option<String>,
-    pub contract_line: u32,
-    pub contract_col: u32,
+    pub contract_span: Span,
     /// Further contracts from the same file. One bytecode uses a single contract.
     pub siblings: Vec<Program>,
     /// The other contracts of the file, which this one may `defer create`.
     pub peers: Vec<Program>,
-    /// The file the contract is written in, as its declarations' `origin` names it.
-    pub origin: String,
+    /// The file the contract is written in, as its declarations' `file` names it.
+    pub file: FileId,
     /// The contract's spec blocks, and those of the files it imports. The checker drops
     /// them: only `spec::check` reads them.
     pub specs: Vec<SpecBlock>,
@@ -123,15 +220,26 @@ pub(crate) struct Program {
     pub scopes: std::sync::Arc<crate::resolve::Scopes>,
     /// The table every `Symbol` this program holds indexes.
     pub names: Arc<Names>,
+    /// The files every `FileId` this program holds names, and their lines.
+    pub files: Arc<SourceMap>,
+}
+
+impl Program {
+    /// Points the program, its sibling contracts, and its peers at `files`.
+    pub(crate) fn share_files(&mut self, files: &Arc<SourceMap>) {
+        self.files = files.clone();
+        for prog in self.siblings.iter_mut().chain(&mut self.peers) {
+            prog.share_files(files);
+        }
+    }
 }
 
 /// `spec is { ... }` or `spec for f is { ... }`: claims about the program that `lithe prove`
 /// checks. Nothing in a spec block runs on chain.
 #[derive(Debug, Clone)]
 pub(crate) struct SpecBlock {
-    pub line: u32,
-    pub col: u32,
-    pub origin: String,
+    pub span: Span,
+    pub file: FileId,
     /// The function or route the block describes. `None` for `spec is`, the invariants.
     pub target: Option<NameAt>,
     /// `spec for f is partial`: the listed `raises` and `panics` conditions need not be the
@@ -144,8 +252,7 @@ pub(crate) struct SpecBlock {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Clause {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub kind: ClauseKind,
     pub expr: Expr,
     /// The expression as written, on one line: what the spec tools say the clause claims.
@@ -175,9 +282,8 @@ pub(crate) enum State {
 
 #[derive(Debug, Clone)]
 pub(crate) struct DomainDecl {
-    pub line: u32,
-    pub col: u32,
-    pub origin: String,
+    pub span: Span,
+    pub file: FileId,
     pub name: String,
     pub id: String,
     pub ty: TypeRef,
@@ -191,8 +297,7 @@ pub(crate) struct DomainDecl {
 
 #[derive(Debug, Clone)]
 pub(crate) struct TypeParam {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub name: String,
     /// Compiler-known constraint, currently `MapKey`.
     pub constraint: Option<String>,
@@ -200,9 +305,8 @@ pub(crate) struct TypeParam {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ModuleDecl {
-    pub line: u32,
-    pub col: u32,
-    pub origin: String,
+    pub span: Span,
+    pub file: FileId,
     pub name: String,
     pub params: Vec<TypeParam>,
     pub requires: Vec<NameAt>,
@@ -232,8 +336,7 @@ pub(crate) struct ModuleDecl {
 /// its own; the signature, when Lithe can write one, states them.
 #[derive(Debug, Clone)]
 pub(crate) struct Intrinsic {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub name: String,
     pub sig: Option<Func>,
     /// What the compiler does for it, set when its file is loaded.
@@ -260,8 +363,7 @@ pub(crate) enum Tag {
 /// interfaces it names and of its inline one. Each member is one of `M`'s externals.
 #[derive(Debug, Clone)]
 pub(crate) struct Exposing {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub module: String,
     pub interfaces: Vec<NameAt>,
     /// The inline interface's members.
@@ -282,8 +384,7 @@ pub(crate) struct Exported {
 
 #[derive(Debug, Clone)]
 pub(crate) struct GuardDecl {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub stmts: Vec<Stmt>,
     /// `upgrade guard is f;`: the function its body calls.
     pub via: Option<NameAt>,
@@ -291,64 +392,57 @@ pub(crate) struct GuardDecl {
 
 #[derive(Debug, Clone)]
 pub(crate) struct UseDecl {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub path: String,
     pub alias: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct TypeDecl {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub private: bool,
-    pub origin: String,
+    pub file: FileId,
     pub name: String,
     pub ty: TypeRef,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ErrorDecl {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub private: bool,
-    pub origin: String,
+    pub file: FileId,
     pub name: String,
     pub payload: Option<TypeRef>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ErrorSetDecl {
-    pub line: u32,
-    pub col: u32,
-    pub origin: String,
+    pub span: Span,
+    pub file: FileId,
     pub name: String,
     pub members: Vec<NameAt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NameAt {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub name: String,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct EventDecl {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub private: bool,
     pub anonymous: bool,
-    pub origin: String,
+    pub file: FileId,
     pub name: String,
     pub fields: Vec<FieldRef>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct InterfaceDecl {
-    pub line: u32,
-    pub col: u32,
-    pub origin: String,
+    pub span: Span,
+    pub file: FileId,
     pub name: String,
     /// Each method's header, with no body: `view function f(a : T) : R raises E;`.
     pub methods: Vec<Func>,
@@ -388,23 +482,19 @@ pub(crate) enum Forward {
 #[derive(Debug, Clone)]
 pub(crate) enum TypeRef {
     Name {
-        line: u32,
-        col: u32,
+        span: Span,
         name: String,
     },
     Record {
-        line: u32,
-        col: u32,
+        span: Span,
         fields: Vec<FieldRef>,
     },
     Variant {
-        line: u32,
-        col: u32,
+        span: Span,
         variants: Vec<VariantRef>,
     },
     List {
-        line: u32,
-        col: u32,
+        span: Span,
         elem: Box<TypeRef>,
         /// `None` is a dynamic list. `Some(n)` is a fixed list of length `n`.
         len: Option<u32>,
@@ -413,25 +503,21 @@ pub(crate) enum TypeRef {
         size: Option<Box<Expr>>,
     },
     Option {
-        line: u32,
-        col: u32,
+        span: Span,
         elem: Box<TypeRef>,
     },
     Map {
-        line: u32,
-        col: u32,
+        span: Span,
         key: Box<TypeRef>,
         val: Box<TypeRef>,
     },
     Tuple {
-        line: u32,
-        col: u32,
+        span: Span,
         elems: Vec<TypeRef>,
     },
     /// `Set(address)` or `SetEnumerable(address).iterator`.
     Apply {
-        line: u32,
-        col: u32,
+        span: Span,
         name: String,
         args: Vec<TypeRef>,
         member: Option<String>,
@@ -443,31 +529,17 @@ pub(crate) enum TypeRef {
 }
 
 impl TypeRef {
-    pub(crate) fn line(&self) -> u32 {
+    pub(crate) fn span(&self) -> Span {
         match self {
-            Self::Name { line, .. }
-            | Self::Record { line, .. }
-            | Self::Variant { line, .. }
-            | Self::List { line, .. }
-            | Self::Option { line, .. }
-            | Self::Map { line, .. }
-            | Self::Tuple { line, .. }
-            | Self::Apply { line, .. } => *line,
-            Self::Hole { .. } => 0,
-        }
-    }
-
-    pub(crate) fn col(&self) -> u32 {
-        match self {
-            Self::Name { col, .. }
-            | Self::Record { col, .. }
-            | Self::Variant { col, .. }
-            | Self::List { col, .. }
-            | Self::Option { col, .. }
-            | Self::Map { col, .. }
-            | Self::Tuple { col, .. }
-            | Self::Apply { col, .. } => *col,
-            Self::Hole { .. } => 0,
+            Self::Name { span, .. }
+            | Self::Record { span, .. }
+            | Self::Variant { span, .. }
+            | Self::List { span, .. }
+            | Self::Option { span, .. }
+            | Self::Map { span, .. }
+            | Self::Tuple { span, .. }
+            | Self::Apply { span, .. } => *span,
+            Self::Hole { .. } => Span::NONE,
         }
     }
 }
@@ -570,8 +642,7 @@ pub(crate) fn each_child(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
 
 #[derive(Debug, Clone)]
 pub(crate) struct FieldRef {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub name: String,
     pub ty: TypeRef,
     /// Set on an event field. Other records leave this false.
@@ -580,8 +651,7 @@ pub(crate) struct FieldRef {
 
 #[derive(Debug, Clone)]
 pub(crate) struct VariantRef {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub name: String,
     pub payload: Option<TypeRef>,
     /// The ABI parameter name of a single-value payload, from `of (name : ty)`.
@@ -594,11 +664,10 @@ pub(crate) struct VariantRef {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Func {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub kind: ItemKind,
     pub private: bool,
-    pub origin: String,
+    pub file: FileId,
     pub name: String,
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
@@ -646,8 +715,7 @@ pub(crate) struct Func {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Guarded {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub name: String,
     /// The external's parameters the guard takes, by name.
     pub args: Vec<NameAt>,
@@ -694,8 +762,7 @@ pub(crate) struct Raises {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Param {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub mutable: bool,
     /// `storage name : T`: a reference to the storage the caller passes, which the
     /// function may write.
@@ -711,8 +778,7 @@ pub(crate) struct Param {
 #[derive(Debug, Clone)]
 pub(crate) enum Stmt {
     Const {
-        line: u32,
-        col: u32,
+        span: Span,
         name: String,
         /// Element names when this binding is `const (a, b) : (T, U)`.
         parts: Vec<String>,
@@ -722,8 +788,7 @@ pub(crate) enum Stmt {
         part_syms: Vec<usize>,
     },
     Var {
-        line: u32,
-        col: u32,
+        span: Span,
         name: String,
         /// Element names when this binding is `var (a, b) : (T, U)`.
         parts: Vec<String>,
@@ -733,8 +798,7 @@ pub(crate) enum Stmt {
         part_syms: Vec<usize>,
     },
     Assign {
-        line: u32,
-        col: u32,
+        span: Span,
         path: Vec<String>,
         index: Option<Expr>,
         /// Keys after the first, for a map of maps: `m[a][b] := v`.
@@ -756,15 +820,13 @@ pub(crate) enum Stmt {
         push: bool,
     },
     If {
-        line: u32,
-        col: u32,
+        span: Span,
         cond: Expr,
         then_body: Vec<Stmt>,
         else_body: Vec<Stmt>,
     },
     Assert {
-        line: u32,
-        col: u32,
+        span: Span,
         cond: Expr,
         reason: Raised,
     },
@@ -772,20 +834,17 @@ pub(crate) enum Stmt {
         reason: Raised,
     },
     Call {
-        line: u32,
-        col: u32,
+        span: Span,
         expr: Expr,
     },
     Skip,
     Emit {
-        line: u32,
-        col: u32,
+        span: Span,
         name: String,
         fields: Vec<(String, Expr)>,
     },
     Defer {
-        line: u32,
-        col: u32,
+        span: Span,
         expr: Expr,
         value: Option<Expr>,
         /// `with gas = g`: the most gas the call may use, instead of all that is left.
@@ -796,8 +855,7 @@ pub(crate) enum Stmt {
     /// `for x : T in xs do { ... }` or `for i : T in lo .. hi do { ... }`. The number of
     /// iterations is fixed when the loop starts; `until` ends it early.
     For {
-        line: u32,
-        col: u32,
+        span: Span,
         /// The index name of `(i, x)`, if the loop binds one. `_` binds nothing.
         index: Option<String>,
         /// The element or counter name. `_` binds nothing.
@@ -831,8 +889,7 @@ pub(crate) enum Stmt {
     },
     /// `(a, b) := expr;` assigns each element of a tuple to a `var`.
     AssignTuple {
-        line: u32,
-        col: u32,
+        span: Span,
         names: Vec<String>,
         expr: Expr,
         syms: Vec<usize>,
@@ -851,8 +908,7 @@ pub(crate) enum ForIter {
 /// transitions; this is the second, and it receives the call's result.
 #[derive(Debug, Clone)]
 pub(crate) struct Then {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     /// One name, the names of a tuple pattern, or none when the result is not bound.
     pub names: Vec<String>,
     pub tuple: bool,
@@ -876,8 +932,7 @@ impl Then {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Raised {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     pub name: String,
     pub form: RaisedForm,
     pub index: Option<usize>,
@@ -1149,22 +1204,19 @@ pub(crate) enum Lit {
 #[derive(Debug, Clone)]
 pub(crate) enum Expr {
     Lit {
-        line: u32,
-        col: u32,
+        span: Span,
         lit: Lit,
         ty: usize,
     },
     Ident {
-        line: u32,
-        col: u32,
+        span: Span,
         name: String,
         sym: Option<usize>,
         builtin: Option<Builtin>,
         ty: usize,
     },
     Field {
-        line: u32,
-        col: u32,
+        span: Span,
         base: Box<Expr>,
         name: String,
         root: Option<usize>,
@@ -1172,8 +1224,7 @@ pub(crate) enum Expr {
         ty: usize,
     },
     Index {
-        line: u32,
-        col: u32,
+        span: Span,
         base: Box<Expr>,
         index: Box<Expr>,
         root: Option<usize>,
@@ -1181,8 +1232,7 @@ pub(crate) enum Expr {
         ty: usize,
     },
     Call {
-        line: u32,
-        col: u32,
+        span: Span,
         name: String,
         args: Vec<Expr>,
         base: Option<Box<Expr>>,
@@ -1193,23 +1243,20 @@ pub(crate) enum Expr {
         ty: usize,
     },
     Query {
-        line: u32,
-        col: u32,
+        span: Span,
         expr: Box<Expr>,
         /// `with gas = g`: the most gas the call may use, instead of all that is left.
         gas: Option<Box<Expr>>,
         ty: usize,
     },
     Case {
-        line: u32,
-        col: u32,
+        span: Span,
         scrut: Box<Expr>,
         arms: Vec<Arm>,
         ty: usize,
     },
     Unary {
-        line: u32,
-        col: u32,
+        span: Span,
         op: UnOp,
         expr: Box<Expr>,
         ty: usize,
@@ -1217,35 +1264,30 @@ pub(crate) enum Expr {
     /// `list(uint)(xs)`: a conversion to a type that has no name of its own. The checker
     /// makes it a `Cast`.
     Convert {
-        line: u32,
-        col: u32,
+        span: Span,
         target: Box<TypeRef>,
         expr: Box<Expr>,
         ty: usize,
     },
     Binary {
-        line: u32,
-        col: u32,
+        span: Span,
         op: BinOp,
         left: Box<Expr>,
         right: Box<Expr>,
         ty: usize,
     },
     Tuple {
-        line: u32,
-        col: u32,
+        span: Span,
         elems: Vec<Expr>,
         ty: usize,
     },
     List {
-        line: u32,
-        col: u32,
+        span: Span,
         elems: Vec<Expr>,
         ty: usize,
     },
     Record {
-        line: u32,
-        col: u32,
+        span: Span,
         fields: Vec<(String, Expr)>,
         ty: usize,
     },
@@ -1263,39 +1305,21 @@ impl Expr {
                 .is_none_or(|ctor| ctor != "true")
     }
 
-    pub(crate) fn line(&self) -> u32 {
+    pub(crate) fn span(&self) -> Span {
         match self {
-            Self::Lit { line, .. }
-            | Self::Ident { line, .. }
-            | Self::Field { line, .. }
-            | Self::Index { line, .. }
-            | Self::Call { line, .. }
-            | Self::Query { line, .. }
-            | Self::Case { line, .. }
-            | Self::Unary { line, .. }
-            | Self::Convert { line, .. }
-            | Self::Binary { line, .. }
-            | Self::Tuple { line, .. }
-            | Self::List { line, .. }
-            | Self::Record { line, .. } => *line,
-        }
-    }
-
-    pub(crate) fn col(&self) -> u32 {
-        match self {
-            Self::Lit { col, .. }
-            | Self::Ident { col, .. }
-            | Self::Field { col, .. }
-            | Self::Index { col, .. }
-            | Self::Call { col, .. }
-            | Self::Query { col, .. }
-            | Self::Case { col, .. }
-            | Self::Unary { col, .. }
-            | Self::Convert { col, .. }
-            | Self::Binary { col, .. }
-            | Self::Tuple { col, .. }
-            | Self::List { col, .. }
-            | Self::Record { col, .. } => *col,
+            Self::Lit { span, .. }
+            | Self::Ident { span, .. }
+            | Self::Field { span, .. }
+            | Self::Index { span, .. }
+            | Self::Call { span, .. }
+            | Self::Query { span, .. }
+            | Self::Case { span, .. }
+            | Self::Unary { span, .. }
+            | Self::Convert { span, .. }
+            | Self::Binary { span, .. }
+            | Self::Tuple { span, .. }
+            | Self::List { span, .. }
+            | Self::Record { span, .. } => *span,
         }
     }
 
@@ -1338,8 +1362,7 @@ impl Expr {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Arm {
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     /// `| A | B -> ...` lists both. An arm with several binds no payload.
     pub ctors: Vec<String>,
     pub bind: Option<String>,
@@ -1364,5 +1387,36 @@ impl Arm {
     pub(crate) fn fails(&self) -> bool {
         matches!(self.stmts.last(), Some(Stmt::Fail { .. }))
             && matches!(self.expr, Expr::Lit { lit: Lit::Unit, .. })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_map_places_bytes_as_the_lexer_counts_lines() {
+        let src = "ab\n\ncé d\r\n  x\n";
+        let mut map = SourceMap::of("f.lithe", src);
+        for lo in 0..src.len() {
+            let before = &src.as_bytes()[..lo];
+            let line = before.iter().filter(|&&b| b == b'\n').count() as u32 + 1;
+            let start = before
+                .iter()
+                .rposition(|&b| b == b'\n')
+                .map_or(0, |i| i + 1);
+            let span = Span {
+                lo: lo as u32,
+                hi: lo as u32 + 1,
+            };
+            let want = (line, (lo - start) as u32 + 1);
+            assert_eq!(map.line_col(FileId(0), span), want, "byte {lo}");
+        }
+        assert_eq!(map.line_col(FileId(0), Span::NONE), (0, 0));
+        assert_eq!(map.line_col(FileId::NONE, Span::default()), (0, 0));
+        assert_eq!(map.add("f.lithe", src), FileId(0));
+        assert_eq!(map.add("f.lithe", "x"), FileId(1));
+        assert_eq!(map.find("f.lithe"), Some(FileId(0)));
+        assert_eq!(map.path(FileId::NONE), "");
     }
 }

@@ -19,6 +19,7 @@ use crate::check::{
     TyKind, TAG_FIELD,
 };
 use crate::error;
+use crate::error_at;
 use crate::keccak::selector;
 use crate::split::{Cross, Facet, Opt, Shape};
 use crate::word::Word;
@@ -1051,7 +1052,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     // The search leaves the exact copies out, which the chosen plan gets.
     let built = finish(&best.emitted, true)?;
     if built.bytes == usize::MAX {
-        return Err(error(0, 0, "contract too large"));
+        return Err(error_at(0, 0, "contract too large"));
     }
     let (code, more) = creation(
         checked,
@@ -1467,7 +1468,7 @@ fn place_marked(
         }
         guess = runtime.len();
     }
-    Err(error(0, 0, "internal: embedded code did not settle"))
+    Err(error_at(0, 0, "internal: embedded code did not settle"))
 }
 
 /// Nested pools never start more threads than the budget allows, and a budget of one runs
@@ -1536,8 +1537,7 @@ fn a_callers_certificates_stay_ahead_of_its_pool() {
         let mut certs = certify::Certs::default();
         certs.loops.push(certify::LoopCert {
             func: func.to_string(),
-            line: 0,
-            col: 0,
+            span: Span::NONE,
             creation: false,
             head,
             exit: None,
@@ -1584,8 +1584,8 @@ fn a_pools_certificates_read_in_item_order() {
             t.sites.push(Site {
                 kind: Kind::Loop,
                 func: i.to_string(),
-                line: 0,
-                col: 0,
+                span: Span::NONE,
+                route: 0,
                 top: 0,
                 done: 0,
                 counter: false,
@@ -1595,8 +1595,7 @@ fn a_pools_certificates_read_in_item_order() {
         let mut made = certify::Certs::default();
         made.loops.push(certify::LoopCert {
             func: i.to_string(),
-            line: 0,
-            col: 0,
+            span: Span::NONE,
             creation: false,
             head: i,
             exit: None,
@@ -1613,8 +1612,8 @@ fn a_pools_certificates_read_in_item_order() {
         t.sites.push(Site {
             kind: Kind::Loop,
             func: "caller".to_string(),
-            line: 0,
-            col: 0,
+            span: Span::NONE,
+            route: 0,
             top: 0,
             done: 0,
             counter: false,
@@ -1678,6 +1677,12 @@ fn plan_eq_ignores_set_order() {
 /// Every call inlined, memory as emitted, no bytecode passes. Only placement and encoding.
 #[cfg(test)]
 pub(crate) fn codegen_unoptimized(checked: Checked) -> Result<Vec<u8>, Error> {
+    let (file, files) = (checked.prog.file, checked.prog.files.clone());
+    codegen_unoptimized_unplaced(checked).map_err(|err| err.placed(&files, file))
+}
+
+#[cfg(test)]
+fn codegen_unoptimized_unplaced(checked: Checked) -> Result<Vec<u8>, Error> {
     // Unoptimized code may be past the size limit; it only runs in tests.
     let mut shape = Shape::default();
     shape.opts.size_limit = usize::MAX;
@@ -1711,6 +1716,10 @@ pub(crate) struct Entrypoint {
 
 /// Every selector the whole contract dispatches, in dispatch order.
 pub(crate) fn entrypoints(checked: &Checked) -> Result<Vec<Entrypoint>, Error> {
+    entrypoints_unplaced(checked).map_err(|err| checked.place(err))
+}
+
+fn entrypoints_unplaced(checked: &Checked) -> Result<Vec<Entrypoint>, Error> {
     let shape = Shape::default();
     let mut g = Gen::new(checked, Plan::default(), &shape)?;
     let funcs = &checked.prog.funcs;
@@ -1755,7 +1764,7 @@ pub(crate) fn crossable(checked: &Checked, module: &str) -> Vec<crate::split::Cr
     let Ok(g) = Gen::new(checked, Plan::default(), &shape) else {
         return Vec::new();
     };
-    let site = |f: &Func| (f.origin.clone(), f.line, f.col);
+    let site = |f: &Func| crate::split::site(&checked.prog.files, f);
     let generic: Vec<crate::split::Site> = checked
         .source
         .modules
@@ -1817,8 +1826,7 @@ pub(crate) fn stray_calls(
         .clone()
         .unwrap_or_default();
     Err(error(
-        stray.line,
-        stray.col,
+        stray.span,
         format!(
             "`{}` runs in `{module}`'s facet, and contract code can't call it across: {}; move the call into `{module}`, or use `{module}` without `{}`",
             crate::split::display_name(&checked.prog.funcs[stray.callee].name),
@@ -1826,7 +1834,7 @@ pub(crate) fn stray_calls(
             crate::parse::DELEGATED
         ),
     )
-    .in_file(&stray.origin))
+    .in_file(stray.file))
 }
 
 /// A hook a delegated module's facet calls back runs in a frame of its own, whose calldata is
@@ -1872,15 +1880,14 @@ pub(crate) fn callback_rules(checked: &Checked, facets: &[String]) -> Result<(),
                     let f = &funcs[deploy];
                     let module = funcs[i].module.clone().unwrap_or_default();
                     return Err(error(
-                        f.line,
-                        f.col,
+                        f.span,
                         format!(
                             "`deploy` reaches hook `{}` through `{module}`'s facet, which calls hooks back into the contract's code, and the contract has no code until `deploy` ends; call it after deployment, or use `{module}` without `{}`",
                             crate::split::display_name(&funcs[j].name),
                             crate::parse::DELEGATED
                         ),
                     )
-                    .in_file(&f.origin));
+                    .in_file(f.file));
                 }
                 todo.push((j, across || in_facet(j)));
             }
@@ -1911,20 +1918,16 @@ pub(crate) fn callback_rules(checked: &Checked, facets: &[String]) -> Result<(),
                 continue;
             }
             let f = &funcs[h];
-            let (line, col) = f
-                .hook_of
-                .as_ref()
-                .map_or((f.line, f.col), |of| (of.module.line, of.module.col));
+            let span = f.hook_of.as_ref().map_or(f.span, |of| of.module.span);
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "hook `{}` is called back from `{module}`'s facet, and it can't be: it reads the call's calldata, and a hook called back sees the facet's call to it, or use `{module}` without `{}`",
                     crate::split::display_name(&f.name),
                     crate::parse::DELEGATED
                 ),
             )
-            .in_file(&f.origin));
+            .in_file(f.file));
         }
     }
     Ok(())
@@ -1934,9 +1937,8 @@ pub(crate) fn callback_rules(checked: &Checked, facets: &[String]) -> Result<(),
 /// call is, and why.
 pub(crate) struct Stray {
     pub callee: usize,
-    pub line: u32,
-    pub col: u32,
-    pub origin: String,
+    pub span: Span,
+    pub file: FileId,
     pub why: String,
 }
 
@@ -1954,17 +1956,16 @@ pub(crate) fn stray_call(
     let g = Gen::new(checked, Plan::default(), &shape)?;
     let funcs = &checked.prog.funcs;
     let in_facet = |i: usize| funcs[i].module.as_ref().is_some_and(|m| facets.contains(m));
-    let calls = |stmts: &[Stmt], tail: Option<&Expr>| -> Vec<(usize, u32, u32)> {
+    let calls = |stmts: &[Stmt], tail: Option<&Expr>| -> Vec<(usize, Span)> {
         let found = std::cell::RefCell::new(Vec::new());
         let note = |node: Node<'_>| {
             if let Node::Expr(Expr::Call {
                 callee: Some(j),
-                line,
-                col,
+                span,
                 ..
             }) = node
             {
-                found.borrow_mut().push((*j, *line, *col));
+                found.borrow_mut().push((*j, *span));
             }
             false
         };
@@ -1977,7 +1978,7 @@ pub(crate) fn stray_call(
         }
         found.into_inner()
     };
-    let stray = |j: usize, line: u32, col: u32, origin: &str| -> Option<Stray> {
+    let stray = |j: usize, span: Span, file: FileId| -> Option<Stray> {
         let why = match g.crossing(j) {
             Ok(None) => return None,
             Err(why) => why,
@@ -1988,9 +1989,8 @@ pub(crate) fn stray_call(
         };
         Some(Stray {
             callee: j,
-            line,
-            col,
-            origin: origin.to_string(),
+            span,
+            file,
             why,
         })
     };
@@ -2011,20 +2011,20 @@ pub(crate) fn stray_call(
         })
         .map(|(i, _)| i)
         .collect();
-    let mut found: Vec<(usize, u32, u32, String)> = Vec::new();
+    let mut found: Vec<(usize, Span, FileId)> = Vec::new();
     if let Some(guard) = &checked.prog.guard {
-        for (j, line, col) in calls(&guard.stmts, None) {
-            found.push((j, line, col, checked.prog.origin.clone()));
+        for (j, span) in calls(&guard.stmts, None) {
+            found.push((j, span, checked.prog.file));
         }
     }
     let mut done = FxHashSet::default();
     let mut crossed = Vec::new();
     loop {
-        for (j, line, col, origin) in std::mem::take(&mut found) {
+        for (j, span, file) in std::mem::take(&mut found) {
             if !in_facet(j) {
                 todo.push(j);
             } else if !cross.contains_key(&j) {
-                if let Some(stray) = stray(j, line, col, &origin) {
+                if let Some(stray) = stray(j, span, file) {
                     return Ok((Some(stray), crossed));
                 }
                 todo.push(j);
@@ -2037,8 +2037,8 @@ pub(crate) fn stray_call(
             continue;
         }
         let f = &funcs[i];
-        for (j, line, col) in calls(&f.stmts, f.tail.as_ref()) {
-            found.push((j, line, col, f.origin.clone()));
+        for (j, span) in calls(&f.stmts, f.tail.as_ref()) {
+            found.push((j, span, f.file));
         }
     }
     crossed.sort_unstable();
@@ -2656,9 +2656,9 @@ struct Gen<'a> {
     share: Option<(String, u32, usize)>,
     /// Queries issued at the start of the body, by source position: their buffer holds
     /// whether each succeeded, then its word.
-    hoisted: FxHashMap<(u32, u32), i32>,
+    hoisted: FxHashMap<Span, i32>,
     /// Queries a body will issue first, which may follow its writes in the source.
-    skip_queries: FxHashSet<(u32, u32)>,
+    skip_queries: FxHashSet<Span>,
     scratch_a: i32,
     scratch_b: i32,
     scratch_c: i32,
@@ -2968,7 +2968,7 @@ pub(crate) const INIT_BYTES: usize = 10;
 /// Creation code that returns `runtime`. With parts, it first reverts unless each has code.
 fn wrap_init(runtime: &[u8], parts: &[Word]) -> Result<Vec<u8>, Error> {
     if runtime.len() > 0xffff {
-        return Err(error(0, 0, "contract too large"));
+        return Err(error_at(0, 0, "contract too large"));
     }
     if !parts.is_empty() {
         return wrap_init_checked(runtime, parts);
@@ -2985,7 +2985,7 @@ fn wrap_init(runtime: &[u8], parts: &[Word]) -> Result<Vec<u8>, Error> {
     code.push(PUSH0);
     code.push(RETURN);
     if code.len() != INIT_BYTES {
-        return Err(error(0, 0, "internal: init code size"));
+        return Err(error_at(0, 0, "internal: init code size"));
     }
     code.extend_from_slice(runtime);
     Ok(code)
@@ -3007,7 +3007,7 @@ fn wrap_init_checked(runtime: &[u8], parts: &[Word]) -> Result<Vec<u8>, Error> {
     let bad = code.len() + 4 + 11;
     let start = bad + 4;
     if start + runtime.len() > 0xffff {
-        return Err(error(0, 0, "contract too large"));
+        return Err(error_at(0, 0, "contract too large"));
     }
     code.push(0x61);
     code.extend_from_slice(&(bad as u16).to_be_bytes());
@@ -3026,7 +3026,7 @@ fn wrap_init_checked(runtime: &[u8], parts: &[Word]) -> Result<Vec<u8>, Error> {
     code.push(PUSH0);
     code.push(REVERT);
     if code.len() != start {
-        return Err(error(0, 0, "internal: init code size"));
+        return Err(error_at(0, 0, "internal: init code size"));
     }
     code.extend_from_slice(runtime);
     Ok(code)
@@ -3077,7 +3077,7 @@ fn wrap_init_self(runtime: &[u8], parts: &[Word], sites: &[usize]) -> Result<Vec
     };
     let start = prefix(0).len();
     if start + runtime.len() > 0xffff {
-        return Err(error(0, 0, "contract too large"));
+        return Err(error_at(0, 0, "contract too large"));
     }
     let mut code = prefix(start);
     code.extend_from_slice(runtime);

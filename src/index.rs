@@ -234,7 +234,10 @@ pub(crate) fn build(root: &str, text: &str, units: &[Checked]) -> Index {
         b.unit(c);
     }
     for c in units {
-        let key = (c.prog.origin.clone(), c.prog.contract_name.clone());
+        let key = (
+            c.prog.files.path(c.prog.file).to_string(),
+            c.prog.contract_name.clone(),
+        );
         let Some(scope) = c.prog.scopes.scope(&key) else {
             continue;
         };
@@ -344,6 +347,30 @@ impl<'a> Builder<'a> {
         at
     }
 
+    /// Where an AST node is in `file`: its line and column, `(0, 0)` for none.
+    fn lc(&self, file: usize, span: crate::ast::Span) -> (u32, u32) {
+        if span == crate::ast::Span::NONE {
+            return (0, 0);
+        }
+        self.pos(file, span.lo as usize)
+    }
+
+    fn locate_at(&self, file: usize, span: crate::ast::Span, name: &str) -> (u32, u32) {
+        let (line, col) = self.lc(file, span);
+        self.locate(file, line, col, name)
+    }
+
+    fn offset_at(&self, file: usize, span: crate::ast::Span) -> usize {
+        let (line, col) = self.lc(file, span);
+        self.offset(file, line, col)
+    }
+
+    /// The index's file for an AST file of the unit being read.
+    fn file_of(&mut self, file: FileId) -> usize {
+        let path = self.c().prog.files.path(file).to_string();
+        self.file(&path)
+    }
+
     fn pos(&self, file: usize, offset: usize) -> (u32, u32) {
         let starts = &self.starts[file];
         let line = starts.partition_point(|&s| s <= offset).max(1);
@@ -385,7 +412,7 @@ impl<'a> Builder<'a> {
 
     /// Where `name` is written as the label of `name = e`.
     fn label(&self, file: usize, e: &Expr, name: &str) -> Option<(u32, u32)> {
-        let (line, col) = start(e);
+        let (line, col) = self.lc(file, start(e));
         let text = &self.ix.files[file].text;
         let mut at = self.offset(file, line, col);
         // A folded `Address.zero` starts at `zero`.
@@ -531,12 +558,7 @@ impl<'a> Builder<'a> {
         src.funcs
             .iter()
             .chain(src.modules.iter().flat_map(|m| &m.funcs))
-            .find(|g| {
-                g.origin == f.origin
-                    && g.line == f.line
-                    && g.col == f.col
-                    && g.params.iter().any(|p| p.storage)
-            })
+            .find(|g| g.file == f.file && g.span == f.span && g.params.iter().any(|p| p.storage))
     }
 
     /// `storage.orders[k]` passed for a `storage` parameter: the checker drops it from the
@@ -675,7 +697,7 @@ impl<'a> Builder<'a> {
             return;
         };
         let file = self.file("");
-        let at = self.locate(file, c.prog.contract_line, c.prog.contract_col, name);
+        let at = self.locate_at(file, c.prog.contract_span, name);
         let mut entries: Vec<String> = c
             .routes
             .iter()
@@ -688,7 +710,7 @@ impl<'a> Builder<'a> {
         }
         let mut hover = vec![
             code(&format!("contract {name}")),
-            self.doc(file, c.prog.contract_line),
+            self.doc(file, self.lc(file, c.prog.contract_span).0),
         ];
         if c.prog.upgradeable {
             hover.push("upgradeable".to_string());
@@ -792,9 +814,9 @@ impl<'a> Builder<'a> {
         let c = self.c();
         let prog = &c.prog;
         for m in &prog.modules {
-            let file = self.file(&m.origin);
-            let at = self.span(file, self.locate(file, m.line, m.col, &m.name), &m.name);
-            let doc = self.doc(file, m.line);
+            let file = self.file_of(m.file);
+            let at = self.span(file, self.locate_at(file, m.span, &m.name), &m.name);
+            let doc = self.doc(file, self.lc(file, m.span).0);
             let d = self.def(
                 Some(at),
                 Def {
@@ -828,9 +850,9 @@ impl<'a> Builder<'a> {
             }
             self.ix.defs[d].hover = join(hover);
             for i in &m.intrinsics {
-                let at = self.locate(file, i.line, i.col, &i.name);
+                let at = self.locate_at(file, i.span, &i.name);
                 let text = &self.ix.files[file].text;
-                let from = self.offset(file, i.line, i.col);
+                let from = self.offset_at(file, i.span);
                 let written = text[from..]
                     .split(';')
                     .next()
@@ -852,7 +874,7 @@ impl<'a> Builder<'a> {
                     ),
                     // Without a signature, the doc comment's first line gives the call's
                     // shape: `keccak256(x : bytes | string) : bytes32`.
-                    None => match self.doc(file, i.line).lines().next() {
+                    None => match self.doc(file, self.lc(file, i.span).0).lines().next() {
                         Some(shape) => format!("{}.{shape}", short(&m.name)),
                         None => member,
                     },
@@ -863,7 +885,10 @@ impl<'a> Builder<'a> {
                         name: i.name.clone(),
                         kind: Kind::Builtin,
                         at: None,
-                        hover: join(vec![code(&written), self.doc(file, i.line)]),
+                        hover: join(vec![
+                            code(&written),
+                            self.doc(file, self.lc(file, i.span).0),
+                        ]),
                         detail,
                         parent: Some(d),
                         ty: None,
@@ -878,13 +903,9 @@ impl<'a> Builder<'a> {
             }
         }
         for decl in &prog.interfaces {
-            let file = self.file(&decl.origin);
+            let file = self.file_of(decl.file);
             let written = short(&decl.name);
-            let at = self.span(
-                file,
-                self.locate(file, decl.line, decl.col, written),
-                written,
-            );
+            let at = self.span(file, self.locate_at(file, decl.span, written), written);
             let ty = c.named.get(&decl.name).copied();
             let methods = ty.and_then(|ty| c.ifaces.get(&ty));
             let mut lines = Vec::new();
@@ -901,7 +922,7 @@ impl<'a> Builder<'a> {
                     decl.name,
                     lines.join("\n")
                 )),
-                self.doc(file, decl.line),
+                self.doc(file, self.lc(file, decl.span).0),
                 sels.join("\n"),
             ]);
             let d = self.def(
@@ -923,9 +944,9 @@ impl<'a> Builder<'a> {
             }
             for m in &decl.methods {
                 let im = methods.and_then(|ms| ms.iter().find(|im| im.name == m.name));
-                let at = self.span(file, self.locate(file, m.line, m.col, &m.name), &m.name);
+                let at = self.span(file, self.locate_at(file, m.span, &m.name), &m.name);
                 let text = method_text(m);
-                let mut hover = vec![code(&text), self.doc(file, m.line)];
+                let mut hover = vec![code(&text), self.doc(file, self.lc(file, m.span).0)];
                 if let Some(im) = im {
                     hover.push(format!(
                         "`{}` · selector `{}`",
@@ -981,13 +1002,9 @@ impl<'a> Builder<'a> {
             }
         }
         for decl in &prog.types {
-            let file = self.file(&decl.origin);
+            let file = self.file_of(decl.file);
             let written = short(&decl.name);
-            let at = self.span(
-                file,
-                self.locate(file, decl.line, decl.col, written),
-                written,
-            );
+            let at = self.span(file, self.locate_at(file, decl.span, written), written);
             let ty = c.named.get(&decl.name).copied();
             let storage = decl.name == "storage";
             let text = if storage {
@@ -995,7 +1012,7 @@ impl<'a> Builder<'a> {
             } else {
                 format!("type {} is {}", decl.name, ty_ref_long(&decl.ty))
             };
-            let mut hover = vec![code(&text), self.doc(file, decl.line)];
+            let mut hover = vec![code(&text), self.doc(file, self.lc(file, decl.span).0)];
             if storage {
                 if let Some(layout) = c.layout.iter().find(|l| l.name == "storage") {
                     hover.push(format!(
@@ -1024,13 +1041,9 @@ impl<'a> Builder<'a> {
             }
         }
         for decl in &prog.domains {
-            let file = self.file(&decl.origin);
+            let file = self.file_of(decl.file);
             let written = short(&decl.name);
-            let at = self.span(
-                file,
-                self.locate(file, decl.line, decl.col, written),
-                written,
-            );
+            let at = self.span(file, self.locate_at(file, decl.span, written), written);
             let qualified = match &decl.owner {
                 Some(module) => format!("{module}.{}", decl.name),
                 None => decl.name.clone(),
@@ -1047,7 +1060,7 @@ impl<'a> Builder<'a> {
                 (_, false, Some(name)) => format!("storage {name} at \"{}\" is", decl.id),
             };
             let text = format!("{text} {}", ty_ref_long(&decl.ty));
-            let mut hover = vec![code(&text), self.doc(file, decl.line)];
+            let mut hover = vec![code(&text), self.doc(file, self.lc(file, decl.span).0)];
             let layouts = if decl.transient {
                 &c.transient_layout
             } else {
@@ -1084,19 +1097,15 @@ impl<'a> Builder<'a> {
             }
         }
         for decl in &prog.errors {
-            let file = self.file(&decl.origin);
+            let file = self.file_of(decl.file);
             let written = short(&decl.name);
-            let at = self.span(
-                file,
-                self.locate(file, decl.line, decl.col, written),
-                written,
-            );
+            let at = self.span(file, self.locate_at(file, decl.span, written), written);
             let info = c.errors.iter().find(|e| e.name == decl.name);
             let text = match &decl.payload {
                 Some(t) => format!("error {} of {}", decl.name, ty_ref_long(t)),
                 None => format!("error {}", decl.name),
             };
-            let mut hover = vec![code(&text), self.doc(file, decl.line)];
+            let mut hover = vec![code(&text), self.doc(file, self.lc(file, decl.span).0)];
             if let Some(info) = info {
                 hover.push(format!(
                     "`{}` · selector `0x{}`",
@@ -1146,11 +1155,7 @@ impl<'a> Builder<'a> {
         }
         for set in &prog.error_sets {
             let file = self.file("");
-            let at = self.span(
-                file,
-                self.locate(file, set.line, set.col, &set.name),
-                &set.name,
-            );
+            let at = self.span(file, self.locate_at(file, set.span, &set.name), &set.name);
             let members: Vec<&str> = set.members.iter().map(|m| m.name.as_str()).collect();
             let text = format!("errors {} is | {}", set.name, members.join(" | "));
             let d = self.def(
@@ -1160,7 +1165,7 @@ impl<'a> Builder<'a> {
                     kind: Kind::ErrorSet,
                     at: None,
                     detail: text.clone(),
-                    hover: join(vec![code(&text), self.doc(file, set.line)]),
+                    hover: join(vec![code(&text), self.doc(file, self.lc(file, set.span).0)]),
                     parent: None,
                     ty: None,
                     params: Vec::new(),
@@ -1169,13 +1174,9 @@ impl<'a> Builder<'a> {
             self.names.insert(('s', set.name.clone()), d);
         }
         for decl in &prog.events {
-            let file = self.file(&decl.origin);
+            let file = self.file_of(decl.file);
             let written = short(&decl.name);
-            let at = self.span(
-                file,
-                self.locate(file, decl.line, decl.col, written),
-                written,
-            );
+            let at = self.span(file, self.locate_at(file, decl.span, written), written);
             let info = c.events.iter().find(|e| e.name == decl.name);
             let fields: Vec<String> = decl
                 .fields
@@ -1191,7 +1192,7 @@ impl<'a> Builder<'a> {
                 decl.name,
                 fields.join("\n")
             );
-            let mut hover = vec![code(&text), self.doc(file, decl.line)];
+            let mut hover = vec![code(&text), self.doc(file, self.lc(file, decl.span).0)];
             if let Some(info) = info {
                 if decl.anonymous {
                     hover.push(format!(
@@ -1246,7 +1247,7 @@ impl<'a> Builder<'a> {
             );
             self.names.insert(('v', decl.name.clone()), d);
             for f in &decl.fields {
-                let at = self.span(file, self.locate(file, f.line, f.col, &f.name), &f.name);
+                let at = self.span(file, self.locate_at(file, f.span, &f.name), &f.name);
                 let indexed = if f.indexed { "indexed " } else { "" };
                 let text = format!("{indexed}{} : {}", f.name, ty_ref(&f.ty));
                 let ty = info
@@ -1284,12 +1285,13 @@ impl<'a> Builder<'a> {
                 self.funcs.push(d);
                 continue;
             }
-            let file = self.file(&f.origin);
+            let file = self.file_of(f.file);
             let name = short(&f.name);
             // A member of a named interface is written there, not at the `exposing` naming it.
             // A function the compiler writes, such as `supportsInterface`, is written nowhere.
-            let found = self.locate(file, f.line, f.col, name);
-            let written = found.0 <= f.line + 1 && self.word_at(file, found.0, found.1) == name;
+            let found = self.locate_at(file, f.span, name);
+            let written = found.0 <= self.lc(file, f.span).0 + 1
+                && self.word_at(file, found.0, found.1) == name;
             let at = (f.interface.is_none() && written).then(|| self.span(file, found, name));
             // An exposed entrypoint is declared in an interface's form.
             let written_as = self.template(f).unwrap_or(f);
@@ -1314,7 +1316,7 @@ impl<'a> Builder<'a> {
             };
             let hover = join(vec![
                 code(&text),
-                self.doc(file, f.line),
+                self.doc(file, self.lc(file, f.span).0),
                 runs,
                 self.func_facts(f, &views),
             ]);
@@ -1382,12 +1384,8 @@ impl<'a> Builder<'a> {
         let (Some((m, sig)), false) = (found, of.form == HookForm::Entry) else {
             return Some(self.def(None, hidden));
         };
-        let file = self.file(&m.origin);
-        let at = self.span(
-            file,
-            self.locate(file, sig.line, sig.col, &sig.name),
-            &sig.name,
-        );
+        let file = self.file_of(m.file);
+        let at = self.span(file, self.locate_at(file, sig.span, &sig.name), &sig.name);
         let effect = match sig.kind {
             ItemKind::Readonly => "view ",
             ItemKind::Pure => "pure ",
@@ -1414,7 +1412,11 @@ impl<'a> Builder<'a> {
             ),
             _ => "the contract that uses the module implements it".to_string(),
         };
-        let hover = join(vec![code(&text), self.doc(file, sig.line), status]);
+        let hover = join(vec![
+            code(&text),
+            self.doc(file, self.lc(file, sig.span).0),
+            status,
+        ]);
         let parent = self.names.get(&('m', m.name.clone())).copied();
         Some(self.def(
             Some(at),
@@ -1443,10 +1445,10 @@ impl<'a> Builder<'a> {
                 let owner = self.ix.defs[parent].name.clone();
                 for f in fields {
                     let fty = rt.fields.iter().find(|r| r.name == f.name).map(|r| r.ty);
-                    let at = self.span(file, self.locate(file, f.line, f.col, &f.name), &f.name);
+                    let at = self.span(file, self.locate_at(file, f.span, &f.name), &f.name);
                     let text = format!("{} : {}", f.name, ty_ref(&f.ty));
                     let sub = path.map(|p| format!("{p}.{}", f.name));
-                    let mut hover = vec![code(&text), self.doc(file, f.line)];
+                    let mut hover = vec![code(&text), self.doc(file, self.lc(file, f.span).0)];
                     match &sub {
                         Some(sub) => {
                             let place = self.place(path.unwrap_or(""), &f.name);
@@ -1485,7 +1487,7 @@ impl<'a> Builder<'a> {
                         .iter()
                         .find(|r| r.name == v.name)
                         .and_then(|r| r.payload);
-                    let at = self.span(file, self.locate(file, v.line, v.col, &v.name), &v.name);
+                    let at = self.span(file, self.locate_at(file, v.span, &v.name), &v.name);
                     let text = match &v.payload {
                         Some(p) if !v.param.is_empty() => {
                             format!("| {} of ({} : {})", v.name, v.param, ty_ref(p))
@@ -1495,7 +1497,7 @@ impl<'a> Builder<'a> {
                     };
                     let hover = join(vec![
                         code(&text),
-                        self.doc(file, v.line),
+                        self.doc(file, self.lc(file, v.span).0),
                         format!("variant of `{owner}`"),
                         self.entrypoint(&v.name),
                     ]);
@@ -1731,27 +1733,27 @@ impl<'a> Builder<'a> {
         let c = self.c();
         let prog = &c.prog;
         for decl in &prog.types {
-            self.file = self.file(&decl.origin);
+            self.file = self.file_of(decl.file);
             self.type_refs(&decl.ty);
         }
         for decl in &prog.domains {
-            self.file = self.file(&decl.origin);
+            self.file = self.file_of(decl.file);
             self.type_refs(&decl.ty);
         }
         for decl in &prog.errors {
-            self.file = self.file(&decl.origin);
+            self.file = self.file_of(decl.file);
             if let Some(t) = &decl.payload {
                 self.type_refs(t);
             }
         }
         for decl in &prog.events {
-            self.file = self.file(&decl.origin);
+            self.file = self.file_of(decl.file);
             for f in &decl.fields {
                 self.type_refs(&f.ty);
             }
         }
         for decl in &prog.interfaces {
-            self.file = self.file(&decl.origin);
+            self.file = self.file_of(decl.file);
             for m in &decl.methods {
                 for p in &m.params {
                     self.type_refs(&p.ty);
@@ -1762,20 +1764,23 @@ impl<'a> Builder<'a> {
             }
         }
         for (origin, target) in &c.conversions {
-            self.file = self.file(origin);
+            self.file = match origin {
+                Some(file) => self.file_of(*file),
+                None => self.file(""),
+            };
             self.type_refs(target);
         }
         self.file = self.file("");
         for set in &prog.error_sets {
             for m in &set.members {
                 let d = self.error_name(&m.name);
-                let at = self.locate(self.file, m.line, m.col, &m.name);
+                let at = self.locate_at(self.file, m.span, &m.name);
                 self.refer(at, &m.name, d);
             }
         }
         for u in &prog.compose {
             let d = self.names.get(&('m', u.name.clone())).copied();
-            let at = self.locate(self.file, u.line, u.col, &u.name);
+            let at = self.locate_at(self.file, u.span, &u.name);
             self.refer(at, &u.name, d);
         }
         if let Some(guard) = &prog.guard {
@@ -1804,7 +1809,7 @@ impl<'a> Builder<'a> {
                             entries.join("\n")
                         ),
                     ]);
-                    let at = self.locate(self.file, named.line, named.col, &named.name);
+                    let at = self.locate_at(self.file, named.span, &named.name);
                     let span = self.span(self.file, at, &named.name);
                     self.reference(span, d, Some(hover));
                 }
@@ -1813,11 +1818,11 @@ impl<'a> Builder<'a> {
         // The checker's second pass, which adds `supportsInterface`, clears the program's list.
         for named in &c.source.supports {
             let d = self.names.get(&('i', named.name.clone())).copied();
-            let at = self.locate(self.file, named.line, named.col, &named.name);
+            let at = self.locate_at(self.file, named.span, &named.name);
             self.refer(at, &named.name, d);
         }
         for (i, f) in prog.funcs.iter().enumerate() {
-            self.file = self.file(&f.origin);
+            self.file = self.file_of(f.file);
             self.func = Some(self.funcs[i]);
             self.module = f.module.clone();
             if self.ix.defs[self.funcs[i]].at.is_none() && f.interface.is_none() {
@@ -1826,7 +1831,7 @@ impl<'a> Builder<'a> {
             if let Some(t) = self.template(f) {
                 for p in t.params.iter().filter(|p| p.storage) {
                     self.type_refs(&p.ty);
-                    let pos = self.locate(self.file, p.line, p.col, &p.name);
+                    let pos = self.locate_at(self.file, p.span, &p.name);
                     let text = param_text(p);
                     let d = self.def(
                         Some(self.span(self.file, pos, &p.name)),
@@ -1852,7 +1857,8 @@ impl<'a> Builder<'a> {
             if f.interface.is_none() {
                 for p in &f.params {
                     self.type_refs(&p.ty);
-                    self.local(p.line, p.col, &p.name, p.sym, param_word(p), Kind::Param);
+                    let (line, col) = self.lc(self.file, p.span);
+                    self.local(line, col, &p.name, p.sym, param_word(p), Kind::Param);
                 }
                 if let Some(t) = &f.ret {
                     self.type_refs(t);
@@ -1868,7 +1874,7 @@ impl<'a> Builder<'a> {
                                 )
                             })
                         });
-                        let at = self.locate(self.file, part.line, part.col, &part.name);
+                        let at = self.locate_at(self.file, part.span, &part.name);
                         self.refer(at, &part.name, d);
                     }
                 }
@@ -1929,19 +1935,16 @@ impl<'a> Builder<'a> {
                 self.size_refs(right);
             }
             Expr::Call {
-                line,
-                col,
+                span,
                 name,
                 args,
                 base,
                 ..
             } => {
                 let key = match base.as_deref() {
-                    Some(Expr::Ident {
-                        line, col, name: m, ..
-                    }) => {
+                    Some(Expr::Ident { span, name: m, .. }) => {
                         let d = self.names.get(&('m', m.clone())).copied();
-                        self.refer((*line, *col), m, d);
+                        self.refer(self.lc(self.file, *span), m, d);
                         format!("{m}.{name}")
                     }
                     _ => name.clone(),
@@ -1955,7 +1958,7 @@ impl<'a> Builder<'a> {
                     .and_then(|i| self.funcs.get(i).copied())
                     .or_else(|| self.type_name(name));
                 let short_name = short(name);
-                let pos = self.locate(self.file, *line, *col, short_name);
+                let pos = self.locate_at(self.file, *span, short_name);
                 self.refer(pos, short_name, d);
                 for a in args {
                     self.size_refs(a);
@@ -1967,9 +1970,9 @@ impl<'a> Builder<'a> {
 
     fn type_refs(&mut self, t: &TypeRef) {
         match t {
-            TypeRef::Name { line, col, name } => {
+            TypeRef::Name { span, name } => {
                 let d = self.type_name(name);
-                self.refer((*line, *col), name, d);
+                self.refer(self.lc(self.file, *span), name, d);
             }
             TypeRef::Record { fields, .. } => {
                 for f in fields {
@@ -2100,8 +2103,7 @@ impl<'a> Builder<'a> {
     fn stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Const {
-                line,
-                col,
+                span,
                 name,
                 parts,
                 ty,
@@ -2109,6 +2111,7 @@ impl<'a> Builder<'a> {
                 sym,
                 part_syms,
             } => {
+                let (line, col) = &self.lc(self.file, *span);
                 self.expr(expr);
                 self.type_refs(ty);
                 if parts.is_empty() {
@@ -2118,8 +2121,7 @@ impl<'a> Builder<'a> {
                 }
             }
             Stmt::Var {
-                line,
-                col,
+                span,
                 name,
                 parts,
                 ty,
@@ -2127,6 +2129,7 @@ impl<'a> Builder<'a> {
                 sym,
                 part_syms,
             } => {
+                let (line, col) = &self.lc(self.file, *span);
                 self.expr(expr);
                 self.type_refs(ty);
                 if parts.is_empty() {
@@ -2136,8 +2139,7 @@ impl<'a> Builder<'a> {
                 }
             }
             Stmt::Assign {
-                line,
-                col,
+                span,
                 path,
                 index,
                 keys,
@@ -2146,8 +2148,9 @@ impl<'a> Builder<'a> {
                 root,
                 ..
             } => {
+                let (line, col) = &self.lc(self.file, *span);
                 let mut path = path.as_slice();
-                let mut at = (*line, *col);
+                let mut at = self.lc(self.file, *span);
                 // A module's domain path starts with the module, written or not.
                 if let [module, domain, ..] = path {
                     if let Some(&m) = self.names.get(&('m', module.clone())) {
@@ -2244,13 +2247,8 @@ impl<'a> Builder<'a> {
             Stmt::Fail { reason, .. } => self.raised(reason),
             Stmt::Call { expr, .. } => self.expr(expr),
             Stmt::Skip => {}
-            Stmt::Emit {
-                line,
-                col,
-                name,
-                fields,
-            } => {
-                let pos = self.locate(self.file, *line, *col, name);
+            Stmt::Emit { span, name, fields } => {
+                let pos = self.locate_at(self.file, *span, name);
                 let event = self.names.get(&('v', name.clone())).copied();
                 self.refer(pos, name, event);
                 for (field, e) in fields {
@@ -2280,7 +2278,8 @@ impl<'a> Builder<'a> {
                         if let Some(ty) = &arm.ty {
                             self.type_refs(ty);
                         }
-                        let (arm_at, word) = self.arm_word(arm.line, arm.col);
+                        let (line, col) = self.lc(self.file, arm.span);
+                        let (arm_at, word) = self.arm_word(line, col);
                         let outcome = match word.as_str() {
                             "Ok" => Some((
                                 "Ok(x : T)",
@@ -2301,14 +2300,14 @@ impl<'a> Builder<'a> {
                             );
                             self.refer(arm_at, key, Some(d));
                         }
-                        self.locals(arm.line, arm.col, &arm.names, &arm.syms, "then");
+                        let (line, col) = self.lc(self.file, arm.span);
+                        self.locals(line, col, &arm.names, &arm.syms, "then");
                         self.stmts(&arm.stmts);
                     }
                 }
             }
             Stmt::For {
-                line,
-                col,
+                span,
                 index,
                 name,
                 ty,
@@ -2333,7 +2332,7 @@ impl<'a> Builder<'a> {
                     self.expr(e);
                 }
                 self.type_refs(ty);
-                let mut at = (*line, *col);
+                let mut at = self.lc(self.file, *span);
                 if let Some(i) = index {
                     let pos = self.local(at.0, at.1, i, *counter, "for", Kind::Local);
                     at = (pos.0, pos.1 + i.len() as u32);
@@ -2349,14 +2348,13 @@ impl<'a> Builder<'a> {
                 self.stmts(body);
             }
             Stmt::AssignTuple {
-                line,
-                col,
+                span,
                 names,
                 expr,
                 syms,
             } => {
                 self.expr(expr);
-                let mut at = (*line, *col);
+                let mut at = self.lc(self.file, *span);
                 for (name, sym) in names.iter().zip(syms) {
                     let pos = self.locate(self.file, at.0, at.1, name);
                     let d = self.syms.get(sym).copied();
@@ -2369,7 +2367,7 @@ impl<'a> Builder<'a> {
 
     fn raised(&mut self, r: &Raised) {
         let c = self.c();
-        let pos = self.locate(self.file, r.line, r.col, &r.name);
+        let pos = self.locate_at(self.file, r.span, &r.name);
         let name = r
             .index
             .and_then(|i| c.errors.get(i))
@@ -2395,7 +2393,8 @@ impl<'a> Builder<'a> {
     fn expr(&mut self, e: &Expr) {
         let c = self.c();
         match e {
-            Expr::Lit { line, col, ty, .. } => {
+            Expr::Lit { span, ty, .. } => {
+                let (line, col) = &self.lc(self.file, *span);
                 // `Uint.max` and `Address.zero` are folded into literals where they stand.
                 let word = self.word_at(self.file, *line, *col).to_string();
                 let text = &self.ix.files[self.file].text;
@@ -2418,11 +2417,11 @@ impl<'a> Builder<'a> {
                 // A case with no payload is a literal of its variant.
                 if ns.is_none() {
                     let d = self.member(self.key(*ty), &word);
-                    self.refer((*line, *col), &word, d);
+                    self.refer(self.lc(self.file, *span), &word, d);
                 }
                 if let (Some(ns), Some(spelled)) = (ns, spelled) {
                     let d = self.builtin(&ns, &word);
-                    self.refer((*line, *col), &word, d);
+                    self.refer(self.lc(self.file, *span), &word, d);
                     let n = self.namespace(&ns);
                     let back = col.saturating_sub(spelled.len() as u32 + 1);
                     self.refer((*line, back), &spelled, n);
@@ -2441,8 +2440,7 @@ impl<'a> Builder<'a> {
                 }
             }
             Expr::Ident {
-                line,
-                col,
+                span,
                 name,
                 sym,
                 ty,
@@ -2464,37 +2462,35 @@ impl<'a> Builder<'a> {
                             )
                         })
                     });
-                self.refer((*line, *col), name, d);
+                self.refer(self.lc(self.file, *span), name, d);
             }
             Expr::Field {
-                line,
-                col,
+                span,
                 base,
                 name,
                 root,
                 ..
             } => {
+                let (line, col) = &self.lc(self.file, *span);
                 let d = match base.as_ref() {
                     Expr::Ident {
                         name: ns,
                         sym: None,
-                        line: nl,
-                        col: nc,
+                        span: ns_span,
                         ..
                     } if self.namespace(ns).is_some() => {
                         let n = self.namespace(ns);
-                        self.refer((*nl, *nc), ns, n);
+                        self.refer(self.lc(self.file, *ns_span), ns, n);
                         self.builtin(ns, name)
                     }
                     Expr::Ident {
-                        line: ml,
-                        col: mc,
+                        span: m_span,
                         name: ns,
                         sym: None,
                         ..
                     } if self.names.contains_key(&('m', ns.clone())) => {
                         let m = self.names.get(&('m', ns.clone())).copied();
-                        self.refer((*ml, *mc), ns, m);
+                        self.refer(self.lc(self.file, *m_span), ns, m);
                         self.names.get(&('d', format!("{ns}.{name}"))).copied()
                     }
                     _ => {
@@ -2527,7 +2523,7 @@ impl<'a> Builder<'a> {
                 if let Some(d) = d {
                     // `M.storage.d` names its domain `storage.d`; the word to mark is `d`.
                     let word = name.rsplit('.').next().unwrap_or(name);
-                    let at = self.locate(self.file, *line, *col, word);
+                    let at = self.locate_at(self.file, *span, word);
                     let at = self.span(self.file, at, word);
                     self.reference(at, d, hover);
                 }
@@ -2548,8 +2544,7 @@ impl<'a> Builder<'a> {
                 ..
             } => self.expr(&args[0]),
             Expr::Call {
-                line,
-                col,
+                span,
                 name,
                 args,
                 base,
@@ -2559,6 +2554,7 @@ impl<'a> Builder<'a> {
                 method,
                 ty,
             } => {
+                let (line, col) = &self.lc(self.file, *span);
                 let short_name = short(name);
                 let namespace = match base.as_deref() {
                     Some(Expr::Ident {
@@ -2598,17 +2594,12 @@ impl<'a> Builder<'a> {
                     self.value_name(short_name, *ty)
                 };
                 match (base.as_deref(), &namespace) {
-                    (
-                        Some(Expr::Ident {
-                            line, col, name, ..
-                        }),
-                        Some(ns),
-                    ) => {
+                    (Some(Expr::Ident { span, name, .. }), Some(ns)) => {
                         let m = self.names.get(&('m', ns.clone())).copied();
                         let d = m
                             .or_else(|| self.type_name(ns))
                             .or_else(|| self.namespace(ns));
-                        self.refer((*line, *col), name, d);
+                        self.refer(self.lc(self.file, *span), name, d);
                     }
                     (Some(b), _) => self.expr(b),
                     (None, _) => {
@@ -2621,7 +2612,7 @@ impl<'a> Builder<'a> {
                         }
                     }
                 }
-                let pos = self.locate(self.file, *line, *col, short_name);
+                let pos = self.locate_at(self.file, *span, short_name);
                 self.refer(pos, short_name, d);
                 if let Some(t) = callee.and_then(|i| self.template(&c.prog.funcs[i])) {
                     self.storage_args(pos.0, pos.1, short_name, t);
@@ -2634,7 +2625,7 @@ impl<'a> Builder<'a> {
             Expr::Case { scrut, arms, .. } => {
                 self.expr(scrut);
                 for arm in arms {
-                    let mut at = (arm.line, arm.col);
+                    let mut at = self.lc(self.file, arm.span);
                     for ctor in &arm.ctors {
                         let pos = self.locate(self.file, at.0, at.1, ctor);
                         let d = self.member(self.key(scrut.ty()), ctor).or_else(|| {
@@ -2700,15 +2691,11 @@ impl<'a> Builder<'a> {
                     self.expr(e);
                 }
             }
-            Expr::Record {
-                line,
-                col,
-                fields,
-                ty,
-            } => {
+            Expr::Record { span, fields, ty } => {
+                let (line, col) = &self.lc(self.file, *span);
                 let word = self.word_at(self.file, *line, *col).to_string();
                 if let Some(d) = self.type_name(&word) {
-                    self.refer((*line, *col), &word, Some(d));
+                    self.refer(self.lc(self.file, *span), &word, Some(d));
                 }
                 for (field, e) in fields {
                     self.expr(e);
@@ -2723,12 +2710,12 @@ impl<'a> Builder<'a> {
 }
 
 /// Where an expression's text begins: a field or call starts at its base.
-fn start(e: &Expr) -> (u32, u32) {
+fn start(e: &Expr) -> crate::ast::Span {
     match e {
         Expr::Field { base, .. } | Expr::Index { base, .. } => start(base),
         Expr::Call { base: Some(b), .. } => start(b),
         Expr::Binary { left, .. } => start(left),
-        other => (other.line(), other.col()),
+        other => other.span(),
     }
 }
 

@@ -150,8 +150,7 @@ impl<'a> Gen<'a> {
                 self.bls_point(pre, args, 256)
             }
             Pre::Bn254Add | Pre::Bn254Mul | Pre::Blake2f => Err(error(
-                args[0].line(),
-                args[0].col(),
+                args[0].span(),
                 "internal: a precompile with several words",
             )),
         }
@@ -200,8 +199,7 @@ impl<'a> Gen<'a> {
             }
             _ => {
                 return Err(error(
-                    args[0].line(),
-                    args[0].col(),
+                    args[0].span(),
                     "internal: a precompile with one word",
                 ))
             }

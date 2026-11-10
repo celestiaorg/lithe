@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use crate::ast::*;
 use crate::check::Checked;
 use crate::error;
+use crate::error_at;
 use crate::parse;
 use crate::resolve::{link, Import, Unit};
 use crate::Error;
@@ -225,6 +226,8 @@ struct LoadEnv<'a> {
     touched: &'a mut Vec<(PathBuf, u64)>,
     /// The one table every file of the build interns into.
     names: Arc<Names>,
+    /// Every file the build reads.
+    files: SourceMap,
 }
 
 fn std_programs() -> &'static Mutex<HashMap<PathBuf, Arc<Program>>> {
@@ -320,20 +323,28 @@ fn import_path_in(entry: &Path, from: &Path, import: &str) -> Result<PathBuf, St
 /// files the entry imports may have spec files too, for their modules, and the standard
 /// library's do.
 pub(crate) fn load_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Result<(), Error> {
+    let loaded = load_all_specs(sources, entry, prog);
+    let files = prog.files.clone();
+    prog.share_files(&files);
+    loaded.map_err(|err| err.placed(&files, prog.file))
+}
+
+fn load_all_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Result<(), Error> {
     load_entry_specs(sources, entry, prog).map_err(|err| {
         match spec_path(entry).and_then(|path| sources.canonicalize(&path).ok()) {
-            Some(path) => err.in_file(&path.display().to_string()),
+            Some(path) => err.in_path(&path.display().to_string()),
             None => err,
         }
     })?;
     let own = sources.canonicalize(entry).ok();
     let mut files: Vec<String> = Vec::new();
     for module in &prog.modules {
-        if !module.origin.is_empty()
-            && own.as_ref().map(|p| p.display().to_string()) != Some(module.origin.clone())
-            && !files.contains(&module.origin)
+        let origin = prog.files.path(module.file).to_string();
+        if !origin.is_empty()
+            && own.as_ref().map(|p| p.display().to_string()) != Some(origin.clone())
+            && !files.contains(&origin)
         {
-            files.push(module.origin.clone());
+            files.push(origin);
         }
     }
     for file in files {
@@ -347,7 +358,7 @@ pub(crate) fn load_specs(sources: &Sources, entry: &Path, prog: &mut Program) ->
                 Ok(src) => src,
                 Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
                 Err(err) => {
-                    return Err(error(
+                    return Err(error_at(
                         1,
                         1,
                         format!("cannot read `{}`: {err}", path.display()),
@@ -356,25 +367,24 @@ pub(crate) fn load_specs(sources: &Sources, entry: &Path, prog: &mut Program) ->
             },
         };
         let origin = path.display().to_string();
-        let at = |err: Error| err.in_file(&origin);
+        let id = Arc::make_mut(&mut prog.files).add(&origin, &src);
+        let at = |err: Error| err.in_path(&origin);
         let parsed = parse::parse_specs(&src).map_err(at)?;
         if let Some(block) = parsed.bare.first() {
             return Err(at(error(
-                block.line,
-                block.col,
+                block.span,
                 "an imported file's spec file writes `spec for module M is { ... }`",
             )));
         }
         if let Some((name, _)) = parsed.contracts.first() {
             return Err(at(error(
-                name.line,
-                name.col,
+                name.span,
                 "an imported file's spec file describes its modules",
             )));
         }
         for (_, mut blocks) in parsed.modules {
             for block in &mut blocks {
-                block.origin = origin.clone();
+                block.file = id;
             }
             crate::resolve::resolve_specs(
                 std::sync::Arc::make_mut(&mut prog.scopes),
@@ -413,7 +423,7 @@ fn load_entry_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Resu
         Ok(src) => src,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(err) => {
-            return Err(error(
+            return Err(error_at(
                 1,
                 1,
                 format!("cannot read `{}`: {err}", path.display()),
@@ -421,12 +431,15 @@ fn load_entry_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Resu
         }
     };
     let mut file = parse::parse_specs(&src)?;
-    let origin = canon.display().to_string();
+    let id = Arc::make_mut(&mut prog.files).add(&canon.display().to_string(), &src);
     // The spec file names what the entry file declares as the entry file does.
-    let own = (prog.origin.clone(), prog.contract_name.clone());
+    let own = (
+        prog.files.path(prog.file).to_string(),
+        prog.contract_name.clone(),
+    );
     let mut stamp_all = |blocks: &mut Vec<SpecBlock>, key: &crate::resolve::Key| {
         for block in blocks.iter_mut() {
-            block.origin = origin.clone();
+            block.file = id;
         }
         crate::resolve::resolve_specs(std::sync::Arc::make_mut(&mut prog.scopes), key, blocks)
     };
@@ -440,8 +453,7 @@ fn load_entry_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Resu
     if let Some(block) = file.bare.first() {
         if !prog.siblings.is_empty() {
             return Err(error(
-                block.line,
-                block.col,
+                block.span,
                 "this file declares several contracts; write `spec for contract C is { ... }`",
             ));
         }
@@ -455,8 +467,7 @@ fn load_entry_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Resu
             unit.specs.extend(blocks);
         } else {
             return Err(error(
-                name.line,
-                name.col,
+                name.span,
                 format!("no contract `{}` in `{}`", name.name, file_label(entry)),
             ));
         }
@@ -496,8 +507,13 @@ pub(crate) fn load_in(
         evm,
         touched,
         names: Names::shared(),
+        files: SourceMap::default(),
     };
-    load_inner(sources, path, text, &mut Vec::new(), &mut env)
+    let loaded = load_inner(sources, path, text, &mut Vec::new(), &mut env);
+    let files = Arc::new(env.files);
+    let mut prog = loaded.map_err(|err| err.placed(&files, FileId::NONE))?;
+    prog.share_files(&files);
+    Ok(prog)
 }
 
 struct Frame {
@@ -508,7 +524,7 @@ struct Frame {
 /// A file of declarations the program imports, or the file being built.
 struct Source {
     canon: PathBuf,
-    origin: String,
+    file: FileId,
     prog: Program,
     imports: Vec<Import>,
     /// The contracts it may create: those of the files of contracts it imports, directly or
@@ -554,7 +570,8 @@ fn load_inner(
         let mut units: Vec<Unit> = files
             .iter_mut()
             .map(|file| Unit {
-                key: (file.origin.clone(), None),
+                key: (file.canon.display().to_string(), None),
+                file: file.file,
                 prog: &mut file.prog,
                 imports: file.imports.clone(),
                 contracts: Vec::new(),
@@ -562,7 +579,11 @@ fn load_inner(
             })
             .collect();
         units.push(Unit {
-            key: (root.origin.clone(), root.prog.contract_name.clone()),
+            key: (
+                root.canon.display().to_string(),
+                root.prog.contract_name.clone(),
+            ),
+            file: root.file,
             prog: &mut root.prog,
             imports: root.imports.clone(),
             contracts: own_contracts.clone(),
@@ -570,37 +591,41 @@ fn load_inner(
         });
         for sibling in siblings.iter_mut() {
             units.push(Unit {
-                key: (root.origin.clone(), sibling.contract_name.clone()),
+                key: (
+                    root.canon.display().to_string(),
+                    sibling.contract_name.clone(),
+                ),
+                file: root.file,
                 prog: sibling,
                 imports: root.imports.clone(),
                 contracts: own_contracts.clone(),
                 root: true,
             });
         }
-        std::sync::Arc::new(link(&mut units)?)
+        std::sync::Arc::new(link(&mut units, &env.files)?)
     };
     let mut peers = Vec::new();
     for peer in std::mem::take(&mut root.peers) {
-        add_peer(&mut peers, peer, 1, 1).map_err(|err| err.in_file(&root.origin))?;
+        add_peer(&mut peers, peer, Span::default(), &env.files)
+            .map_err(|err| err.in_file(root.file))?;
     }
     let unit = |own: Program| -> Result<Program, Error> {
         let mut dst = empty(own.names.clone());
         for file in &files {
-            append(&mut dst, file.prog.clone(), false)?;
+            append(&mut dst, file.prog.clone(), false, &env.files)?;
         }
         let name = own.contract_name.clone();
-        let (line, col) = (own.contract_line, own.contract_col);
-        append(&mut dst, own, true)?;
+        let span = own.contract_span;
+        append(&mut dst, own, true, &env.files)?;
         imply(&mut dst);
         dst.contract_name = name;
-        dst.contract_line = line;
-        dst.contract_col = col;
-        dst.origin = root.origin.clone();
+        dst.contract_span = span;
+        dst.file = root.file;
         dst.peers = peers.clone();
         dst.scopes = scopes.clone();
         Ok(dst)
     };
-    let at = |err: Error| err.in_file(&root.origin);
+    let at = |err: Error| err.in_file(root.file);
     let mut merged = unit(root.prog.clone()).map_err(at)?;
     let mut linked = Vec::new();
     for sibling in siblings {
@@ -628,7 +653,7 @@ fn gather(
         Ok(path) => path,
         Err(_) if text.is_some() => path.to_path_buf(),
         Err(err) => {
-            return Err(error(
+            return Err(error_at(
                 1,
                 1,
                 format!("cannot read `{}`: {err}", path.display()),
@@ -649,13 +674,13 @@ fn gather(
             msg.push_str("\n  -> ");
         }
         msg.push_str(&label);
-        return Err(error(1, 1, msg));
+        return Err(error_at(1, 1, msg));
     }
     let origin = canon.display().to_string();
     gather_file(
         sources, path, canon, label, text, stack, files, contracts, root, env,
     )
-    .map_err(|err| err.in_file(&origin))
+    .map_err(|err| err.in_path(&origin))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -675,7 +700,7 @@ fn gather_file(
         Some(src) => src.to_string(),
         None if canon.starts_with(STD_ROOT) => {
             let rel = canon.strip_prefix(STD_ROOT).unwrap_or(&canon);
-            return Err(error(
+            return Err(error_at(
                 1,
                 1,
                 format!(
@@ -686,7 +711,7 @@ fn gather_file(
         }
         None => sources
             .read(&canon)
-            .map_err(|err| error(1, 1, format!("cannot read `{}`: {err}", path.display())))?,
+            .map_err(|err| error_at(1, 1, format!("cannot read `{}`: {err}", path.display())))?,
     };
     let mut own = parse_cached(&canon, &src, env)?;
     if !root && own.contract_name.is_some() {
@@ -694,8 +719,8 @@ fn gather_file(
         contracts.insert(canon, units.clone());
         return Ok(Loaded::Contracts(units));
     }
-    let origin = canon.display().to_string();
-    stamp(&mut own, &origin);
+    let file = env.files.add(&canon.display().to_string(), &src);
+    stamp(&mut own, file);
     tag_intrinsics(&mut own, canon.starts_with(STD_ROOT))?;
     let uses = std::mem::take(&mut own.uses);
     stack.push(Frame {
@@ -710,7 +735,7 @@ fn gather_file(
     let mut peers: Vec<Program> = Vec::new();
     for decl in &uses {
         let child_path = import_path_in(&stack[0].canon, &canon, &decl.path)
-            .map_err(|msg| error(decl.line, decl.col, msg))?;
+            .map_err(|msg| error(decl.span, msg))?;
         if let Some(start) = sources
             .canonicalize(&child_path)
             .ok()
@@ -723,7 +748,7 @@ fn gather_file(
                 msg.push_str("\n  -> ");
             }
             msg.push_str(&label);
-            return Err(error(decl.line, decl.col, msg));
+            return Err(error(decl.span, msg));
         }
         let child = gather(
             sources,
@@ -737,7 +762,7 @@ fn gather_file(
         )
         .map_err(|err| {
             if err.line == 1 && err.message.starts_with("cannot read") {
-                error(decl.line, decl.col, err.message.clone())
+                error(decl.span, err.message.clone())
             } else {
                 err
             }
@@ -746,8 +771,7 @@ fn gather_file(
             Loaded::Contracts(units) => {
                 if decl.alias.is_some() {
                     return Err(error(
-                        decl.line,
-                        decl.col,
+                        decl.span,
                         format!(
                             "`{}` defines contracts; import it without an alias",
                             decl.path
@@ -762,13 +786,12 @@ fn gather_file(
                         .filter(|n| own_names.contains(n))
                     {
                         return Err(error(
-                            decl.line,
-                            decl.col,
+                            decl.span,
                             format!("contract `{name}` is already declared in `{}`", decl.path),
                         ));
                     }
                     names.extend(unit.contract_name.clone());
-                    add_peer(&mut peers, unit, decl.line, decl.col)?;
+                    add_peer(&mut peers, unit, decl.span, &env.files)?;
                 }
                 imports.push(Import {
                     decl: decl.clone(),
@@ -779,11 +802,11 @@ fn gather_file(
             Loaded::File(i) => {
                 check_import(&files[i].prog, decl)?;
                 for peer in files[i].peers.clone() {
-                    add_peer(&mut peers, peer, decl.line, decl.col)?;
+                    add_peer(&mut peers, peer, decl.span, &env.files)?;
                 }
                 imports.push(Import {
                     decl: decl.clone(),
-                    target: Some(files[i].origin.clone()),
+                    target: Some(files[i].canon.display().to_string()),
                     contracts: Vec::new(),
                 });
             }
@@ -792,7 +815,7 @@ fn gather_file(
     stack.pop();
     files.push(Source {
         canon,
-        origin,
+        file,
         prog: own,
         imports,
         peers,
@@ -807,16 +830,14 @@ fn tag_intrinsics(prog: &mut Program, std: bool) -> Result<(), Error> {
         for intrinsic in &mut module.intrinsics {
             if !std {
                 return Err(error(
-                    intrinsic.line,
-                    intrinsic.col,
+                    intrinsic.span,
                     "`intrinsic` belongs to the standard library; declare a function with a body",
                 ));
             }
             intrinsic.tag = crate::check::intrinsic_tag(&module.name, &intrinsic.name);
             if intrinsic.tag.is_none() {
                 return Err(error(
-                    intrinsic.line,
-                    intrinsic.col,
+                    intrinsic.span,
                     format!(
                         "the compiler implements no `{}.{}`",
                         module.name, intrinsic.name
@@ -830,12 +851,12 @@ fn tag_intrinsics(prog: &mut Program, std: bool) -> Result<(), Error> {
 
 /// What an imported file of declarations may not hold: all of it belongs to a contract.
 fn check_import(src: &Program, via: &UseDecl) -> Result<(), Error> {
-    let (line, col) = (via.line, via.col);
+    let span = via.span;
     if src.upgradeable {
-        return Err(error(line, col, "an imported module cannot be upgradeable"));
+        return Err(error(span, "an imported module cannot be upgradeable"));
     }
     if src.funcs.iter().any(|f| f.kind == ItemKind::Deploy) {
-        return Err(error(line, col, "an imported file cannot have `deploy`"));
+        return Err(error(span, "an imported file cannot have `deploy`"));
     }
     // What reaches the contract without a selector is the contract's own to say.
     if let Some(func) = src
@@ -844,16 +865,14 @@ fn check_import(src: &Program, via: &UseDecl) -> Result<(), Error> {
         .find(|f| matches!(f.kind, ItemKind::Receive | ItemKind::Fallback))
     {
         return Err(error(
-            line,
-            col,
+            span,
             format!("an imported file cannot have `{}`", func.name),
         ));
     }
     // A contract's interface is written in the contract: an imported file exposes nothing.
     if let Some(exposed) = src.exposes.first() {
         return Err(error(
-            line,
-            col,
+            span,
             format!(
                 "an imported file cannot `use {} exposing`; the contract declares what it exposes",
                 shown(&exposed.module)
@@ -862,8 +881,7 @@ fn check_import(src: &Program, via: &UseDecl) -> Result<(), Error> {
     }
     if !src.supports.is_empty() {
         return Err(error(
-            line,
-            col,
+            span,
             "an imported file cannot declare `supports`; the contract declares what it supports",
         ));
     }
@@ -873,8 +891,7 @@ fn check_import(src: &Program, via: &UseDecl) -> Result<(), Error> {
             .as_ref()
             .map_or("", |of| of.module.name.as_str());
         return Err(error(
-            line,
-            col,
+            span,
             format!(
                 "an imported file cannot bind guard `{}.{}`; the contract that exposes the module's externals writes its guards in `use ... with`",
                 shown(module),
@@ -884,8 +901,7 @@ fn check_import(src: &Program, via: &UseDecl) -> Result<(), Error> {
     }
     if let Some(of) = src.hooks.first().and_then(|hook| hook.hook_of.as_ref()) {
         return Err(error(
-            line,
-            col,
+            span,
             format!(
                 "an imported file cannot bind hook `{}.{}`; the contract that uses the module implements its hooks in `use ... with`",
                 shown(&of.module.name),
@@ -899,8 +915,7 @@ fn check_import(src: &Program, via: &UseDecl) -> Result<(), Error> {
         .find(|f| matches!(f.kind, ItemKind::Entry | ItemKind::View | ItemKind::Migrate))
     {
         return Err(error(
-            line,
-            col,
+            span,
             format!(
                 "an imported file cannot declare {} `{}`; declare it in a module, and expose it from the contract",
                 kind_name(func.kind),
@@ -910,8 +925,7 @@ fn check_import(src: &Program, via: &UseDecl) -> Result<(), Error> {
     }
     if via.alias.is_some() && !src.domains.is_empty() {
         return Err(error(
-            line,
-            col,
+            span,
             format!(
                 "aliased import exports storage `{}`; import it without an alias",
                 src.domains[0].name
@@ -922,7 +936,7 @@ fn check_import(src: &Program, via: &UseDecl) -> Result<(), Error> {
 }
 
 /// Adds a file's declarations, already named as the program names them, to the program.
-fn append(dst: &mut Program, src: Program, own: bool) -> Result<(), Error> {
+fn append(dst: &mut Program, src: Program, own: bool, files: &SourceMap) -> Result<(), Error> {
     dst.types.extend(src.types);
     dst.errors.extend(src.errors);
     dst.error_sets.extend(src.error_sets);
@@ -937,12 +951,11 @@ fn append(dst: &mut Program, src: Program, own: bool) -> Result<(), Error> {
             .iter()
             .find(|have| have.name == decl.name || same_id(have))
         {
-            let have_site = Site::of(&have.origin, have.line, have.col, "");
-            let site = Site::of(&decl.origin, decl.line, decl.col, "");
+            let have_site = Site::of(files, have.file, have.span, "");
+            let site = Site::of(files, decl.file, decl.span, "");
             if have.name != decl.name {
                 return Err(error(
-                    decl.line,
-                    decl.col,
+                    decl.span,
                     format!(
                         "storage domains `{}` and `{}` share the id \"{}\"\n\n`{}` is declared at {}\n\ngive each storage domain its own id",
                         have.name,
@@ -951,9 +964,9 @@ fn append(dst: &mut Program, src: Program, own: bool) -> Result<(), Error> {
                         have.name,
                         have_site.place(&site)
                     ),
-                ).in_file(&decl.origin));
+                ).in_file(decl.file));
             }
-            let what = if have.origin == decl.origin {
+            let what = if have.file == decl.file {
                 "duplicate"
             } else {
                 "ambiguous"
@@ -975,8 +988,7 @@ fn append(dst: &mut Program, src: Program, own: bool) -> Result<(), Error> {
     for use_ in src.compose {
         if own && !mine.insert(use_.name.clone()) {
             return Err(error(
-                use_.line,
-                use_.col,
+                use_.span,
                 format!("module `{}` is already used", shown(&use_.name)),
             ));
         }
@@ -1000,19 +1012,23 @@ fn append(dst: &mut Program, src: Program, own: bool) -> Result<(), Error> {
 }
 
 /// Adds an imported contract, once however many paths import its file.
-fn add_peer(peers: &mut Vec<Program>, peer: Program, line: u32, col: u32) -> Result<(), Error> {
+fn add_peer(
+    peers: &mut Vec<Program>,
+    peer: Program,
+    span: Span,
+    files: &SourceMap,
+) -> Result<(), Error> {
     if let Some(have) = peers.iter().find(|p| p.contract_name == peer.contract_name) {
-        if have.origin == peer.origin {
+        if have.file == peer.file {
             return Ok(());
         }
         return Err(error(
-            line,
-            col,
+            span,
             format!(
                 "contract `{}` is declared in both `{}` and `{}`",
                 peer.contract_name.as_deref().unwrap_or(""),
-                file_label(Path::new(&have.origin)),
-                file_label(Path::new(&peer.origin))
+                file_label(Path::new(files.path(have.file))),
+                file_label(Path::new(files.path(peer.file)))
             ),
         ));
     }
@@ -1051,8 +1067,7 @@ fn imply(prog: &mut Program) {
             let have = |u: &NameAt| u.name == name;
             if composable(&name) && !prog.compose.iter().any(have) && !implied.iter().any(have) {
                 implied.push(NameAt {
-                    line: 0,
-                    col: 0,
+                    span: Span::NONE,
                     name: name.clone(),
                 });
                 todo.push(name);
@@ -1121,15 +1136,15 @@ fn empty(names: Arc<Names>) -> Program {
         hooks: Vec::new(),
         calls_back: false,
         contract_name: None,
-        contract_line: 0,
-        contract_col: 0,
+        contract_span: Span::NONE,
         siblings: Vec::new(),
         peers: Vec::new(),
-        origin: String::new(),
+        file: FileId::default(),
         specs: Vec::new(),
         proving: false,
         scopes: Default::default(),
         names,
+        files: Default::default(),
     }
 }
 
@@ -1153,18 +1168,18 @@ pub(crate) fn split_units(mut prog: Program) -> Vec<Program> {
     units
 }
 
-fn stamp(prog: &mut Program, origin: &str) {
+fn stamp(prog: &mut Program, file: FileId) {
     for decl in &mut prog.types {
-        decl.origin = origin.to_string();
+        decl.file = file;
     }
     for decl in &mut prog.errors {
-        decl.origin = origin.to_string();
+        decl.file = file;
     }
     for decl in &mut prog.events {
-        decl.origin = origin.to_string();
+        decl.file = file;
     }
     for decl in &mut prog.error_sets {
-        decl.origin = origin.to_string();
+        decl.file = file;
     }
     for func in prog
         .funcs
@@ -1172,32 +1187,32 @@ fn stamp(prog: &mut Program, origin: &str) {
         .chain(&mut prog.guards)
         .chain(&mut prog.hooks)
     {
-        func.origin = origin.to_string();
+        func.file = file;
     }
     for decl in &mut prog.domains {
-        decl.origin = origin.to_string();
+        decl.file = file;
     }
     for decl in &mut prog.interfaces {
-        decl.origin = origin.to_string();
+        decl.file = file;
     }
     for exposed in &mut prog.exposes {
         for func in &mut exposed.decls {
-            func.origin = origin.to_string();
+            func.file = file;
         }
     }
     for module in &mut prog.modules {
-        module.origin = origin.to_string();
+        module.file = file;
         for decl in &mut module.types {
-            decl.origin = origin.to_string();
+            decl.file = file;
         }
         for decl in &mut module.errors {
-            decl.origin = origin.to_string();
+            decl.file = file;
         }
         for decl in &mut module.events {
-            decl.origin = origin.to_string();
+            decl.file = file;
         }
         for decl in &mut module.error_sets {
-            decl.origin = origin.to_string();
+            decl.file = file;
         }
         for func in module
             .funcs
@@ -1205,52 +1220,49 @@ fn stamp(prog: &mut Program, origin: &str) {
             .chain(&mut module.guards)
             .chain(&mut module.hooks)
         {
-            func.origin = origin.to_string();
+            func.file = file;
         }
         for decl in &mut module.domains {
-            decl.origin = origin.to_string();
+            decl.file = file;
         }
         for block in &mut module.specs {
-            block.origin = origin.to_string();
+            block.file = file;
         }
     }
     for block in &mut prog.specs {
-        block.origin = origin.to_string();
+        block.file = file;
     }
     for sibling in &mut prog.siblings {
-        stamp(sibling, origin);
+        stamp(sibling, file);
     }
 }
 
 /// Where a declaration is, and what it declares, for a message about two that clash.
 pub(crate) struct Site<'a> {
-    origin: &'a str,
-    line: u32,
-    col: u32,
+    files: &'a SourceMap,
+    file: FileId,
+    span: Span,
     kind: &'static str,
 }
 
 impl<'a> Site<'a> {
-    pub(crate) fn of(origin: &'a str, line: u32, col: u32, kind: &'static str) -> Self {
+    pub(crate) fn of(files: &'a SourceMap, file: FileId, span: Span, kind: &'static str) -> Self {
         Site {
-            origin,
-            line,
-            col,
+            files,
+            file,
+            span,
             kind,
         }
     }
 
     /// `line:col`, with the file when it is not `from`'s.
     pub(crate) fn place(&self, from: &Site) -> String {
-        if self.origin == from.origin {
-            format!("{}:{}", self.line, self.col)
+        let (line, col) = self.files.line_col(self.file, self.span);
+        if self.file == from.file {
+            format!("{line}:{col}")
         } else {
-            format!(
-                "{}:{}:{}",
-                file_label(Path::new(self.origin)),
-                self.line,
-                self.col
-            )
+            let origin = self.files.path(self.file);
+            format!("{}:{line}:{col}", file_label(Path::new(origin)))
         }
     }
 }
@@ -1269,9 +1281,9 @@ pub(crate) fn clash(
     via: Option<&UseDecl>,
     fix: &str,
 ) -> Error {
-    let (line, col) = at(via, new.line, new.col);
+    let span = via.map_or(new.span, |decl| decl.span);
     let name = shown(name);
-    let body = if have.origin == new.origin {
+    let body = if have.file == new.file {
         let kind = match have.kind {
             "" => String::new(),
             kind if kind.starts_with(['a', 'e', 'i', 'o', 'u']) => format!(" as an {kind}"),
@@ -1281,16 +1293,12 @@ pub(crate) fn clash(
     } else {
         format!("defined in:\n- {}\n- {}", have.place(new), new.place(have))
     };
-    let err = error(line, col, format!("{headline}\n\n{body}\n\n{fix}"));
+    let err = error(span, format!("{headline}\n\n{body}\n\n{fix}"));
     // Through an import, the error is at the importing file's `import`.
     match via {
         Some(_) => err,
-        None => err.in_file(new.origin),
+        None => err.in_file(new.file),
     }
-}
-
-fn at(via: Option<&UseDecl>, line: u32, col: u32) -> (u32, u32) {
-    via.map(|decl| (decl.line, decl.col)).unwrap_or((line, col))
 }
 
 pub(crate) fn kind_name(kind: ItemKind) -> &'static str {

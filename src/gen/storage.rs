@@ -685,11 +685,7 @@ impl<'a> Gen<'a> {
                 self.element_at(ty, stride, p.transient)
             }
             Expr::Field {
-                base,
-                name,
-                line,
-                col,
-                ..
+                base, name, span, ..
             } => {
                 let p = self.deep_slot(base, false)?;
                 let rty = self.peel_nominal(base.ty());
@@ -697,7 +693,7 @@ impl<'a> Gen<'a> {
                     .fields
                     .iter()
                     .find(|f| f.name == *name)
-                    .ok_or_else(|| error(*line, *col, format!("no field `{name}`")))?;
+                    .ok_or_else(|| error(*span, format!("no field `{name}`")))?;
                 let (slot, fty) = (field.slot, field.ty);
                 let (off, pack) = self.slot_layout(rty, p.transient)[slot as usize];
                 if off > 0 {
@@ -711,11 +707,7 @@ impl<'a> Gen<'a> {
                     transient: p.transient,
                 })
             }
-            other => Err(error(
-                other.line(),
-                other.col(),
-                "this value is not in storage",
-            )),
+            other => Err(error(other.span(), "this value is not in storage")),
         }
     }
 
@@ -995,7 +987,7 @@ impl<'a> Gen<'a> {
             return Ok(());
         }
         if !self.stack_value(ty) {
-            return Err(error(e.line(), e.col(), "expected a word"));
+            return Err(error(e.span(), "expected a word"));
         }
         if self.packed_index(e, p.transient) {
             self.packed_load(p.pack, p.transient);
@@ -1848,8 +1840,7 @@ impl<'a> Gen<'a> {
                 root: None,
                 base,
                 name,
-                line,
-                col,
+                span,
                 ..
             } => {
                 let src = self.value_addr(base)?;
@@ -1858,7 +1849,7 @@ impl<'a> Gen<'a> {
                     .fields
                     .iter()
                     .find(|f| f.name == *name)
-                    .ok_or_else(|| error(*line, *col, format!("no field `{name}`")))?;
+                    .ok_or_else(|| error(*span, format!("no field `{name}`")))?;
                 Ok(src + field.slot as i32 * 32)
             }
             Expr::Ident { sym: Some(sym), .. }
@@ -1904,12 +1895,10 @@ impl<'a> Gen<'a> {
                     let k = self.checked.types[elem].words as i32;
                     for i in 0..n {
                         let at = Expr::Index {
-                            line: e.line(),
-                            col: e.col(),
+                            span: e.span(),
                             base: Box::new(e.clone()),
                             index: Box::new(Expr::Lit {
-                                line: e.line(),
-                                col: e.col(),
+                                span: e.span(),
                                 lit: Lit::Uint(Word::from_u64(u64::from(i))),
                                 ty: crate::check::TY_UINT,
                             }),
@@ -1928,8 +1917,7 @@ impl<'a> Gen<'a> {
                     .collect();
                 for (name, slot, fty) in fields {
                     let field = Expr::Field {
-                        line: e.line(),
-                        col: e.col(),
+                        span: e.span(),
                         base: Box::new(e.clone()),
                         name,
                         root: Some(*sym),
@@ -2127,8 +2115,7 @@ impl<'a> Gen<'a> {
         sym: usize,
         leaf: u32,
         index: &Expr,
-        line: u32,
-        col: u32,
+        span: Span,
         header: bool,
     ) -> Result<(), Error> {
         let ty = self.type_at(self.checked.syms[sym].ty, leaf);
@@ -2177,7 +2164,7 @@ impl<'a> Gen<'a> {
                     Ok(())
                 })
             }
-            _ => Err(error(line, col, "this value cannot be indexed")),
+            _ => Err(error(span, "this value cannot be indexed")),
         }
     }
 
@@ -2278,11 +2265,7 @@ impl<'a> Gen<'a> {
                 self.store_slot(self.bytes_elem(ty));
                 Ok(())
             }
-            _ => Err(error(
-                index.line(),
-                index.col(),
-                "this value cannot be indexed",
-            )),
+            _ => Err(error(index.span(), "this value cannot be indexed")),
         }
     }
 
@@ -2302,7 +2285,7 @@ impl<'a> Gen<'a> {
             ..
         } = e
         else {
-            return Err(error(e.line(), e.col(), "this value cannot be indexed"));
+            return Err(error(e.span(), "this value cannot be indexed"));
         };
         self.push_map_slot(*sym, *leaf, &keys)
     }
@@ -2786,7 +2769,7 @@ impl<'a> Gen<'a> {
                 self.deep_slot(arg, false)?;
                 Ok(())
             }
-            other => Err(error(other.line(), other.col(), "expected a stored map")),
+            other => Err(error(other.span(), "expected a stored map")),
         }
     }
 

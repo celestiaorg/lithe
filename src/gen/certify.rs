@@ -25,8 +25,7 @@ pub(crate) enum Loc {
 pub(crate) struct LoopCert {
     /// The function whose statements hold the loop, and the loop's place there.
     pub func: String,
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     /// The loop runs in the creation code, not the runtime.
     pub creation: bool,
     /// The offset of the `JUMPDEST` each iteration starts at.
@@ -36,7 +35,7 @@ pub(crate) struct LoopCert {
     /// zero by its iterations.
     pub counter: Option<usize>,
     /// Each local of the function, by its declaration's line, column, and name.
-    pub locals: Vec<((u32, u32, String), Loc)>,
+    pub locals: Vec<((Span, String), Loc)>,
 }
 
 /// A function compiled once: where its code starts, and where its parameters are there.
@@ -47,7 +46,7 @@ pub(crate) struct FuncCert {
     /// The offset of the `JUMPDEST` its calls jump to, with the return address on top.
     pub entry: usize,
     /// Each parameter, by its declaration's line, column, and name.
-    pub params: Vec<((u32, u32, String), Loc)>,
+    pub params: Vec<((Span, String), Loc)>,
 }
 
 /// A function's body inlined into a call: where the copy starts and where it has run, and
@@ -59,7 +58,7 @@ pub(crate) struct InlineCert {
     pub entry: usize,
     pub exit: usize,
     /// Each parameter, by its declaration's line, column, and name.
-    pub params: Vec<((u32, u32, String), Loc)>,
+    pub params: Vec<((Span, String), Loc)>,
 }
 
 /// Where a guard's statements end in a route's code: the route's own code runs past it.
@@ -118,7 +117,7 @@ impl Gen<'_> {
         if !track::on() {
             return;
         }
-        let Stmt::For { line, col, .. } = s else {
+        let Stmt::For { span, .. } = s else {
             return;
         };
         // Bodies are often compiled from copies of their statements: then the loop's place
@@ -127,9 +126,7 @@ impl Gen<'_> {
         let f = match funcs.iter().find(|f| holds(&f.stmts, s, None)) {
             Some(f) => f,
             None => {
-                let mut at = funcs
-                    .iter()
-                    .filter(|f| holds(&f.stmts, s, Some((*line, *col))));
+                let mut at = funcs.iter().filter(|f| holds(&f.stmts, s, Some(*span)));
                 match (at.next(), at.next()) {
                     (Some(f), None) => f,
                     _ => return,
@@ -139,7 +136,7 @@ impl Gen<'_> {
         let mut decls = Vec::new();
         for p in &f.params {
             if let Some(sym) = p.sym {
-                decls.push(((p.line, p.col, p.name.clone()), sym));
+                decls.push(((p.span, p.name.clone()), sym));
             }
         }
         declared(&f.stmts, &mut decls);
@@ -163,8 +160,8 @@ impl Gen<'_> {
             t.sites.push(Site {
                 kind: Kind::Loop,
                 func: f.name.clone(),
-                line: *line,
-                col: *col,
+                span: *span,
+                route: 0,
                 top,
                 done,
                 counter,
@@ -191,7 +188,7 @@ impl Gen<'_> {
         let mut params = Vec::new();
         for p in &f.params {
             let Some(sym) = p.sym else { continue };
-            let key = (p.line, p.col, p.name.clone());
+            let key = (p.span, p.name.clone());
             let place = match (self.const_params.get(&sym), stacked) {
                 (Some(w), _) => (None, Place::Const(*w)),
                 (None, Some(stacked)) => {
@@ -212,13 +209,13 @@ impl Gen<'_> {
             };
             params.push((key, place.0, place.1));
         }
-        let (name, line, col) = (f.name.clone(), f.line, f.col);
+        let (name, span) = (f.name.clone(), f.span);
         track::note(|t| {
             t.sites.push(Site {
                 kind: Kind::Func,
                 func: name,
-                line,
-                col,
+                span,
+                route: 0,
                 top: label,
                 done: label,
                 counter: false,
@@ -248,7 +245,7 @@ impl Gen<'_> {
         let mut params = Vec::new();
         for p in &f.params {
             let Some(sym) = p.sym else { continue };
-            let key = (p.line, p.col, p.name.clone());
+            let key = (p.span, p.name.clone());
             match self.const_params.get(&sym) {
                 Some(w) => params.push((key, None, Place::Const(*w))),
                 None if self.local.get(sym).is_some_and(|&a| a >= 0)
@@ -260,13 +257,13 @@ impl Gen<'_> {
                 None => {}
             }
         }
-        let (name, line, col) = (f.name.clone(), f.line, f.col);
+        let (name, span) = (f.name.clone(), f.span);
         track::note(|t| {
             t.sites.push(Site {
                 kind: Kind::Inline,
                 func: name,
-                line,
-                col,
+                span,
+                route: 0,
                 top: entry,
                 done: exit,
                 counter: false,
@@ -283,8 +280,8 @@ impl Gen<'_> {
             t.sites.push(Site {
                 kind: Kind::GuardEnd,
                 func: name,
-                line: route as u32,
-                col: 0,
+                span: Span::NONE,
+                route,
                 top: at,
                 done: at,
                 counter: false,
@@ -295,11 +292,11 @@ impl Gen<'_> {
 }
 
 /// Whether `s` is one of `stmts`, or inside one; or with `at`, whether a loop there is.
-fn holds(stmts: &[Stmt], s: &Stmt, at: Option<(u32, u32)>) -> bool {
+fn holds(stmts: &[Stmt], s: &Stmt, at: Option<Span>) -> bool {
     stmts.iter().any(|st| {
         let here = match (at, st) {
             (None, _) => std::ptr::eq(st, s),
-            (Some(at), Stmt::For { line, col, .. }) => (*line, *col) == at,
+            (Some(at), Stmt::For { span, .. }) => *span == at,
             _ => false,
         };
         here || match st {
@@ -315,12 +312,11 @@ fn holds(stmts: &[Stmt], s: &Stmt, at: Option<(u32, u32)>) -> bool {
 }
 
 /// Every local `stmts` declare, by declaration.
-fn declared(stmts: &[Stmt], out: &mut Vec<((u32, u32, String), usize)>) {
+fn declared(stmts: &[Stmt], out: &mut Vec<((Span, String), usize)>) {
     for st in stmts {
         match st {
             Stmt::Const {
-                line,
-                col,
+                span,
                 name,
                 parts,
                 sym,
@@ -328,8 +324,7 @@ fn declared(stmts: &[Stmt], out: &mut Vec<((u32, u32, String), usize)>) {
                 ..
             }
             | Stmt::Var {
-                line,
-                col,
+                span,
                 name,
                 parts,
                 sym,
@@ -337,10 +332,10 @@ fn declared(stmts: &[Stmt], out: &mut Vec<((u32, u32, String), usize)>) {
                 ..
             } => {
                 if let Some(sym) = sym {
-                    out.push(((*line, *col, name.clone()), *sym));
+                    out.push(((*span, name.clone()), *sym));
                 }
                 for (part, sym) in parts.iter().zip(part_syms) {
-                    out.push(((*line, *col, part.clone()), *sym));
+                    out.push(((*span, part.clone()), *sym));
                 }
             }
             Stmt::If {
@@ -433,7 +428,7 @@ pub(super) fn certs(t: &Track, creation: bool) -> Certs {
         if site.kind == Kind::GuardEnd {
             out.guards.push(GuardCert {
                 guard: site.func.clone(),
-                route: site.line as usize,
+                route: site.route,
                 exit: head,
             });
             continue;
@@ -501,8 +496,7 @@ pub(super) fn certs(t: &Track, creation: bool) -> Certs {
             .collect();
         out.loops.push(LoopCert {
             func: site.func.clone(),
-            line: site.line,
-            col: site.col,
+            span: site.span,
             creation,
             head,
             exit: t.at(site.done),
@@ -514,7 +508,7 @@ pub(super) fn certs(t: &Track, creation: bool) -> Certs {
 }
 
 /// Where each local a site names is, when the certificate can say.
-fn params(locals: &[((u32, u32, String), Option<u32>, Place)]) -> Vec<((u32, u32, String), Loc)> {
+fn params(locals: &[((Span, String), Option<u32>, Place)]) -> Vec<((Span, String), Loc)> {
     locals
         .iter()
         .filter_map(|(key, _, place)| {

@@ -46,8 +46,7 @@ pub(super) fn check_guarded(module: &ModuleDecl) -> Result<(), Error> {
     for guard in &module.guards {
         if let Some(p) = guard.params.iter().find(|p| p.storage) {
             return Err(error(
-                p.line,
-                p.col,
+                p.span,
                 format!(
                     "a guard takes the external's parameters, which are values: take `{}` as `const`",
                     p.name
@@ -72,15 +71,13 @@ pub(super) fn check_guarded(module: &ModuleDecl) -> Result<(), Error> {
                 format!("`{name}`'s guards: {}", have.join(", "))
             };
             return Err(error(
-                guarded.line,
-                guarded.col,
+                guarded.span,
                 format!("module `{name}` has no guard `{}`\n\n{hint}", guarded.name),
             ));
         };
         if func.external_pure {
             return Err(error(
-                guarded.line,
-                guarded.col,
+                guarded.span,
                 format!(
                     "`{}` is `pure`, but its guard reads state; declare it `external view function`",
                     func.name
@@ -90,8 +87,7 @@ pub(super) fn check_guarded(module: &ModuleDecl) -> Result<(), Error> {
         for arg in &guarded.args {
             if !func.params.iter().any(|p| p.name == arg.name) {
                 return Err(error(
-                    arg.line,
-                    arg.col,
+                    arg.span,
                     format!(
                         "`{}` is not a parameter of `{}`; a guard takes the external's parameters, by name",
                         arg.name, func.name
@@ -101,8 +97,7 @@ pub(super) fn check_guarded(module: &ModuleDecl) -> Result<(), Error> {
         }
         if guarded.args.len() != guard.params.len() {
             return Err(error(
-                guarded.line,
-                guarded.col,
+                guarded.span,
                 format!(
                     "guard `{}` takes {} parameters ({}); `{}` passes {}",
                     guard.name,
@@ -120,13 +115,12 @@ pub(super) fn check_guarded(module: &ModuleDecl) -> Result<(), Error> {
 /// The call an entrypoint for a guarded external runs first: the contract's check, given the
 /// external's parameters.
 pub(super) fn guard_call(module: &str, guarded: &Guarded) -> Stmt {
-    let (line, col) = (guarded.line, guarded.col);
+    let span = guarded.span;
     let args = guarded
         .args
         .iter()
         .map(|arg| Expr::Ident {
-            line: arg.line,
-            col: arg.col,
+            span: arg.span,
             name: arg.name.clone(),
             sym: None,
             builtin: None,
@@ -134,11 +128,9 @@ pub(super) fn guard_call(module: &str, guarded: &Guarded) -> Stmt {
         })
         .collect();
     Stmt::Call {
-        line,
-        col,
+        span,
         expr: Expr::Call {
-            line,
-            col,
+            span,
             name: guard_fn(module, &guarded.name),
             args,
             base: None,
@@ -156,27 +148,22 @@ pub(super) struct Need {
     pub module: String,
     pub guard: String,
     pub entry: String,
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
 }
 
 /// The contract writes one check for each guard the externals it exposes name, and no other.
 /// Each becomes an internal function of the contract, which those entrypoints call.
 pub(super) fn place_guards(prog: &mut Program, needs: &[Need]) -> Result<(), Error> {
     let guards = std::mem::take(&mut prog.guards);
-    let mut written: Vec<(String, String, u32, u32)> = Vec::new();
+    let mut written: Vec<(String, String, Span)> = Vec::new();
     for mut guard in guards {
         let Some(of) = guard.guard_of.clone() else {
             continue;
         };
         let module = of.module.name.clone();
-        let (line, col) = (of.module.line, of.module.col);
+        let span = of.module.span;
         let Some(decl) = prog.modules.iter().find(|m| m.name == module) else {
-            return Err(error(
-                line,
-                col,
-                format!("unknown module `{}`", shown(&module)),
-            ));
+            return Err(error(span, format!("unknown module `{}`", shown(&module))));
         };
         let Some(sig) = decl.guards.iter().find(|g| g.name == of.name) else {
             let have: Vec<String> = decl
@@ -190,8 +177,7 @@ pub(super) fn place_guards(prog: &mut Program, needs: &[Need]) -> Result<(), Err
                 format!("`{}`'s guards: {}", shown(&module), have.join(", "))
             };
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "module `{}` has no guard `{}`\n\n{hint}",
                     shown(&module),
@@ -199,13 +185,13 @@ pub(super) fn place_guards(prog: &mut Program, needs: &[Need]) -> Result<(), Err
                 ),
             ));
         };
-        if let Some((_, _, l, c)) = written
+        if let Some((_, _, first)) = written
             .iter()
-            .find(|(m, g, _, _)| *m == module && *g == of.name)
+            .find(|(m, g, _)| *m == module && *g == of.name)
         {
+            let (l, c) = prog.files.line_col(guard.file, *first);
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "guard `{}` is written twice; the first is at {l}:{c}",
                     label(&module, &of.name)
@@ -217,8 +203,7 @@ pub(super) fn place_guards(prog: &mut Program, needs: &[Need]) -> Result<(), Err
             .any(|need| need.module == module && need.guard == of.name)
         {
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "no external the contract exposes is guarded by `{}`; remove this guard",
                     label(&module, &of.name)
@@ -237,7 +222,7 @@ pub(super) fn place_guards(prog: &mut Program, needs: &[Need]) -> Result<(), Err
                 sig.params.len(),
             )?;
         }
-        written.push((module.clone(), of.name.clone(), line, col));
+        written.push((module.clone(), of.name.clone(), span));
         guard.name = guard_fn(&module, &of.name);
         prog.funcs.push(guard);
     }
@@ -249,7 +234,7 @@ pub(super) fn place_guards(prog: &mut Program, needs: &[Need]) -> Result<(), Err
     for need in needs {
         if written
             .iter()
-            .any(|(m, g, _, _)| *m == need.module && *g == need.guard)
+            .any(|(m, g, _)| *m == need.module && *g == need.guard)
         {
             continue;
         }
@@ -263,8 +248,7 @@ pub(super) fn place_guards(prog: &mut Program, needs: &[Need]) -> Result<(), Err
             |sig| header(&sig.name, &sig.params),
         );
         return Err(error(
-            need.line,
-            need.col,
+            need.span,
             format!(
                 "the contract exposes `{}`, which `{}` guards with `{}`, so it must write the check:\n\n  use {} ... with {{\n    {shape} raises ... is {{ ... }}\n  }}",
                 need.entry,
@@ -289,8 +273,7 @@ fn pass_params(
     let params: Vec<Expr> = guard_params
         .iter()
         .map(|p| Expr::Ident {
-            line: via.line,
-            col: via.col,
+            span: via.span,
             name: p.name.clone(),
             sym: None,
             builtin: None,
@@ -316,8 +299,7 @@ fn pass_params(
     }
     if found.iter().all(|f| f.ret.is_some()) {
         return Err(error(
-            via.line,
-            via.col,
+            via.span,
             format!(
                 "`{}` returns a value; a guard names a function that only checks",
                 via.name
@@ -329,8 +311,7 @@ fn pass_params(
     }
     if count == 0 {
         return Err(error(
-            via.line,
-            via.col,
+            via.span,
             format!(
                 "`{}` takes {} parameters; the guard has none to pass it",
                 via.name,
@@ -340,8 +321,7 @@ fn pass_params(
     }
     if !found.iter().any(|f| f.params.len() == count) {
         return Err(error(
-            via.line,
-            via.col,
+            via.span,
             format!(
                 "`{}` takes {} parameters; a guard that names a function passes it none of its parameters, or all {count}",
                 via.name,
@@ -376,8 +356,7 @@ impl Checker {
                 }
                 if !same {
                     return Err(error(
-                        of.module.line,
-                        of.module.col,
+                        of.module.span,
                         format!(
                             "guard `{}` takes different parameters than `{}` declares\n\n  module:    {}\n  contract:  {}",
                             label(&of.module.name, &of.name),
@@ -385,7 +364,7 @@ impl Checker {
                             header(&of.name, &sig.params),
                             header(&of.name, &func.params)
                         ),
-                    ).in_file(&func.origin));
+                    ).in_file(func.file));
                 }
             }
             let (Some(guarded), Some(module)) = (&func.guarded, &func.promoted) else {
@@ -402,8 +381,7 @@ impl Checker {
                 let (x, y) = (self.build(&want.ty)?, self.build(&param.ty)?);
                 if !self.declared_alike(x, y, Some(&want.ty), Some(&param.ty)) {
                     return Err(error(
-                        arg.line,
-                        arg.col,
+                        arg.span,
                         format!(
                             "guard `{short}` takes `{}` as `{}`, but `{}` passes its `{}`, a `{}`",
                             shape_ty(&want.ty),
@@ -413,7 +391,7 @@ impl Checker {
                             shape_ty(&param.ty)
                         ),
                     )
-                    .in_file(&func.origin));
+                    .in_file(func.file));
                 }
             }
         }

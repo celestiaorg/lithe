@@ -8,8 +8,7 @@ impl Checker {
                 name,
                 sym,
                 ty,
-                line,
-                col,
+                span,
                 ..
             } => {
                 // A module's domain, named as the qualified name this rewrites it to below,
@@ -18,9 +17,9 @@ impl Checker {
                     Some((module, domain))
                         if self.lookup(name).is_none() && self.known_modules.contains(module) =>
                     {
-                        self.open_module_domain(*line, *col, module, domain)?
+                        self.open_module_domain(*span, module, domain)?
                     }
-                    _ => self.resolve(*line, *col, name)?,
+                    _ => self.resolve(*span, name)?,
                 };
                 if let Some(qualified) = self
                     .domain_syms
@@ -36,7 +35,7 @@ impl Checker {
                     *name = qualified;
                 }
                 let shown = name.clone();
-                self.across_phases(*line, *col, &shown, id)?;
+                self.across_phases(*span, &shown, id)?;
                 *sym = Some(id);
                 *ty = self.syms[id].ty;
                 Ok(Place {
@@ -52,18 +51,14 @@ impl Checker {
                 root,
                 leaf,
                 ty,
-                line,
-                col,
+                span,
             } => {
                 let module_domain = match base.as_ref() {
                     Expr::Ident {
                         name: module,
-                        line: mline,
-                        col: mcol,
+                        span: mspan,
                         ..
-                    } if self.is_module(module) => {
-                        Some((module.clone(), *mline, *mcol, name.clone()))
-                    }
+                    } if self.is_module(module) => Some((module.clone(), *mspan, name.clone())),
                     Expr::Field {
                         base: inner,
                         name: kind,
@@ -71,18 +66,17 @@ impl Checker {
                     } => match inner.as_ref() {
                         Expr::Ident {
                             name: module,
-                            line: mline,
-                            col: mcol,
+                            span: mspan,
                             ..
                         } if self.is_module(module) => self
                             .kind_domain(module, kind, name)
-                            .map(|domain| (module.clone(), *mline, *mcol, domain)),
+                            .map(|domain| (module.clone(), *mspan, domain)),
                         _ => None,
                     },
                     _ => None,
                 };
-                if let Some((module, mline, mcol, domain)) = module_domain {
-                    let sym = self.open_module_domain(mline, mcol, &module, &domain)?;
+                if let Some((module, mspan, domain)) = module_domain {
+                    let sym = self.open_module_domain(mspan, &module, &domain)?;
                     let sty = self.syms[sym].ty;
                     *root = Some(sym);
                     *leaf = 0;
@@ -110,10 +104,10 @@ impl Checker {
                     });
                 }
                 if rec.kind != TyKind::Record {
-                    return Err(error(*line, *col, "field access on a non-record"));
+                    return Err(error(*span, "field access on a non-record"));
                 }
                 let Some(f) = rec.fields.iter().find(|f| f.name == *name) else {
-                    return Err(self.no_field(*line, *col, self.peel(p.ty), name));
+                    return Err(self.no_field(*span, self.peel(p.ty), name));
                 };
                 // A field of a map's value is found from the value's slot, not a leaf.
                 let abs = if p.in_map { p.leaf } else { p.leaf + f.slot };
@@ -134,8 +128,7 @@ impl Checker {
                 root,
                 leaf,
                 ty,
-                line,
-                col,
+                span,
             } => {
                 let p = self.place(base)?;
                 let kind = self.types[self.peel(p.ty)].kind;
@@ -155,11 +148,11 @@ impl Checker {
                 if matches!(base.as_ref(), Expr::Index { .. })
                     && !matches!(kind, TyKind::Map | TyKind::List)
                 {
-                    return Err(error(*line, *col, "only a map of maps takes more keys"));
+                    return Err(error(*span, "only a map of maps takes more keys"));
                 }
                 // Past a key or an index, fields are found from the value's slot, not a leaf.
                 let in_map = matches!(kind, TyKind::Map | TyKind::List) || p.in_map;
-                let elem = self.indexed(*line, *col, p.sym, p.ty, index)?;
+                let elem = self.indexed(*span, p.sym, p.ty, index)?;
                 *root = Some(p.sym);
                 *leaf = p.leaf;
                 *ty = elem;
@@ -170,13 +163,13 @@ impl Checker {
                     in_map,
                 })
             }
-            other => Err(error(other.line(), other.col(), "expected a name or field")),
+            other => Err(error(other.span(), "expected a name or field")),
         }
     }
 
-    pub(super) fn lookup_path(&self, line: u32, col: u32, path: &[String]) -> Result<Place, Error> {
+    pub(super) fn lookup_path(&self, span: Span, path: &[String]) -> Result<Place, Error> {
         let Some(name) = path.first() else {
-            return Err(error(line, col, "empty assignment"));
+            return Err(error(span, "empty assignment"));
         };
         if path.len() >= 2 && self.is_module(name) {
             let (domain, fields) = match path
@@ -186,8 +179,8 @@ impl Checker {
                 Some(domain) => (domain, &path[3..]),
                 None => (path[1].clone(), &path[2..]),
             };
-            let sym = self.open_module_domain(line, col, name, &domain)?;
-            let (ty, leaf) = self.walk_fields(line, col, self.syms[sym].ty, 0, fields)?;
+            let sym = self.open_module_domain(span, name, &domain)?;
+            let (ty, leaf) = self.walk_fields(span, self.syms[sym].ty, 0, fields)?;
             return Ok(Place {
                 sym,
                 leaf,
@@ -195,20 +188,19 @@ impl Checker {
                 in_map: false,
             });
         }
-        let sym = self.resolve(line, col, name)?;
+        let sym = self.resolve(span, name)?;
         if self.phase_floors.last().is_some_and(|&floor| sym < floor)
             && self.syms[sym].mutable
             && !self.syms[sym].storage
         {
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "`{name}` is a `var` of an earlier phase; mutable locals do not cross an external call"
                 ),
             ));
         }
-        let (ty, leaf) = self.walk_fields(line, col, self.syms[sym].ty, 0, &path[1..])?;
+        let (ty, leaf) = self.walk_fields(span, self.syms[sym].ty, 0, &path[1..])?;
         Ok(Place {
             sym,
             leaf,
@@ -256,12 +248,11 @@ impl Checker {
         id
     }
 
-    pub(super) fn resolve(&self, line: u32, col: u32, name: &str) -> Result<usize, Error> {
-        self.lookup(name)
-            .ok_or_else(|| self.unbound(line, col, name))
+    pub(super) fn resolve(&self, span: Span, name: &str) -> Result<usize, Error> {
+        self.lookup(name).ok_or_else(|| self.unbound(span, name))
     }
 
-    pub(super) fn unbound(&self, line: u32, col: u32, name: &str) -> Error {
+    pub(super) fn unbound(&self, span: Span, name: &str) -> Error {
         let owners: Vec<&str> = self
             .domain_binds
             .iter()
@@ -270,8 +261,7 @@ impl Checker {
             .collect();
         if owners.len() == 1 {
             return error(
-                line,
-                col,
+                span,
                 format!(
                     "`{name}` belongs to `{}`; write `{}.{name}`",
                     owners[0], owners[0]
@@ -280,8 +270,7 @@ impl Checker {
         }
         if owners.len() > 1 {
             return error(
-                line,
-                col,
+                span,
                 format!(
                     "`{name}` belongs to {}; qualify it as `Module.{name}`",
                     owners.join(", ")
@@ -290,17 +279,16 @@ impl Checker {
         }
         if let Some(path) = storage_field_path(&self.types, self.storage, name) {
             return error(
-                line,
-                col,
+                span,
                 format!("storage field `{name}` must be qualified as `{path}`"),
             );
         }
-        error(line, col, format!("unknown name `{name}`"))
+        error(span, format!("unknown name `{name}`"))
     }
 
     /// `no field `name`` in `record`, or when `record` is a default record and a module owns the
     /// domain `storage.name`, which module to reach it through.
-    pub(super) fn no_field(&self, line: u32, col: u32, record: usize, name: &str) -> Error {
+    pub(super) fn no_field(&self, span: Span, record: usize, name: &str) -> Error {
         let kind = if record == self.storage {
             Some("storage")
         } else {
@@ -316,7 +304,7 @@ impl Checker {
                 .iter()
                 .any(|d| d.short == domain && d.owner.is_some())
             {
-                return self.unbound(line, col, &domain);
+                return self.unbound(span, &domain);
             }
             let owners: Vec<&str> = self
                 .domain_binds
@@ -328,13 +316,12 @@ impl Checker {
                 .collect();
             if let [owner] = owners[..] {
                 return error(
-                    line,
-                    col,
+                    span,
                     format!("`{domain}` belongs to `{owner}`; write `{owner}.{domain}`"),
                 );
             }
         }
-        error(line, col, format!("no field `{name}`"))
+        error(span, format!("no field `{name}`"))
     }
 
     /// For `module.name` where `module` is a module: that it has no member `name`, with the
@@ -342,8 +329,7 @@ impl Checker {
     /// `"a function"` or `"a value"` or `"a type"` and so on. `None` when `module` is no module.
     pub(super) fn no_member(
         &self,
-        line: u32,
-        col: u32,
+        span: Span,
         module: &str,
         name: &str,
         want: &str,
@@ -424,18 +410,18 @@ impl Checker {
                 msg
             }
         };
-        Some(error(line, col, msg))
+        Some(error(span, msg))
     }
 
     /// `unknown {what} `name``, or for `M.name` with a module `M`, what `no_member` says.
-    pub(super) fn unknown(&self, line: u32, col: u32, what: &str, name: &str) -> Error {
+    pub(super) fn unknown(&self, span: Span, what: &str, name: &str) -> Error {
         let want = match what {
             "error" | "event" => format!("an {what}"),
             _ => format!("a {what}"),
         };
         name.split_once('.')
-            .and_then(|(module, member)| self.no_member(line, col, module, member, &want))
-            .unwrap_or_else(|| error(line, col, format!("unknown {what} `{name}`")))
+            .and_then(|(module, member)| self.no_member(span, module, member, &want))
+            .unwrap_or_else(|| error(span, format!("unknown {what} `{name}`")))
     }
 
     /// A module, not a value that shadows its name.
@@ -465,18 +451,12 @@ impl Checker {
                 .any(|m| m.name == module && !m.domains.is_empty())
     }
 
-    fn open_module_domain(
-        &self,
-        line: u32,
-        col: u32,
-        module: &str,
-        domain: &str,
-    ) -> Result<usize, Error> {
+    fn open_module_domain(&self, span: Span, module: &str, domain: &str) -> Result<usize, Error> {
         if self.module_name.is_none()
             && self.known_modules.contains(module)
             && !self.used_modules.contains(module)
         {
-            return Err(error(line, col, format!("module `{module}` is not used")));
+            return Err(error(span, format!("module `{module}` is not used")));
         }
         if let Some(mine) = &self.module_name {
             if mine != module
@@ -485,8 +465,7 @@ impl Checker {
                 && !self.spec_places.iter().any(|root| root == module)
             {
                 return Err(error(
-                    line,
-                    col,
+                    span,
                     format!(
                         "module `{mine}` uses `{module}.{domain}` but does not require `{module}`"
                     ),
@@ -500,24 +479,18 @@ impl Checker {
         {
             return Ok(found.sym);
         }
-        if let Some(err) = self.no_member(line, col, module, domain, "a value") {
+        if let Some(err) = self.no_member(span, module, domain, "a value") {
             return Err(err);
         }
-        Err(error(line, col, format!("unknown module `{module}`")))
+        Err(error(span, format!("unknown module `{module}`")))
     }
 
-    pub(super) fn define(
-        &mut self,
-        line: u32,
-        col: u32,
-        name: &str,
-        sym: usize,
-    ) -> Result<(), Error> {
+    pub(super) fn define(&mut self, span: Span, name: &str, sym: usize) -> Result<(), Error> {
         if name == "storage" && self.lookup("storage").is_some() {
-            return Err(error(line, col, "`storage` names the contract storage"));
+            return Err(error(span, "`storage` names the contract storage"));
         }
         if self.scopes[self.scope].vars.contains_key(name) {
-            return Err(error(line, col, format!("duplicate name `{name}`")));
+            return Err(error(span, format!("duplicate name `{name}`")));
         }
         self.scopes[self.scope].vars.insert(name.to_string(), sym);
         Ok(())
@@ -575,10 +548,9 @@ pub(super) fn place_path(expr: &Expr) -> Option<Vec<String>> {
     }
 }
 
-pub(super) fn path_expr(line: u32, col: u32, path: &[String]) -> Expr {
+pub(super) fn path_expr(span: Span, path: &[String]) -> Expr {
     let mut expr = Expr::Ident {
-        line,
-        col,
+        span,
         name: path[0].clone(),
         sym: None,
         builtin: None,
@@ -586,8 +558,7 @@ pub(super) fn path_expr(line: u32, col: u32, path: &[String]) -> Expr {
     };
     for name in path.iter().skip(1) {
         expr = Expr::Field {
-            line,
-            col,
+            span,
             base: Box::new(expr),
             name: name.clone(),
             root: None,

@@ -216,11 +216,7 @@ impl<'a> Gen<'a> {
             return self.compile_value(place);
         }
         if !self.stack_value(ty) && !pointer_word(&self.checked.types, ty) {
-            return Err(error(
-                place.line(),
-                place.col(),
-                "an immutable value is not a word",
-            ));
+            return Err(error(place.span(), "an immutable value is not a word"));
         }
         self.push_immutable(self.read_leaf(place));
         if pointer_word(&self.checked.types, ty) {

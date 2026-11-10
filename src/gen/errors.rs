@@ -98,7 +98,7 @@ impl<'a> Gen<'a> {
         let Some(index) = raised.index else {
             // Raw revert data: its bytes are the whole revert.
             let RaisedForm::Positional(data) = &raised.form else {
-                return Err(error(raised.line, raised.col, "unbound error"));
+                return Err(error(raised.span, "unbound error"));
             };
             if self.is_returned(data) {
                 self.op(RETURNDATASIZE);
@@ -776,8 +776,7 @@ impl<'a> Gen<'a> {
     /// seen on chain. Deferred calls still run after every log, so their order holds.
     pub(super) fn compile_emit(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         name: &str,
         fields: &[(String, Expr)],
     ) -> Result<(), Error> {
@@ -786,7 +785,7 @@ impl<'a> Gen<'a> {
             .events
             .iter()
             .find(|e| e.name == name)
-            .ok_or_else(|| error(line, col, format!("unknown event `{name}`")))?;
+            .ok_or_else(|| error(span, format!("unknown event `{name}`")))?;
         let topic = (!ev.anonymous).then(|| crate::keccak::keccak256(ev.topic_sig.as_bytes()));
         let schema: Vec<(bool, bool, usize)> = ev
             .fields
@@ -1032,11 +1031,7 @@ impl<'a> Gen<'a> {
                 Ok(())
             }
             TyKind::List | TyKind::Record | TyKind::Tuple => self.hash_aggregate(expr, id),
-            _ => Err(error(
-                expr.line(),
-                expr.col(),
-                "this indexed value cannot be hashed",
-            )),
+            _ => Err(error(expr.span(), "this indexed value cannot be hashed")),
         }
     }
 
@@ -1097,8 +1092,7 @@ impl<'a> Gen<'a> {
         let words = self.checked.types[ty].words;
         if words == 0 || words > TOPIC_WORDS {
             return Err(error(
-                expr.line(),
-                expr.col(),
+                expr.span(),
                 "this indexed value is too large to hash",
             ));
         }

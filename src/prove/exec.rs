@@ -46,17 +46,18 @@ pub(crate) struct Listed<'a> {
 #[derive(Debug)]
 pub(crate) struct Stop {
     pub reason: String,
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
+    /// The file of the function the run had called into, when it stopped inside one.
+    file: Option<FileId>,
 }
 
 type Res<T> = Result<T, Stop>;
 
-fn stop<T>(line: u32, col: u32, reason: impl Into<String>) -> Res<T> {
+fn stop<T>(span: Span, reason: impl Into<String>) -> Res<T> {
     Err(Stop {
         reason: reason.into(),
-        line,
-        col,
+        span,
+        file: None,
     })
 }
 
@@ -185,8 +186,10 @@ pub(crate) struct Exec<'a> {
     prefix: String,
     /// How the expression being read counts: as code or as a spec.
     pub mode: Mode,
-    /// Where the prover is: the expression or statement it reads.
-    at: (u32, u32),
+    /// Where the prover is: the expression or statement it reads, in `file`.
+    at: Span,
+    /// The file of the code being read. Whoever starts a run sets it.
+    pub file: FileId,
     /// A function spec's two states, which `old.` and `new.` read.
     pub states: Option<States>,
     /// What the phase's code does that the prover only approximates, with where.
@@ -207,6 +210,16 @@ pub(crate) enum Arrival {
 const UNROLL: u64 = 16;
 
 impl<'a> Exec<'a> {
+    fn line_col(&self, file: FileId, span: Span) -> (u32, u32) {
+        self.checked.prog.files.line_col(file, span)
+    }
+
+    /// `line:col` where `stop` stopped the run.
+    pub(crate) fn stopped_at(&self, stop: &Stop) -> String {
+        let (line, col) = self.line_col(stop.file.unwrap_or(self.file), stop.span);
+        format!("{line}:{col}")
+    }
+
     pub(crate) fn new(checked: &'a Checked, zero: bool, arrival: Arrival) -> Exec<'a> {
         let mut smt = Script::default();
         let self_addr = smt.fresh("self", "Int");
@@ -255,7 +268,8 @@ impl<'a> Exec<'a> {
             maps: HashMap::new(),
             prefix: String::new(),
             mode: Mode::Code,
-            at: (0, 0),
+            at: Span::NONE,
+            file: checked.prog.file,
             states: None,
             approximations: Vec::new(),
         }
@@ -736,7 +750,7 @@ impl<'a> Exec<'a> {
         let base = if self.checked.slot_syms.contains_key(&root) {
             match self.maps.get(&root) {
                 Some(leaf) => *leaf,
-                None => return stop(e.line(), e.col(), "it reads a map it cannot place"),
+                None => return stop(e.span(), "it reads a map it cannot place"),
             }
         } else {
             sym.slot
@@ -998,8 +1012,7 @@ impl<'a> Exec<'a> {
                 }
             }
             Stmt::Assign {
-                line,
-                col,
+                span,
                 path,
                 index,
                 keys,
@@ -1013,7 +1026,7 @@ impl<'a> Exec<'a> {
             } => {
                 let v = self.eval(st, expr, ctx)?;
                 let Some(root) = root else {
-                    return stop(*line, *col, "an assignment the prover cannot place");
+                    return stop(*span, "an assignment the prover cannot place");
                 };
                 let sym = &self.checked.syms[*root];
                 if !sym.storage {
@@ -1061,7 +1074,7 @@ impl<'a> Exec<'a> {
                 let base = if self.checked.slot_syms.contains_key(root) {
                     match self.maps.get(root) {
                         Some(leaf) => *leaf,
-                        None => return stop(*line, *col, "it writes a map it cannot place"),
+                        None => return stop(*span, "it writes a map it cannot place"),
                     }
                 } else {
                     sym.slot
@@ -1172,8 +1185,7 @@ impl<'a> Exec<'a> {
                 }
             }
             Stmt::Defer {
-                line,
-                col,
+                span,
                 expr,
                 value,
                 gas,
@@ -1185,8 +1197,7 @@ impl<'a> Exec<'a> {
                 } = expr
                 {
                     return stop(
-                        *line,
-                        *col,
+                        *span,
                         "it defers `Evm.delegateCall`, which runs other code on this contract's storage",
                     );
                 }
@@ -1232,8 +1243,7 @@ impl<'a> Exec<'a> {
                 }
             }
             Stmt::For {
-                line,
-                col,
+                span,
                 iter,
                 until,
                 body,
@@ -1246,7 +1256,7 @@ impl<'a> Exec<'a> {
                 list,
                 ..
             } => {
-                let at = (*line, *col);
+                let at = *span;
                 if invariants.is_empty() {
                     let listed = Listed {
                         length: length.as_ref(),
@@ -1310,7 +1320,7 @@ impl<'a> Exec<'a> {
     fn for_loop(
         &mut self,
         st: &mut St,
-        (line, col): (u32, u32),
+        span: Span,
         iter: &'a ForIter,
         until: Option<&'a Expr>,
         body: &'a [Stmt],
@@ -1325,7 +1335,7 @@ impl<'a> Exec<'a> {
                 let lo_v = self.eval(st, lo, ctx)?;
                 let hi_v = self.eval(st, hi, ctx)?;
                 let (Val::Int(lo_t), Val::Int(hi_t)) = (lo_v, hi_v) else {
-                    return self.forget_loop(st, (line, col), None, body, counter, elem, ctx);
+                    return self.forget_loop(st, span, None, body, counter, elem, ctx);
                 };
                 (lo_t, hi_t)
             }
@@ -1340,7 +1350,7 @@ impl<'a> Exec<'a> {
                     None => Val::Opaque,
                 };
                 let Val::Int(n) = length else {
-                    return self.forget_loop(st, (line, col), None, body, counter, elem, ctx);
+                    return self.forget_loop(st, span, None, body, counter, elem, ctx);
                 };
                 if let Some(n) = n.parse::<u64>().ok().filter(|n| *n <= UNROLL) {
                     return self.list_loop(
@@ -1373,7 +1383,7 @@ impl<'a> Exec<'a> {
                 c
             }
             (_, Some(_)) => {
-                return self.forget_loop(st, (line, col), None, body, counter, elem, ctx);
+                return self.forget_loop(st, span, None, body, counter, elem, ctx);
             }
             (cap, None) => {
                 if let Some(c) = cap {
@@ -1416,7 +1426,7 @@ impl<'a> Exec<'a> {
             let mut rest = st.clone();
             self.forget_loop(
                 &mut rest,
-                (line, col),
+                span,
                 Some((&lo_t, &hi_t, listed.elem_init)),
                 body,
                 counter,
@@ -1477,7 +1487,7 @@ impl<'a> Exec<'a> {
     fn forget_loop(
         &mut self,
         st: &mut St,
-        (line, col): (u32, u32),
+        span: Span,
         range: Option<(&str, &str, Option<&'a Expr>)>,
         body: &'a [Stmt],
         counter: Option<usize>,
@@ -1518,7 +1528,7 @@ impl<'a> Exec<'a> {
             }
             _ => self.may_revert(st),
         }
-        self.at = (line, col);
+        self.at = span;
         self.approx(&format!(
             "a loop that may run more than {UNROLL} times; give it a smaller `bound` or an `invariant`"
         ))?;
@@ -1530,7 +1540,7 @@ impl<'a> Exec<'a> {
     fn invariant_loop(
         &mut self,
         st: &mut St,
-        (line, col): (u32, u32),
+        span: Span,
         iter: &'a ForIter,
         until: Option<&'a Expr>,
         body: &'a [Stmt],
@@ -1562,6 +1572,7 @@ impl<'a> Exec<'a> {
         if let Some(c) = cap {
             self.check(st, &format!("(<= (- {hi} {lo}) {c})"), PANIC);
         }
+        let (line, col) = self.line_col(self.file, span);
         let place = format!("{line}:{col}");
         if !self.loop_places.contains(&place) {
             self.loop_places.push(place.clone());
@@ -1662,7 +1673,7 @@ impl<'a> Exec<'a> {
         let held = self.invariants_hold(&mut done, invariants, ctx)?;
         self.smt.assume(&held);
         self.may_revert(st);
-        self.at = (line, col);
+        self.at = span;
         self.approx(&format!(
             "the loop at {place}, known only by its invariants"
         ))?;
@@ -1932,14 +1943,11 @@ impl<'a> Exec<'a> {
     /// Something the prover does not model: a spec must not use it, and code that does gives
     /// the phase behavior it may not have, so a counterexample may not be real.
     fn approx(&mut self, what: &str) -> Res<()> {
-        let (line, col) = self.at;
+        let span = self.at;
         if self.mode == Mode::Spec {
-            return stop(
-                line,
-                col,
-                format!("the prover does not model {what} in a spec"),
-            );
+            return stop(span, format!("the prover does not model {what} in a spec"));
         }
+        let (line, col) = self.line_col(self.file, span);
         let note = format!("{what} at {line}:{col}");
         if !self.approximations.contains(&note) {
             self.approximations.push(note);
@@ -1980,7 +1988,7 @@ impl<'a> Exec<'a> {
     // Expressions.
 
     pub(crate) fn eval(&mut self, st: &mut St, e: &'a Expr, ctx: &Ctx) -> Res<Val> {
-        self.at = (e.line(), e.col());
+        self.at = e.span();
         match e {
             Expr::Lit { lit, ty, .. } => Ok(match lit {
                 Lit::Uint(w) | Lit::Wei(w) | Lit::Duration(w) => Val::Int(dec(*w)),
@@ -2067,13 +2075,7 @@ impl<'a> Exec<'a> {
             Expr::Case {
                 scrut, arms, ty, ..
             } => self.case(st, scrut, arms, *ty, ctx),
-            Expr::Unary {
-                op,
-                expr,
-                ty,
-                line,
-                col,
-            } => {
+            Expr::Unary { op, expr, ty, span } => {
                 let v = self.eval(st, expr, ctx)?;
                 match op {
                     UnOp::Not => {
@@ -2084,7 +2086,7 @@ impl<'a> Exec<'a> {
                         let x = self.int(v, *ty)?;
                         let r = self.smt.define("neg", "Int", &format!("(- {x})"));
                         self.checked_range(st, &r, *ty, ctx);
-                        let _ = (line, col);
+                        let _ = span;
                         Ok(Val::Int(r))
                     }
                     UnOp::BitNot => self.approx_fresh(*ty, "`~`"),
@@ -2380,8 +2382,7 @@ impl<'a> Exec<'a> {
 
     fn call(&mut self, st: &mut St, e: &'a Expr, ctx: &Ctx) -> Res<Val> {
         let Expr::Call {
-            line,
-            col,
+            span,
             args,
             base,
             callee,
@@ -2393,7 +2394,7 @@ impl<'a> Exec<'a> {
             unreachable!()
         };
         if let Some(b) = builtin {
-            return self.builtin(st, *b, args, base.as_deref(), *ty, (*line, *col), ctx);
+            return self.builtin(st, *b, args, base.as_deref(), *ty, *span, ctx);
         }
         let Some(idx) = callee else {
             for a in args {
@@ -2410,21 +2411,11 @@ impl<'a> Exec<'a> {
                 // A map given by its slot: the call reads and writes that map.
                 match self.place(st, a, ctx)? {
                     Some(Place::Map { cell, .. }) => maps.push((sym, cell.leaf)),
-                    _ => {
-                        return stop(
-                            *line,
-                            *col,
-                            format!("it gives `{}` a map inside another", f.name),
-                        )
-                    }
+                    _ => return stop(*span, format!("it gives `{}` a map inside another", f.name)),
                 }
                 vals.push(Val::Opaque);
             } else if p.storage {
-                return stop(
-                    *line,
-                    *col,
-                    format!("it calls `{}`, which takes storage", f.name),
-                );
+                return stop(*span, format!("it calls `{}`, which takes storage", f.name));
             } else {
                 vals.push(self.eval(st, a, ctx)?);
             }
@@ -2434,7 +2425,7 @@ impl<'a> Exec<'a> {
             .map(|(sym, leaf)| (*sym, self.maps.insert(*sym, *leaf)))
             .collect();
         if self.depth > 64 {
-            return stop(*line, *col, "calls nest too deep");
+            return stop(*span, "calls nest too deep");
         }
         self.depth += 1;
         for (p, v) in f.params.iter().zip(vals) {
@@ -2442,13 +2433,19 @@ impl<'a> Exec<'a> {
                 st.locals.insert(sym, v);
             }
         }
+        let caller = std::mem::replace(&mut self.file, f.file);
         let result = (|| {
             self.stmts(st, &f.stmts, ctx)?;
             match &f.tail {
                 Some(tail) => self.eval(st, tail, ctx),
                 None => Ok(Val::Unit),
             }
-        })();
+        })()
+        .map_err(|mut stop| {
+            stop.file.get_or_insert(f.file);
+            stop
+        });
+        self.file = caller;
         self.depth -= 1;
         for (sym, before) in saved {
             match before {
@@ -2466,7 +2463,7 @@ impl<'a> Exec<'a> {
         args: &'a [Expr],
         base: Option<&'a Expr>,
         ty: usize,
-        (line, col): (u32, u32),
+        span: Span,
         ctx: &Ctx,
     ) -> Res<Val> {
         match b {
@@ -2500,7 +2497,7 @@ impl<'a> Exec<'a> {
                     other => other,
                 };
                 let Some(Place::Map { cell, label }) = self.place(st, arg, ctx)? else {
-                    return stop(line, col, "a `sum` or `count` the prover cannot track yet");
+                    return stop(span, "a `sum` or `count` the prover cannot track yet");
                 };
                 let key = (cell, b == Builtin::SpecCount);
                 if self.collect {
@@ -2510,7 +2507,7 @@ impl<'a> Exec<'a> {
                     touched.insert(Key::Cell(key.0.clone()));
                 }
                 if !self.tracked.contains(&key) {
-                    return stop(line, col, "internal: an untracked total");
+                    return stop(span, "internal: an untracked total");
                 }
                 let t = self.total(st, &key);
                 if let Some(reads) = &mut self.reads {
@@ -2529,10 +2526,10 @@ impl<'a> Exec<'a> {
                     Some(body),
                 ) = (args.first(), args.get(2))
                 else {
-                    return stop(line, col, "internal: a `forall` without its variable");
+                    return stop(span, "internal: a `forall` without its variable");
                 };
                 let Some(word) = word_of(self.checked, *bty) else {
-                    return stop(line, col, "`forall` over a type the prover does not model");
+                    return stop(span, "`forall` over a type the prover does not model");
                 };
                 self.quantified = true;
                 let (var, outer) = self.smt.enter("q");
@@ -2951,19 +2948,19 @@ fn dec(w: Word) -> String {
     }
 }
 
-pub(crate) fn stmt_at(s: &Stmt) -> Option<(u32, u32)> {
+pub(crate) fn stmt_at(s: &Stmt) -> Option<Span> {
     match s {
-        Stmt::Const { line, col, .. }
-        | Stmt::Var { line, col, .. }
-        | Stmt::Assign { line, col, .. }
-        | Stmt::If { line, col, .. }
-        | Stmt::Assert { line, col, .. }
-        | Stmt::Call { line, col, .. }
-        | Stmt::Emit { line, col, .. }
-        | Stmt::Defer { line, col, .. }
-        | Stmt::For { line, col, .. }
-        | Stmt::AssignTuple { line, col, .. } => Some((*line, *col)),
-        Stmt::Fail { reason } => Some((reason.line, reason.col)),
+        Stmt::Const { span, .. }
+        | Stmt::Var { span, .. }
+        | Stmt::Assign { span, .. }
+        | Stmt::If { span, .. }
+        | Stmt::Assert { span, .. }
+        | Stmt::Call { span, .. }
+        | Stmt::Emit { span, .. }
+        | Stmt::Defer { span, .. }
+        | Stmt::For { span, .. }
+        | Stmt::AssignTuple { span, .. } => Some(*span),
+        Stmt::Fail { reason } => Some(reason.span),
         Stmt::Skip => None,
     }
 }

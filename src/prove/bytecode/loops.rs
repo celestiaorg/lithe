@@ -14,6 +14,8 @@ use crate::gen::certify::{Loc, LoopCert};
 /// A certified copy of a source loop, with what its spec says.
 pub(super) struct LoopInfo<'a> {
     pub cert: &'a LoopCert,
+    /// The file of the loop's function.
+    pub file: FileId,
     /// Where the loop is in its file: `10:3`.
     pub place: String,
     pub invariants: &'a [Expr],
@@ -31,7 +33,7 @@ pub(super) fn infos<'a>(checked: &'a Checked, certs: &'a [LoopCert]) -> Vec<Opti
         .iter()
         .map(|cert| {
             let f = checked.prog.funcs.iter().find(|f| f.name == cert.func)?;
-            let (block, at) = find_loop(&f.stmts, cert.line, cert.col)?;
+            let (block, at) = find_loop(&f.stmts, cert.span)?;
             let Stmt::For {
                 invariants,
                 counter,
@@ -42,10 +44,10 @@ pub(super) fn infos<'a>(checked: &'a Checked, certs: &'a [LoopCert]) -> Vec<Opti
             else {
                 return None;
             };
-            let mut decls: HashMap<(u32, u32, String), (usize, Option<&Expr>)> = HashMap::new();
+            let mut decls: HashMap<(Span, String), (usize, Option<&Expr>)> = HashMap::new();
             for p in &f.params {
                 if let Some(sym) = p.sym {
-                    decls.insert((p.line, p.col, p.name.clone()), (sym, None));
+                    decls.insert((p.span, p.name.clone()), (sym, None));
                 }
             }
             declared(&f.stmts, &mut decls);
@@ -58,7 +60,7 @@ pub(super) fn infos<'a>(checked: &'a Checked, certs: &'a [LoopCert]) -> Vec<Opti
                 match (loc, def) {
                     (Loc::Dead, Some(def))
                         if quiet(checked, def, false)
-                            && settled(checked, &block[..at], key.0, key.1)
+                            && settled(checked, &block[..at], key.0)
                             && starts_quiet(checked, iter, until.as_ref()) =>
                     {
                         ghosts.push((sym, def))
@@ -67,9 +69,11 @@ pub(super) fn infos<'a>(checked: &'a Checked, certs: &'a [LoopCert]) -> Vec<Opti
                     _ => locals.push((sym, loc.clone())),
                 }
             }
+            let (line, col) = checked.prog.files.line_col(f.file, cert.span);
             Some(LoopInfo {
                 cert,
-                place: format!("{}:{}", cert.line, cert.col),
+                file: f.file,
+                place: format!("{line}:{col}"),
                 invariants,
                 counter: *counter,
                 locals,
@@ -79,12 +83,13 @@ pub(super) fn infos<'a>(checked: &'a Checked, certs: &'a [LoopCert]) -> Vec<Opti
         .collect()
 }
 
-/// Whether the constant declared at `line:col` is in `before`, a loop's block up to it, with
+/// Whether the constant declared at `span` is in `before`, a loop's block up to it, with
 /// only declarations that write nothing after it: the loop starts in the state it read.
-fn settled(checked: &Checked, before: &[Stmt], line: u32, col: u32) -> bool {
-    let Some(at) = before.iter().position(
-        |st| matches!(st, Stmt::Const { line: l, col: c, .. } if (*l, *c) == (line, col)),
-    ) else {
+fn settled(checked: &Checked, before: &[Stmt], span: Span) -> bool {
+    let Some(at) = before
+        .iter()
+        .position(|st| matches!(st, Stmt::Const { span: s, .. } if *s == span))
+    else {
         return false;
     };
     before[at + 1..].iter().all(|st| match st {
@@ -150,15 +155,13 @@ fn quiet(checked: &Checked, e: &Expr, vars: bool) -> bool {
     }
 }
 
-/// The block that holds the loop at `line:col`, and its place in it.
-fn find_loop(stmts: &[Stmt], line: u32, col: u32) -> Option<(&[Stmt], usize)> {
+/// The block that holds the loop at `span`, and its place in it.
+fn find_loop(stmts: &[Stmt], span: Span) -> Option<(&[Stmt], usize)> {
     for (i, st) in stmts.iter().enumerate() {
         match st {
-            Stmt::For {
-                line: l, col: c, ..
-            } if *l == line && *c == col => return Some((stmts, i)),
+            Stmt::For { span: s, .. } if *s == span => return Some((stmts, i)),
             Stmt::For { body, .. } => {
-                if let Some(s) = find_loop(body, line, col) {
+                if let Some(s) = find_loop(body, span) {
                     return Some(s);
                 }
             }
@@ -167,9 +170,7 @@ fn find_loop(stmts: &[Stmt], line: u32, col: u32) -> Option<(&[Stmt], usize)> {
                 else_body,
                 ..
             } => {
-                if let Some(s) =
-                    find_loop(then_body, line, col).or_else(|| find_loop(else_body, line, col))
-                {
+                if let Some(s) = find_loop(then_body, span).or_else(|| find_loop(else_body, span)) {
                     return Some(s);
                 }
             }
@@ -180,15 +181,11 @@ fn find_loop(stmts: &[Stmt], line: u32, col: u32) -> Option<(&[Stmt], usize)> {
 }
 
 /// Every local `stmts` declare, by declaration, with a constant's definition.
-fn declared<'a>(
-    stmts: &'a [Stmt],
-    out: &mut HashMap<(u32, u32, String), (usize, Option<&'a Expr>)>,
-) {
+fn declared<'a>(stmts: &'a [Stmt], out: &mut HashMap<(Span, String), (usize, Option<&'a Expr>)>) {
     for st in stmts {
         match st {
             Stmt::Const {
-                line,
-                col,
+                span,
                 name,
                 parts,
                 sym,
@@ -197,15 +194,14 @@ fn declared<'a>(
                 ..
             } => {
                 if let Some(sym) = sym {
-                    out.insert((*line, *col, name.clone()), (*sym, Some(expr)));
+                    out.insert((*span, name.clone()), (*sym, Some(expr)));
                 }
                 for (part, sym) in parts.iter().zip(part_syms) {
-                    out.insert((*line, *col, part.clone()), (*sym, None));
+                    out.insert((*span, part.clone()), (*sym, None));
                 }
             }
             Stmt::Var {
-                line,
-                col,
+                span,
                 name,
                 parts,
                 sym,
@@ -213,10 +209,10 @@ fn declared<'a>(
                 ..
             } => {
                 if let Some(sym) = sym {
-                    out.insert((*line, *col, name.clone()), (*sym, None));
+                    out.insert((*span, name.clone()), (*sym, None));
                 }
                 for (part, sym) in parts.iter().zip(part_syms) {
-                    out.insert((*line, *col, part.clone()), (*sym, None));
+                    out.insert((*span, part.clone()), (*sym, None));
                 }
             }
             Stmt::If {
@@ -275,7 +271,13 @@ impl InvHook<'_, '_> {
             return Ok(Vec::new());
         }
         let checked = setup.checked;
-        let mut r = Reader::new(checked, setup.layout, &setup.totals, at.view.clone());
+        let mut r = Reader::new(
+            checked,
+            setup.layout,
+            &setup.totals,
+            at.view.clone(),
+            info.file,
+        );
         let kind_of = |sym: usize| {
             bspec::kind(checked, checked.syms[sym].ty)
                 .ok_or_else(|| "a loop local of a type the prover does not model".to_string())
@@ -340,7 +342,13 @@ impl InvHook<'_, '_> {
         r.memory = Some(at.clone());
         // A constant no code reads stands for what its definition reads as the loop starts.
         for (sym, def) in &info.ghosts {
-            let mut g = Reader::new(checked, setup.layout, &setup.totals, entry.view.clone());
+            let mut g = Reader::new(
+                checked,
+                setup.layout,
+                &setup.totals,
+                entry.view.clone(),
+                info.file,
+            );
             g.locals = r.locals.clone();
             if let Ok(v) = g.eval(m, def) {
                 r.locals.insert(*sym, v);

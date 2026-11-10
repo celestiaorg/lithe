@@ -211,12 +211,7 @@ fn build_options() -> Result<lithe::Options, Vec<lithe::Error>> {
         let (key, value) = line.split_once('=').unwrap_or((line, ""));
         let (key, value) = (key.trim(), value.trim());
         if let Err(message) = lithe::set_build_option(&mut opts, key, value) {
-            errors.push(lithe::Error {
-                file: None,
-                line: 0,
-                column: 0,
-                message: format!("{key} {message}"),
-            });
+            errors.push(lithe::Error::new(0, 0, format!("{key} {message}")));
         }
     }
     if errors.is_empty() {

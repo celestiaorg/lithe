@@ -679,7 +679,7 @@ impl<'a> Gen<'a> {
                 self.op(POP);
                 self.op(POP);
             }
-            _ => return Err(error(0, 0, "internal: not a dynamic ABI value")),
+            _ => return Err(error_at(0, 0, "internal: not a dynamic ABI value")),
         }
         self.op(SWAP1);
         self.op(JUMP);
@@ -978,7 +978,7 @@ impl<'a> Gen<'a> {
     /// written at `cur`.
     pub(super) fn sub_tree_cd_enc(&mut self, ty: usize) -> Result<(), Error> {
         if is_sum(&self.checked.types, ty) {
-            return Err(error(
+            return Err(error_at(
                 0,
                 0,
                 "internal: a variant is decoded, not kept in calldata",
@@ -1074,7 +1074,7 @@ impl<'a> Gen<'a> {
                 self.op(POP);
                 self.op(POP);
             }
-            _ => return Err(error(0, 0, "internal: not a dynamic ABI value")),
+            _ => return Err(error_at(0, 0, "internal: not a dynamic ABI value")),
         }
         self.op(SWAP1);
         self.op(JUMP);
@@ -1386,7 +1386,7 @@ impl<'a> Gen<'a> {
                 self.op(POP);
                 self.op(POP);
             }
-            _ => return Err(error(0, 0, "internal: not a dynamic ABI value")),
+            _ => return Err(error_at(0, 0, "internal: not a dynamic ABI value")),
         }
         self.op(JUMP);
         Ok(())
@@ -1789,7 +1789,7 @@ impl<'a> Gen<'a> {
         classify: u32,
     ) -> Result<(), Error> {
         if is_sum(&self.checked.types, ty) {
-            return Err(error(
+            return Err(error_at(
                 0,
                 0,
                 "internal: a variant is decoded, not checked in place",
@@ -1997,7 +1997,7 @@ impl<'a> Gen<'a> {
                 }
                 flush(self, &mut words, pending)?;
             }
-            _ => return Err(error(0, 0, "internal: not a dynamic ABI value")),
+            _ => return Err(error_at(0, 0, "internal: not a dynamic ABI value")),
         }
         Ok(())
     }
@@ -2853,11 +2853,10 @@ impl<'a> Gen<'a> {
                 expr: call,
                 gas,
                 ty: qty,
-                line,
-                col,
+                span,
             } if multi(self, *qty) && self.checked.types[*qty].kind != TyKind::Option => {
                 self.query_gas = gas.as_deref().cloned();
-                let result = self.query_into(call, *qty, dst, *line, *col);
+                let result = self.query_into(call, *qty, dst, *span);
                 self.query_gas = None;
                 result?;
                 let _ = ty;
@@ -2904,19 +2903,18 @@ impl<'a> Gen<'a> {
         call: &Expr,
         ty: usize,
         dst: i32,
-        line: u32,
-        col: u32,
+        span: Span,
     ) -> Result<(), Error> {
-        self.query_raw(call, line, col)?;
+        self.query_raw(call, span)?;
         self.op(ISZERO);
         self.revert_if_true()?;
         self.decode_ret(ty, Addr::Mem(dst))
     }
 
     /// Runs a query's `STATICCALL`, leaving whether it succeeded.
-    pub(super) fn query_raw(&mut self, call: &Expr, line: u32, col: u32) -> Result<(), Error> {
+    pub(super) fn query_raw(&mut self, call: &Expr, span: Span) -> Result<(), Error> {
         if self.in_query {
-            return Err(error(line, col, "nested query is not supported"));
+            return Err(error(span, "nested query is not supported"));
         }
         let Expr::Call {
             base: Some(base),
@@ -2926,7 +2924,7 @@ impl<'a> Gen<'a> {
             ..
         } = call
         else {
-            return Err(error(line, col, "query expects an interface method"));
+            return Err(error(span, "query expects an interface method"));
         };
         let sel = selector(&self.checked.ifaces[iface][*method].sig);
         self.in_query = true;
@@ -3058,11 +3056,7 @@ impl<'a> Gen<'a> {
                 self.push_mem(at);
                 Ok(())
             }
-            other => Err(error(
-                other.line(),
-                other.col(),
-                "internal: not a value in memory",
-            )),
+            other => Err(error(other.span(), "internal: not a value in memory")),
         }
     }
 

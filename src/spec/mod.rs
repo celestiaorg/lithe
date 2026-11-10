@@ -35,8 +35,7 @@ pub(crate) fn inferred(ty: &TypeRef) -> bool {
 /// The annotation `inferred` recognizes: the value keeps its own type.
 pub(crate) fn inferred_ty() -> TypeRef {
     TypeRef::Name {
-        line: 0,
-        col: 0,
+        span: Span::NONE,
         name: INFERRED.to_string(),
     }
 }
@@ -73,6 +72,8 @@ pub(crate) enum Body {
 }
 
 pub(crate) struct Invariant {
+    /// The file of the spec block it is in.
+    pub file: FileId,
     pub name: String,
     pub module: Option<String>,
     /// The invariant as written.
@@ -81,6 +82,8 @@ pub(crate) struct Invariant {
 }
 
 pub(crate) struct FuncSpec {
+    /// The file of the spec block it is in.
+    pub file: FileId,
     pub target: Target,
     pub body: Body,
     /// The target as written: `f`, or `M.f` for a module's.
@@ -152,7 +155,12 @@ fn used(prog: &Program, module: &str) -> bool {
     prog.compose.iter().any(|u| u.name == module)
 }
 
-pub(crate) fn check(mut prog: Program, evm: crate::EvmVersion) -> Result<Specs, Error> {
+pub(crate) fn check(prog: Program, evm: crate::EvmVersion) -> Result<Specs, Error> {
+    let (file, files) = (prog.file, prog.files.clone());
+    check_unplaced(prog, evm).map_err(|err| err.placed(&files, file))
+}
+
+fn check_unplaced(mut prog: Program, evm: crate::EvmVersion) -> Result<Specs, Error> {
     prog.proving = true;
     attach_module_specs(&mut prog)?;
     let base = check::check(prog.clone(), evm)?;
@@ -171,14 +179,13 @@ pub(crate) fn check(mut prog: Program, evm: crate::EvmVersion) -> Result<Specs, 
         let module = prog.modules[i].clone();
         if !module.params.is_empty() {
             return Err(error(
-                blocks[0].line,
-                blocks[0].col,
+                blocks[0].span,
                 format!(
                     "generic module `{}` cannot have spec blocks yet",
                     module.name
                 ),
             )
-            .in_file(&blocks[0].origin));
+            .in_file(blocks[0].file));
         }
         let requires: Vec<String> = module.requires.iter().map(|r| r.name.clone()).collect();
         let mut funcs = Vec::new();
@@ -206,9 +213,9 @@ fn add_block(
     let from = funcs.len();
     specs
         .add(base, prog, block, funcs)
-        .map_err(|err| err.in_file(&block.origin))?;
+        .map_err(|err| err.in_file(block.file))?;
     for func in &mut funcs[from..] {
-        func.origin = block.origin.clone();
+        func.file = block.file;
     }
     Ok(())
 }
@@ -224,11 +231,10 @@ fn attach_module_specs(prog: &mut Program) -> Result<(), Error> {
         };
         if !prog.modules.iter().any(|m| m.name == name) {
             return Err(error(
-                block.line,
-                block.col,
+                block.span,
                 format!("no module `{name}` for this spec block to describe"),
             )
-            .in_file(&block.origin));
+            .in_file(block.file));
         }
         if let Some(module) = prog.modules.iter_mut().find(|m| m.name == name) {
             module.specs.push(block);
@@ -244,8 +250,7 @@ struct Pending {
     name: String,
     module: Option<String>,
     kind: PendingKind,
-    line: u32,
-    col: u32,
+    span: Span,
 }
 
 enum PendingKind {
@@ -287,16 +292,14 @@ impl SpecBuild {
                     .insert((module.clone(), format!("invariant {name}")))
                 {
                     return Err(error(
-                        clause.line,
-                        clause.col,
+                        clause.span,
                         format!("invariant `{name}` is declared twice"),
                     ));
                 }
                 let fname = format!("{TAG}invariant {name}");
                 funcs.push(spec_func(
                     &fname,
-                    clause.line,
-                    clause.col,
+                    clause.span,
                     Vec::new(),
                     Vec::new(),
                     Some(clause.expr.clone()),
@@ -309,8 +312,7 @@ impl SpecBuild {
                         clause.expr.clone(),
                         clause.text.clone(),
                     ),
-                    line: clause.line,
-                    col: clause.col,
+                    span: clause.span,
                 });
             }
             return Ok(());
@@ -321,8 +323,7 @@ impl SpecBuild {
             .insert((module.clone(), format!("for {}", target.name)))
         {
             return Err(error(
-                target.line,
-                target.col,
+                target.span,
                 format!("`{}` already has a spec block", target.name),
             ));
         }
@@ -333,15 +334,13 @@ impl SpecBuild {
                 _ => (
                     format!("#clause {i}"),
                     TypeRef::Name {
-                        line: clause.line,
-                        col: clause.col,
+                        span: clause.span,
                         name: "bool".to_string(),
                     },
                 ),
             };
             stmts.push(Stmt::Const {
-                line: clause.line,
-                col: clause.col,
+                span: clause.span,
                 name,
                 parts: Vec::new(),
                 ty,
@@ -351,14 +350,7 @@ impl SpecBuild {
             });
         }
         let fname = format!("{TAG}for {}", target.name);
-        funcs.push(spec_func(
-            &fname,
-            block.line,
-            block.col,
-            resolved.params,
-            stmts,
-            None,
-        ));
+        funcs.push(spec_func(&fname, block.span, resolved.params, stmts, None));
         let label = match &module {
             Some(m) => format!("{m}.{}", target.name),
             None => target.name.clone(),
@@ -374,8 +366,7 @@ impl SpecBuild {
                 clauses: block.clauses.clone(),
                 errors: resolved.errors,
             },
-            line: block.line,
-            col: block.col,
+            span: block.span,
         });
         Ok(())
     }
@@ -390,8 +381,7 @@ impl SpecBuild {
             };
             let Some(index) = checked.prog.funcs.iter().position(|f| f.name == composed) else {
                 return Err(error(
-                    pending.line,
-                    pending.col,
+                    pending.span,
                     "internal: a spec block's function is missing after the check",
                 ));
             };
@@ -403,6 +393,7 @@ impl SpecBuild {
                         rules.expr(tail, None)?;
                     }
                     invariants.push(Invariant {
+                        file: func.file,
                         name,
                         module: pending.module,
                         expr,
@@ -427,8 +418,7 @@ impl SpecBuild {
                             && !matches!(clause.kind, ClauseKind::Raises(_) | ClauseKind::Panics)
                         {
                             return Err(error(
-                                clause.line,
-                                clause.col,
+                                clause.span,
                                 "a guard's spec says when it reverts: only `raises` and `panics`",
                             ));
                         }
@@ -442,8 +432,7 @@ impl SpecBuild {
                             }
                             ClauseKind::Raises(_) | ClauseKind::Panics if read.new => {
                                 return Err(error(
-                                    clause.line,
-                                    clause.col,
+                                    clause.span,
                                     "a reverted call has no `new.` state; say when it reverts with `old.`",
                                 ));
                             }
@@ -452,14 +441,14 @@ impl SpecBuild {
                         if let ClauseKind::Raises(name) = &clause.kind {
                             if !errors.iter().any(|have| have == &name.name) {
                                 return Err(error(
-                                    name.line,
-                                    name.col,
+                                    name.span,
                                     format!("`{label}` does not raise `{}`", name.name),
                                 ));
                             }
                         }
                     }
                     funcs.push(FuncSpec {
+                        file: func.file,
                         target,
                         body,
                         label,
@@ -481,23 +470,20 @@ impl SpecBuild {
 
 fn spec_func(
     name: &str,
-    line: u32,
-    col: u32,
+    span: Span,
     params: Vec<Param>,
     stmts: Vec<Stmt>,
     tail: Option<Expr>,
 ) -> Func {
     let bool_ty = TypeRef::Name {
-        line,
-        col,
+        span,
         name: "bool".to_string(),
     };
     Func {
-        line,
-        col,
+        span,
         kind: ItemKind::Readonly,
         private: false,
-        origin: String::new(),
+        file: FileId::NONE,
         name: name.to_string(),
         type_params: Vec::new(),
         params,
@@ -541,7 +527,7 @@ fn resolve(
     target: &NameAt,
 ) -> Result<Resolved, Error> {
     let name = &target.name;
-    let err = |msg: String| error(target.line, target.col, msg);
+    let err = |msg: String| error(target.span, msg);
     let funcs = &base.prog.funcs;
     let error_names = |ids: &[usize]| -> Vec<String> {
         ids.iter()
@@ -765,7 +751,7 @@ fn leaf_params(
     route: &crate::route::Route,
     target: &NameAt,
 ) -> Result<(Vec<Param>, Body), Error> {
-    let err = |msg: &str| error(target.line, target.col, msg.to_string());
+    let err = |msg: &str| error(target.span, msg.to_string());
     let Some(dispatcher) = route.funcs.last().map(|&f| &base.prog.funcs[f]) else {
         return Err(err("internal: a route with no dispatcher"));
     };
@@ -795,8 +781,7 @@ fn leaf_params(
     };
     Ok((
         vec![Param {
-            line: arm.line,
-            col: arm.col,
+            span: arm.span,
             mutable: false,
             storage: false,
             name: bind.clone(),
@@ -884,63 +869,51 @@ impl<'a> Rules<'a> {
         let read = match e {
             Expr::Lit { .. } => Read::default(),
             Expr::Ident {
-                sym,
-                builtin,
-                line,
-                col,
-                ..
+                sym, builtin, span, ..
             } => {
                 if let Some(read) = sym.and_then(|s| self.consts.get(&s)) {
                     return Ok(*read);
                 }
                 if let Some(b) = builtin {
-                    self.builtin(*b, *line, *col, state)?
+                    self.builtin(*b, *span, state)?
                 } else if sym.is_some_and(|s| self.stateful(s)) {
-                    self.state(*line, *col, state)?
+                    self.state(*span, state)?
                 } else {
                     Read::default()
                 }
             }
             Expr::Field {
-                base,
-                root,
-                line,
-                col,
-                ..
+                base, root, span, ..
             } => {
-                let read = self.rooted(*root, *line, *col, state)?;
+                let read = self.rooted(*root, *span, state)?;
                 read.with(self.path(base, state)?)
             }
             Expr::Index {
                 base,
                 index,
                 root,
-                line,
-                col,
+                span,
                 ..
             } => {
-                let read = self.rooted(*root, *line, *col, state)?;
+                let read = self.rooted(*root, *span, state)?;
                 read.with(self.path(base, state)?)
                     .with(self.expr(index, state)?)
             }
             Expr::Call {
                 builtin: Some(Builtin::SpecState(inner)),
                 args,
-                line,
-                col,
+                span,
                 ..
             } => {
                 if self.mode == Mode::Invariant {
                     return Err(error(
-                        *line,
-                        *col,
+                        *span,
                         "an invariant describes one state; read it without `old.` or `new.`",
                     ));
                 }
                 if state == Some(State::Old) && *inner == State::New {
                     return Err(error(
-                        *line,
-                        *col,
+                        *span,
                         "an `old.` value is read before the call; it cannot read `new.` state",
                     ));
                 }
@@ -968,18 +941,17 @@ impl<'a> Rules<'a> {
                 base,
                 callee,
                 builtin,
-                line,
-                col,
+                span,
                 ..
             } => {
                 let mut read = match builtin {
-                    Some(b) => self.builtin(*b, *line, *col, state)?,
+                    Some(b) => self.builtin(*b, *span, state)?,
                     None => Read::default(),
                 };
                 if let Some(idx) = callee {
                     let kind = self.checked.prog.funcs.get(*idx).map(|f| f.kind);
                     if kind == Some(ItemKind::Readonly) {
-                        read = read.with(self.state(*line, *col, state)?);
+                        read = read.with(self.state(*span, state)?);
                     }
                 }
                 if let Some(base) = base {
@@ -990,10 +962,9 @@ impl<'a> Rules<'a> {
                 }
                 read
             }
-            Expr::Query { line, col, .. } => {
+            Expr::Query { span, .. } => {
                 return Err(error(
-                    *line,
-                    *col,
+                    *span,
                     "a spec cannot `query`; it only reads this contract",
                 ));
             }
@@ -1001,8 +972,8 @@ impl<'a> Rules<'a> {
                 let mut read = self.expr(scrut, state)?;
                 for arm in arms {
                     if let Some(stmt) = arm.stmts.first() {
-                        let (line, col) = stmt_at(stmt);
-                        return Err(error(line, col, "a spec's `case` arms are expressions"));
+                        let span = stmt_at(stmt);
+                        return Err(error(span, "a spec's `case` arms are expressions"));
                     }
                     read = read.with(self.expr(&arm.expr, state)?);
                 }
@@ -1045,12 +1016,11 @@ impl<'a> Rules<'a> {
     fn rooted(
         &mut self,
         root: Option<usize>,
-        line: u32,
-        col: u32,
+        span: Span,
         state: Option<State>,
     ) -> Result<Read, Error> {
         match root {
-            Some(sym) if self.stateful(sym) => self.state(line, col, state),
+            Some(sym) if self.stateful(sym) => self.state(span, state),
             _ => Ok(Read::default()),
         }
     }
@@ -1061,52 +1031,45 @@ impl<'a> Rules<'a> {
             && !self.checked.immutable_syms.contains(&sym)
     }
 
-    fn builtin(
-        &mut self,
-        b: Builtin,
-        line: u32,
-        col: u32,
-        state: Option<State>,
-    ) -> Result<Read, Error> {
+    fn builtin(&mut self, b: Builtin, span: Span, state: Option<State>) -> Result<Read, Error> {
         match b {
-            Builtin::GasLeft => Err(error(line, col, "a spec cannot read `Evm.gasLeft`")),
+            Builtin::GasLeft => Err(error(span, "a spec cannot read `Evm.gasLeft`")),
             Builtin::Balance | Builtin::CodeSize | Builtin::CodeHash | Builtin::Code => {
-                self.state(line, col, state)
+                self.state(span, state)
             }
             _ => Ok(Read::default()),
         }
     }
 
     /// A read of state, which a `spec for` block must say is `old.` or `new.`.
-    fn state(&mut self, line: u32, col: u32, state: Option<State>) -> Result<Read, Error> {
+    fn state(&mut self, span: Span, state: Option<State>) -> Result<Read, Error> {
         if self.mode == Mode::Invariant {
             return Ok(Read::default());
         }
         match state {
             Some(state) => Ok(Read::of(state)),
             None => Err(error(
-                line,
-                col,
+                span,
                 "say which state this reads: `old.` before the call, or `new.` after it",
             )),
         }
     }
 }
 
-fn stmt_at(stmt: &Stmt) -> (u32, u32) {
+fn stmt_at(stmt: &Stmt) -> Span {
     match stmt {
-        Stmt::Const { line, col, .. }
-        | Stmt::Var { line, col, .. }
-        | Stmt::Assign { line, col, .. }
-        | Stmt::If { line, col, .. }
-        | Stmt::Assert { line, col, .. }
-        | Stmt::Call { line, col, .. }
-        | Stmt::Emit { line, col, .. }
-        | Stmt::Defer { line, col, .. }
-        | Stmt::For { line, col, .. }
-        | Stmt::AssignTuple { line, col, .. } => (*line, *col),
-        Stmt::Fail { reason } => (reason.line, reason.col),
-        Stmt::Skip => (0, 0),
+        Stmt::Const { span, .. }
+        | Stmt::Var { span, .. }
+        | Stmt::Assign { span, .. }
+        | Stmt::If { span, .. }
+        | Stmt::Assert { span, .. }
+        | Stmt::Call { span, .. }
+        | Stmt::Emit { span, .. }
+        | Stmt::Defer { span, .. }
+        | Stmt::For { span, .. }
+        | Stmt::AssignTuple { span, .. } => *span,
+        Stmt::Fail { reason } => reason.span,
+        Stmt::Skip => Span::NONE,
     }
 }
 

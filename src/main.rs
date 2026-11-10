@@ -245,11 +245,11 @@ fn fail(errors: &[lithe::Error], file: Option<&Path>) -> ! {
     let errors: Vec<String> = errors
         .iter()
         .map(|err| match file {
-            Some(file) if err.file.is_none() && err.line > 0 => lithe::Error {
-                file: Some(file.display().to_string()),
-                ..err.clone()
+            Some(file) if err.file.is_none() && err.line > 0 => {
+                let mut err = err.clone();
+                err.file = Some(file.display().to_string());
+                err.to_string()
             }
-            .to_string(),
             _ => err.to_string(),
         })
         .collect();

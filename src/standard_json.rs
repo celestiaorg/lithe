@@ -62,10 +62,11 @@ fn compile(input: &str) -> String {
             Err(errs) => {
                 for err in errs {
                     let placed = match err.file {
-                        None if err.line > 0 => lithe::Error {
-                            file: Some(path.to_string()),
-                            ..err.clone()
-                        },
+                        None if err.line > 0 => {
+                            let mut placed = err.clone();
+                            placed.file = Some(path.to_string());
+                            placed
+                        }
                         _ => err.clone(),
                     };
                     errors.push(diagnostic(

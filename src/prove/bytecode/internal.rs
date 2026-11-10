@@ -8,6 +8,7 @@ use super::super::sevm::{Code, Env, Known, Machine, Own, View, GHOST_W};
 use super::super::smt::Session;
 use super::super::Outcome;
 use super::{claims, loops, Calldata, Entry, InvHook, Params, Phase, Run, Setup, Subject};
+use crate::ast::Span;
 use crate::gen::certify::{FuncCert, InlineCert, Loc};
 use crate::word::Word;
 use std::collections::HashMap;
@@ -25,7 +26,7 @@ pub(super) struct FuncCode<'c> {
     func: &'c str,
     creation: bool,
     entry: usize,
-    params: &'c [((u32, u32, String), Loc)],
+    params: &'c [((Span, String), Loc)],
     /// An inlined copy's end; a body compiled once ends at the jump back to its caller.
     exit: Option<usize>,
 }
@@ -196,7 +197,7 @@ fn start(setup: &Setup, cert: &FuncCode, f: &crate::ast::Func) -> Result<Run, St
     let mut words: Vec<(u64, T)> = Vec::new();
     for p in &f.params {
         let Some(sym) = p.sym else { continue };
-        let key = (p.line, p.col, p.name.clone());
+        let key = (p.span, p.name.clone());
         let loc = cert.params.iter().find(|(k, _)| *k == key).map(|(_, l)| l);
         let kind = bspec::kind(checked, checked.syms[sym].ty);
         let v = match (loc, kind) {
