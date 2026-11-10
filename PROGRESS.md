@@ -45,7 +45,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **3.2b** Cheaper `merge_tails`/`heat`, byte-identical. Ladder 128 `optimize` 414 → 250–279 ms. erc20_full and uniswap_v2_pair release are still above their pre-3.1 cost. See below.
 - [x] **3.2b(ii)** `heat` on the block skeleton, with a skeleton-keyed `flow` cache. Byte-identical. Goal missed; the measured floor (taken at machine load 19–47) is recorded below.
 - [x] **3.2c** Fewer `merge_tails` calls: a block whose best partner is taken now takes its next-best free pair in the same call. Codegen change, gated and recorded in `## 3.2c`. `optimize` erc20_full Release 382.0 → 301.3 ms, ladder 128 Fast 251.1 → 31.0 ms (min of 7, load 2.0), and the pre-3.1 floor 3.2b(ii) owed is re-measured at load 1.6–2.1: erc20_full 340.4 → 306.3 ms, goal met; uniswap_v2_pair 57.8 → 62.4 ms, still 4 % over. Runtime bytes +0.072 % over 304 target-modes, transaction gas +0.0012 %, every step status unchanged. See below.
-- [ ] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c. **3.3b(ii) landed: promotion now plans every word's region once and applies every non-conflicting one per round, so rounds are 4 at every ladder size (was 34/130/258), `promote` is 49.6 → 12.0 ms on ladder 128, and runtime size is −0.027 % over the 272 target-modes (−0.153 % creation + runtime over the 13 whose code changes; the `Fast` increases are the batched start plan's price, not a search result). It is a plan knob (`Plan::batch`, on in the start plan, priced against off by the search).** 3.3a landed in part; 3.3b(i) was measured and not taken (+4.1 %/+4.6 % size). 3.3c was measured and not taken: batch loses to the greedy path on 23 of 1 299 Release plans (see `## S40 3.3c priced`).
+- [x] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c. **The value-numbering scheduler itself is not taken (S48):** `promote` is 8.9 % of the Fast backend over all 51 `bench/` and 3–4 % on the ladder, so it moves no open target; see `## S48 3.3 closed: not taken`. **3.3b(ii) landed: promotion now plans every word's region once and applies every non-conflicting one per round, so rounds are 4 at every ladder size (was 34/130/258), `promote` is 49.6 → 12.0 ms on ladder 128, and runtime size is −0.027 % over the 272 target-modes (−0.153 % creation + runtime over the 13 whose code changes; the `Fast` increases are the batched start plan's price, not a search result). It is a plan knob (`Plan::batch`, on in the start plan, priced against off by the search).** 3.3a landed in part; 3.3b(i) was measured and not taken (+4.1 %/+4.6 % size). 3.3c was measured and not taken: batch loses to the greedy path on 22 of 1 140 Release on/off pairs, reproduced from the tree with `LITHE_PRICE_BATCH` (see `## S40 3.3c priced`).
 - [x] **3.4** `outline` without its quadratic terms. What moved: call sites are written in one pass instead of one splice each (3.4), and the exact-copy pass now takes every non-conflicting run per round, as the parameterised pass already did (3.4b), so a pass runs a handful of rounds, not one per distinct run. What did not: `outline` itself stays on the flat stream, not on `Blocks`; `flow`/prefix sizes are still recomputed each round, measured at 10–12% of the `outline_once` loop and not worth an incremental cache. Final bytes unchanged in both modes; the exact pass's own output does differ on some targets (see 3.4b). Re-verified at `3a670f0`. See the measurements below.
 - [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×. **`promote` now scales flat** (12.0/12.0 ms at N = 64/128, rounds constant at 4). The bar is still missed because `optimize` is the superlinear term; that is 3.2b territory and S38's re-measurement, not `promote`.
 
@@ -82,7 +82,8 @@ This section is the single source of truth for what is open and what blocks what
 - **3.2c in this branch:** `merge_tails` merges every free pair per call; gated and recorded in `## 3.2c`. erc20_full Release `optimize` 382.0 → 301.3 ms, ladder 128 Fast 251.1 → 31.0 ms (min of 7 alternating runs, load 2.0). Against the **pre-3.1** cost re-measured at load 1.6–2.1, erc20_full is 340.4 → 306.3 ms (goal met) and uniswap_v2_pair is 57.8 → 62.4 ms (**still 4 % over**, from the two extra candidate builds 3.3b(ii)'s `Move::Batch` adds, not from the pass). The per-span `peephole` overhead was not touched.
 - **3.4b landed** (`fc4921d`), final bytes unchanged; re-verified at `3a670f0` after 3.2b/3.2c rewrote `flow_` and `merge_tails` (exact pass 0–4 rounds, 53 targets byte-identical in both modes). Incremental `flow` between rounds measured at 10–12% of the `outline_once` loop — a few tens of ms of a multi-second build; not taken (see 3.4b re-verified).
 - **3.3b(ii) landed.** Batched promotion (below). Rounds are 4 at ladder N = 16/64/128 (were 34/130/258) and ladder 128 Fast `promote` 49.6 → 12.0 ms. It is `Plan::batch`, default on in the start plan, tried off by the search as `Move::Batch`. Sizes: runtime bytes −0.027 % over the 272 target-modes (parent → here), and −0.153 % creation + runtime over the 13 whose code changes; the `Fast` increases behind that (`nft` +74, `utils` +14, `governance_token` +2, `erc20_full` +2) are the batched start plan's own price, since `Fast` builds that plan and nothing else and has no candidate to decline it. Gas: **transaction gas +0.0002 %** (the step totals, 68 121 512 → 68 121 662) and **gas including deploy −0.018 %** (96 454 261 → 96 437 353); every step outcome identical. See `## 3.3b(ii)` for the tables.
-- **3.3c measured, not taken (S40).** Every plan the Release search builds over the 51 `bench/*.lithe` was priced with `batch` on and off: 109 wins, 1 167 ties, **23 losses** (erc20_full 13, erc721_full 4, erc721 3, fixed_point, uniswap_v2_factory, uniswap_v2_pair 1 each; worst +0.96 % cost on erc721). The deletion's own condition fails, so the greedy `promote_region` path, `Plan::batch` and `Move::Batch` stay. See `## S40 3.3c priced`.
+- **3.3c measured, not taken (S40, reproduced by S53).** `LITHE_PRICE_BATCH=1` prices every plan the Release search builds with `batch` on and off. Over the 51 `bench/*.lithe`: 1 140 pairs, 103 wins, 1 015 ties, **22 losses** (erc20_full 12, erc721_full 4, erc721 3, fixed_point, uniswap_v2_factory, uniswap_v2_pair 1 each; worst +0.96 % cost on erc721). The deletion's own condition fails, so the greedy `promote_region` path, `Plan::batch` and `Move::Batch` stay. The command and the comparison with S40's scratch count are in `## S40 3.3c priced`.
+- **3.3 closed as not taken (S48).** The value-numbering scheduler is not built. `promote` is 8.9 % of the Fast backend over `bench/` and 3–4 % on the ladder, so the rewrite moves no open target. See `## S48 3.3 closed: not taken`.
 - **4.1 open**: `promote`/`optimize` still work on one shared stream; `parallel_map` still parallelises plan candidates only. 3.3b(ii) does not split the stream, so it does not unblock this.
 - **3.5 open, `promote` half done**: `promote` is now flat in the function count, so what is left of the 2.23×/2.01× per-line ratio is `optimize`. Re-measure once 3.2b's successor and 3.3c land.
 - **Final comparison table** below is a mid-branch snapshot; regenerate it once the steps above land.
@@ -96,6 +97,7 @@ This section is the single source of truth for what is open and what blocks what
 - **S52 landed:** S51's three residual findings. A pool keeps the caller's pre-pool certificates ahead of its items', a worker sees the caller's forced codegen knobs, and the item-order test compares the pool at one thread with the pool at N. See `## S52 S51's residual findings`.
 - **S27 landed (5.4):** Fx hashing in `check`/`gen`/`route`/`split`/`index`; `BTreeMap` where order is seen. See `## S27 Fx hashing`.
 - **S40 measured, not taken:** see the 3.3c bullet above.
+- **S53 landed:** the S40 instrument is `LITHE_PRICE_BATCH`. With it set, all 51 `--release` outputs are byte-identical, and both snapshots are unchanged.
 
 ## 0.2b baseline
 
@@ -723,23 +725,66 @@ erc20_full Release `backend` (3 runs each) went from 475–483 ms to 447–465 m
 
 **Plan.** Price `Plan::batch` on against off for every plan the Release search builds. Delete the greedy `promote_region` path, the `batch = false` knob and `Move::Batch` only if batch wins or ties on all of them.
 
-**How.** This used a scratch build that was not committed. `codegen`'s `build_raw` also built each plan's `batch`-flipped twin and logged both `cost()`s (`gas + bytes·byte_gas`, the search's own model). It ran `lithe compile --release` over all 51 `bench/*.lithe`. Twins only add entries to the emit and finish caches. An extra entry can only make the search skip a build that could not have won (`measured_out`).
+**How (S53: the instrument is in the tree).** `LITHE_PRICE_BATCH` set makes `codegen`'s `build_raw` (`src/gen/mod.rs`) build every plan the search asks for together with its `batch`-flipped twin, and print `[batch] on <cost> <bytes> <gas> off <cost> <bytes> <gas>` once per on/off pair to stderr (`cost` is `gas + bytes·byte_gas`, the search's own model). Unset, `build_raw` is one `OnceLock` read away from the old path. Twins only add entries to the emit and finish caches. The command, from a clean tree:
 
-**Result: 1 299 plans. Batch wins 109, ties 1 167 and loses 23.**
+```
+cargo build --profile fast --locked
+for f in bench/*.lithe; do LITHE_CACHE_DIR= LITHE_PRICE_BATCH=1 target/fast/lithe compile $f --release 2>&1 >/dev/null | sed "s|^|$(basename $f .lithe) |"; done | awk '$2=="[batch]"{p[$1]++; P++; if($4<$8){w[$1]++;W++} else if($4>$8){l[$1]++;L++} else {t[$1]++;T++}} END{for(n in p) if(l[n]+w[n]) print n,p[n],w[n]+0,t[n]+0,l[n]+0; print "all",P,W,T,L}' | sort
+```
 
-| contract | plans | wins | ties | losses | worst loss (cost, bytes, gas) |
+The output is deterministic (two runs, identical). With the variable set, all 51 `--release` outputs are byte-identical to the run without it, so the twins do not move the search's result. `make check` is green: fmt, clippy, 560 lib + 25 bin + 1 doctest under both `test` and `verify`, the 2000-step differential (5), both snapshots unchanged (2), bench-gas (2), and wasm.
+
+**Result: 1 140 on/off pairs. Batch wins 103, ties 1 015 and loses 22.**
+
+| contract | pairs | wins | ties | losses | worst loss (cost, bytes, gas) |
 |---|---|---|---|---|---|
-| erc20_full | 100 | 75 | 12 | 13 | +199 (+0.10 %), −35 B, +374 |
-| erc721 | 40 | 20 | 17 | 3 | +536 (+0.96 %), +42 B, +326 |
-| erc721_full | 68 | 2 | 62 | 4 | +407 (+0.41 %), +30 B, +257 |
-| fixed_point | 22 | 1 | 20 | 1 | +31 (+0.12 %), +5 B, +6 |
-| uniswap_v2_factory | 52 | 0 | 51 | 1 | +94 (+0.07 %), +2 B, +68 |
-| uniswap_v2_pair | 39 | 0 | 38 | 1 | +74 (+0.08 %), +4 B, +54 |
-| the other 45 | 978 | 11 | 967 | 0 | — |
+| erc20_full | 96 | 72 | 12 | 12 | +199 (+0.10 %), −35 B, +374 |
+| erc721 | 37 | 17 | 17 | 3 | +536 (+0.96 %), +42 B, +326 |
+| erc721_full | 63 | 2 | 57 | 4 | +407 (+0.41 %), +30 B, +257 |
+| fixed_point | 20 | 1 | 18 | 1 | +31 (+0.12 %), +5 B, +6 |
+| uniswap_v2_factory | 46 | 0 | 45 | 1 | +94 (+0.07 %), +2 B, +68 |
+| uniswap_v2_pair | 35 | 0 | 34 | 1 | +74 (+0.08 %), +4 B, +54 |
+| erc1155 | 57 | 1 | 56 | 0 | — |
+| staking | 37 | 10 | 27 | 0 | — |
+| the other 43 | 749 | 0 | 749 | 0 | — |
 
-**Decision: not taken.** The greedy path is the cheaper plan in 23 places, so deleting it and the `Move::Batch` dimension would remove a choice the search can use. The Release emit count and time therefore stay as they are. With `Move::Batch` present, Release builds (emits/finishes, `backend`) measured: erc20_full 99/93, 461 ms; erc721_full 66/57, 178 ms; uniswap_v2_factory 50/41, 136 ms; uniswap_v2_pair 37/34, 130 ms; erc721 39/36, 73 ms; fixed_point 22/13, 52 ms.
+**Against the S40 record (1 299 plans, 109/1 167/23).** Every worst-loss row is the same to the unit. The counts differ because the scratch build counted each plan the search asked for, so a pair the search requested from both sides (once with `batch` on, once via `Move::Batch`) counted twice. Keying the same run on the requested plan instead gives 1 242 / 107 / 1 112 / **23** — the recorded loss count exactly, with the erc20_full pair that loses counted from both sides. The remaining gap to 1 299 was not traced to a cause and is not claimed. The committed instrument counts each pair once, which is the comparison the decision is about.
+
+**Decision, re-taken on the reproduced numbers: keep (not taken).** 22 pairs lose, so the deletion condition ("batch wins or ties everywhere") still fails. The greedy path is the cheaper plan in 22 places, so deleting it and the `Move::Batch` dimension would remove a choice the search can use. The Release emit count and time therefore stay as they are. With `Move::Batch` present, Release builds (emits/finishes, `backend`) measured: erc20_full 99/93, 461 ms; erc721_full 66/57, 178 ms; uniswap_v2_factory 50/41, 136 ms; uniswap_v2_pair 37/34, 130 ms; erc721 39/36, 73 ms; fixed_point 22/13, 52 ms.
 
 What would close 3.3c instead: find why the batch walk loses on these plans. One untested hypothesis: the disjoint-walk rule in `region_batch` drops a region whenever its walk overlaps a taken one, so a lower-saving region can block a higher one that the greedy rounds would have reached later. A batch that replans the dropped words in a further round, rather than skipping them, should then tie or win everywhere.
+
+## S48 3.3 closed: not taken
+
+**Which of the two the tree satisfies: the second.** §5 3.3's value-numbering CFG scheduler (per-function live ranges, RPO block-entry layouts, spill at a part edge) is **not built**. 3.3 is recorded as not taken, on the measurement below. What the tree has instead is 3.3a (per-word region search) and 3.3b(ii) (batched regions, `Plan::batch`, priced by the search; see `## S40 3.3c priced` for the reproduced pricing).
+
+**The measurement.** `promote`'s share of the backend on this tree, `target/fast`, `LITHE_THREADS=1`, cache off, load 16–19 (absolute times inflated; the shares are the point). Command:
+
+```
+for m in --fast --release; do for f in bench/*.lithe; do LITHE_CACHE_DIR= LITHE_TIME=1 LITHE_THREADS=1 target/fast/lithe compile $f $m 2>&1 >/dev/null | grep '^\[time\]'; done; done
+for n in 16 64 128; do python3 scripts/gen_scaling.py $n > /tmp/ladder$n.lithe; LITHE_CACHE_DIR= LITHE_TIME=1 LITHE_THREADS=1 target/fast/lithe compile /tmp/ladder$n.lithe --fast 2>&1 >/dev/null | grep '^\[time\]'; done
+```
+
+| target | backend | `promote` | share | rounds per emit |
+|---|---:|---:|---:|---:|
+| all 51 `bench/`, Fast | 1 132 ms | 100 ms | 8.9 % | 11.3 |
+| all 51 `bench/`, Release | 13 460 ms | 3 924 ms | 29.2 % | 17.1 |
+| erc20_full Fast | 83 ms | 9.0 ms | 11 % | 58 |
+| erc20_full Release | 4 602 ms | 1 690 ms | 37 % | 58 |
+| ladder 16 / 64 / 128, Fast (min of 3) | 28 / 88 / 234 ms | 1.1 / 3.4 / 8.4 ms | 3–4 % | 4 / 4 / 4 |
+
+**Why that closes it.** The scheduler's own payoff is bounded by `promote`'s time, and against the program's open targets that bound moves none of them:
+
+- **Fast** (the mode §4's compile targets are written for): removing `promote` outright saves at most 8.9 % of the backend, 9 ms of erc20_full's 83 ms. The ≤ 15 ms erc20_full target is missed by `optimize` and `outline`, not by `promote`.
+- **3.5** (ladder linearity): `promote` is already flat at 4 rounds per emit and 3–4 % of the backend; the superlinear term is `optimize` (`## 3.5 Ladder after 3.4b`).
+- **Release** has no compile-time target in §4. Its 29 % is real, but it is paid per candidate, so the lever is the 17 rounds per emit, not a new algorithm.
+- **Size/gas**: the only cut-at-function-edge variant measured cost +4.1 % Fast / +4.6 % Release runtime bytes (`## 3.3b(i)`); a scheduler has to beat today's greedy on every knob (`tight`, `hold_dups`, `sink`, `abandon`, alias copies) within 1 % over every target-mode to land at all.
+
+So the rewrite buys at most 9 % of a Fast build and risks the 1 % size gate. That is not taken.
+
+**What would reopen it.** Spill-at-part-edge is untested. This record does not show it fails; it shows it does not pay against the open targets. Release's 58 rounds per emit on erc20_full is the cheaper lever: `region_batch` drops regions whose walks overlap, so real contracts still take 10–60 rounds where the ladder takes 4. Re-planning the dropped words in the same round is S40's open hypothesis. `LITHE_PRICE_BATCH` prices it with no extra tooling.
+
+Nothing in codegen changed for this step, so both snapshots are unchanged.
 
 ## 5.1 Interning: scope measured
 
