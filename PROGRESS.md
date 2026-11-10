@@ -1157,3 +1157,24 @@ Headlines against the prompt's targets:
 - All 127 targets, one thread: 20.4 s Release baseline → 18.6 s Release, 11.0 s Release on 16 threads, and **5.0 s Fast**.
 - Ladder in Fast, per-line cost from 439 to 1735 lines: 21.9 ms / 439 = 50 µs/line → 118.9 ms / 1735 = 69 µs/line, a ratio of **1.37×**. From 1735 to 3463 lines it is 143 µs/line, a ratio of 2.1×. So scaling is still superlinear past 1735 lines; see State.
 - Threads only help Release. Fast is one build, so 1 vs 16 threads is the same within noise. Phase 4 is what would change that.
+
+## S28 5.1b + 5.2: scope re-measured, split again
+
+The step asks for one slice that flips `NameAt`/`Expr::{Ident, Field, Call}`/`TypeRef` to `Symbol`, replaces every `origin: String` with a `FileId` and every `line`/`col` with a byte `Span`, and removes four `Program` clones, inside `ast.rs`, `check/mod.rs`, `lib.rs`, `lint.rs`, `parse.rs`. Counted on this tree (`grep -rcE` over `src/`):
+
+| what moves | lines | files |
+|---|---:|---:|
+| `\bline\b` / `\bcol\b` (spans) | 2 339 / 2 002 | 71 / 53 |
+| `.origin` (`FileId`) | 242 | 25 |
+| `Expr::Ident` / `Expr::Field` / `Expr::Call` | 281 / 180 / 296 | 44 / 38 / 38 |
+| `TypeRef::Name`, `NameAt` | 30, 59 | 13, 9 |
+
+Five of those files are this slice's. The rest are `check/*`, `gen/*`, `prove/*`, `evm/*` (the differential gate's harnesses), `split.rs`, `spec/*`, `modules.rs` and `index.rs`, which sibling steps were editing concurrently. Lazy line/col also needs a design decision that no file in this slice can make on its own: every `error(line, col, ..)` in the checker would need the line table at hand, either a process-wide source map (which an LSP session would grow by one copy of the file per keystroke) or a map threaded to every error site.
+
+**Three of the four clones are structural.** `Checked.source` is the program before `compose` rewrites it, and `split::facet_program`, `gen`, `index` and `compose`'s ERC-165 re-check all read it, so a snapshot is needed while `check` takes `Program` by value. `spec::check(prog.clone())` in `build` exists because `spec::check` and `check::check` both consume and mutate the program. Neither goes away until `check` borrows the AST, which is 5.5's arena.
+
+**What landed (byte-identical, no diagnostic changes):**
+- `analyze_in` iterates `&units` and clones each unit once for `check_in`; only a `Full` pass clones it again for `build`. A keystroke (`Pass::Edit`) went from three deep `Program` copies per unit (`units.clone()`, `unit.clone()`, `Checked.source`) to two.
+- `lint::units` no longer copies the loaded program to keep a fallback for a broken spec file; it loads the file again on that (error-only) path.
+
+**Split proposed:** 5.2a, a `Span`/`FileId` source map in `ast`/`parse` with `line()`/`col()` accessors and one owner for the call-site sweep; 5.1b, the `Symbol` flip of the four AST shapes, also one owner of `check`/`gen`/`prove`/`evm`; and the `Checked.source` and `spec::check` clones, folded into 5.5, since they go once `check` borrows.
