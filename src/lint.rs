@@ -29,12 +29,11 @@ struct Finding {
 
 struct Bind {
     func: usize,
-    line: u32,
-    col: u32,
+    span: Span,
     name: String,
     sym: usize,
     var: bool,
-    /// `line`/`col` sit on the `var` or `const` keyword, so the name is the next identifier.
+    /// `span` sits on the `var` or `const` keyword, so the name is the next identifier.
     keyword: bool,
 }
 
@@ -87,7 +86,7 @@ pub fn lint_paths(paths: &[PathBuf], fix: bool) -> LintResult {
                 status = 1;
                 let placed = match err.file {
                     Some(_) => err,
-                    None if err.line > 0 => err.in_file(&path.display().to_string()),
+                    None if err.line > 0 => err.in_path(&path.display().to_string()),
                     None => {
                         stderr.push_str(&format!("{}: {err}\n", path.display()));
                         continue;
@@ -132,7 +131,7 @@ pub fn lithe_files(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
 
 fn lint_file(path: &Path, fix: bool) -> Result<(String, bool), Error> {
     let src = std::fs::read_to_string(path)
-        .map_err(|err| crate::error(0, 0, format!("cannot read `{}`: {err}", path.display())))?;
+        .map_err(|err| crate::error_at(0, 0, format!("cannot read `{}`: {err}", path.display())))?;
     let own = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let own_s = own.display().to_string();
     let label = path.display().to_string();
@@ -414,7 +413,10 @@ fn findings_at(
     // An import is used when this file names something through it.
     let mut used = HashSet::new();
     for (i, unit) in units.into_iter().enumerate() {
-        let key = (unit.origin.clone(), unit.contract_name.clone());
+        let key = (
+            unit.files.path(unit.file).to_string(),
+            unit.contract_name.clone(),
+        );
         if let Some(scope) = unit.scopes.scope(&key) {
             used.extend(scope.used.iter().copied());
         }
@@ -431,14 +433,16 @@ fn findings_at(
         collect(checked, own, &mut acc);
         findings.extend(finish(checked, src, own, label, &acc));
     }
+    let lines = SourceMap::of("", src);
     for (k, use_) in uses.iter().enumerate() {
         if used.contains(&k) {
             continue;
         }
+        let (line, col) = lines.line_col(FileId::default(), use_.span);
         findings.push(Finding {
             path: label.to_string(),
-            line: use_.line,
-            col: use_.col,
+            line,
+            col,
             rule: "unused-import",
             message: format!("import `{}` is unused", use_.path),
             hint: "remove the import",
@@ -540,6 +544,7 @@ fn plain_uses(src: &str) -> Result<Vec<PlainUse>, Error> {
 /// the `use` with its last one.
 fn unused_modules(src: &str, label: &str, unit: &Program) -> Result<Vec<Finding>, Error> {
     let uses = plain_uses(src)?;
+    let lines = SourceMap::of("", src);
     let pieces = lex::pieces(src)?;
     let token = |i: usize| pieces.get(i).map(|piece| piece.kind);
     // A module this file declares names itself and its members: only what uses it counts.
@@ -615,7 +620,7 @@ fn unused_modules(src: &str, label: &str, unit: &Program) -> Result<Vec<Finding>
                 .map(|&at| {
                     unit.compose
                         .iter()
-                        .find(|use_| (use_.line, use_.col) == at)
+                        .find(|use_| lines.line_col(FileId::default(), use_.span) == at)
                         .is_some_and(|use_| unused(&use_.name))
                 })
                 .collect();
@@ -683,6 +688,9 @@ fn finish(checked: &Checked, src: &str, own: &str, label: &str, acc: &Acc) -> Ve
         }
     }
     let toks = lex::tokenize(src).unwrap_or_default();
+    let lines = SourceMap::of("", src);
+    let lc = |span: Span| lines.line_col(FileId::default(), span);
+    let files = &checked.prog.files;
     // One `_` rename per function is the safe fix: a second `_` in one scope is a duplicate name.
     let mut renamed = HashSet::new();
     // The names of a `var (a, b)` pattern share one keyword: it becomes `const` only when
@@ -691,7 +699,7 @@ fn finish(checked: &Checked, src: &str, own: &str, label: &str, acc: &Acc) -> Ve
         let names: Vec<&Bind> = acc
             .binds
             .iter()
-            .filter(|b| (b.func, b.line, b.col) == (bind.func, bind.line, bind.col))
+            .filter(|b| (b.func, b.span) == (bind.func, bind.span))
             .collect();
         (names.len() > 1).then_some(names)
     };
@@ -710,17 +718,17 @@ fn finish(checked: &Checked, src: &str, own: &str, label: &str, acc: &Acc) -> Ve
                 && names
                     .iter()
                     .all(|b| !acc.written.contains(&b.sym) && !list_sym(checked, b.sym))
-                && patterns.insert((bind.func, bind.line, bind.col));
+                && patterns.insert((bind.func, bind.span));
             let all: Vec<String> = names.iter().map(|b| format!("`{}`", b.name)).collect();
             name = all.join(", ");
         }
         if bind.var && settled {
-            let edit =
-                keyword_span(&toks, bind.line, bind.col).map(|span| (span.0, span.1, "const"));
+            let edit = keyword_span(&toks, bind.span).map(|span| (span.0, span.1, "const"));
+            let (line, col) = lc(bind.span);
             out.push(Finding {
                 path: label.to_string(),
-                line: bind.line,
-                col: bind.col,
+                line,
+                col,
                 rule: "prefer-const",
                 message: format!("{name} is never reassigned"),
                 hint: "replace `var` with `const`",
@@ -733,14 +741,15 @@ fn finish(checked: &Checked, src: &str, own: &str, label: &str, acc: &Acc) -> Ve
                 && !acc.written.contains(&bind.sym)
                 && renamed.insert(bind.func)
             {
-                name_span(&toks, bind.line, bind.col).map(|span| (span.0, span.1, "_"))
+                name_span(&toks, bind.span).map(|span| (span.0, span.1, "_"))
             } else {
                 None
             };
+            let (line, col) = lc(bind.span);
             out.push(Finding {
                 path: label.to_string(),
-                line: bind.line,
-                col: bind.col,
+                line,
+                col,
                 rule: "unused-binding",
                 message: format!("`{}` is unused", bind.name),
                 hint: if acc.field_binds.contains(&bind.sym) {
@@ -754,7 +763,7 @@ fn finish(checked: &Checked, src: &str, own: &str, label: &str, acc: &Acc) -> Ve
     }
     for (i, func) in checked.prog.funcs.iter().enumerate() {
         if func.private
-            && mine(&func.origin, own)
+            && mine(files.path(func.file), own)
             && !acc.callees.contains(&i)
             && !acc.sizes.contains(&func.name)
         {
@@ -763,22 +772,22 @@ fn finish(checked: &Checked, src: &str, own: &str, label: &str, acc: &Acc) -> Ve
             } else {
                 "function"
             };
-            out.push(item(label, func.line, func.col, kind, &func.name));
+            out.push(item(label, lc(func.span), kind, &func.name));
         }
     }
     for decl in &checked.prog.types {
-        if decl.private && mine(&decl.origin, own) && !acc.types.contains(&decl.name) {
-            out.push(item(label, decl.line, decl.col, "type", &decl.name));
+        if decl.private && mine(files.path(decl.file), own) && !acc.types.contains(&decl.name) {
+            out.push(item(label, lc(decl.span), "type", &decl.name));
         }
     }
     for decl in &checked.prog.errors {
-        if decl.private && mine(&decl.origin, own) && !acc.errors.contains(&decl.name) {
-            out.push(item(label, decl.line, decl.col, "error", &decl.name));
+        if decl.private && mine(files.path(decl.file), own) && !acc.errors.contains(&decl.name) {
+            out.push(item(label, lc(decl.span), "error", &decl.name));
         }
     }
     for decl in &checked.prog.events {
-        if decl.private && mine(&decl.origin, own) && !acc.emits.contains(&decl.name) {
-            out.push(item(label, decl.line, decl.col, "event", &decl.name));
+        if decl.private && mine(files.path(decl.file), own) && !acc.emits.contains(&decl.name) {
+            out.push(item(label, lc(decl.span), "event", &decl.name));
         }
     }
     out
@@ -796,7 +805,7 @@ fn from_note(label: &str, note: Note) -> Finding {
     }
 }
 
-fn item(label: &str, line: u32, col: u32, kind: &str, name: &str) -> Finding {
+fn item(label: &str, (line, col): (u32, u32), kind: &str, name: &str) -> Finding {
     let name = name.rsplit("::").next().unwrap_or(name);
     Finding {
         path: label.to_string(),
@@ -819,17 +828,15 @@ fn list_sym(checked: &Checked, sym: usize) -> bool {
     checked.types[ty].kind == TyKind::List
 }
 
-fn keyword_span(toks: &[Token], line: u32, col: u32) -> Option<(usize, usize)> {
+fn keyword_span(toks: &[Token], span: Span) -> Option<(usize, usize)> {
     toks.iter()
-        .find(|tok| {
-            tok.line == line && tok.col == col && matches!(tok.kind, Kind::Var | Kind::Const)
-        })
+        .find(|tok| tok.start == span.lo as usize && matches!(tok.kind, Kind::Var | Kind::Const))
         .map(|tok| (tok.start, tok.end))
 }
 
-fn name_span(toks: &[Token], line: u32, col: u32) -> Option<(usize, usize)> {
+fn name_span(toks: &[Token], span: Span) -> Option<(usize, usize)> {
     let index = toks.iter().position(|tok| {
-        tok.line == line && tok.col == col && matches!(tok.kind, Kind::Var | Kind::Const)
+        tok.start == span.lo as usize && matches!(tok.kind, Kind::Var | Kind::Const)
     })?;
     toks[index + 1..]
         .iter()
@@ -861,7 +868,7 @@ fn collect(checked: &Checked, own: &str, acc: &mut Acc) {
         scan_ty(&decl.ty, acc);
     }
     for module in &prog.modules {
-        let here = mine(&module.origin, own);
+        let here = mine(prog.files.path(module.file), own);
         for decl in &module.types {
             scan_ty(&decl.ty, acc);
         }
@@ -883,7 +890,7 @@ fn collect(checked: &Checked, own: &str, acc: &mut Acc) {
         // An exposed entry runs a copy of its module's body, which that module's file owns.
         scan_func(
             func,
-            mine(&func.origin, own) && func.declares.is_none(),
+            mine(prog.files.path(func.file), own) && func.declares.is_none(),
             acc,
         );
     }
@@ -917,8 +924,7 @@ fn scan_func(func: &Func, here: bool, acc: &mut Acc) {
                 }
                 acc.binds.push(Bind {
                     func: acc.func,
-                    line: param.line,
-                    col: param.col,
+                    span: param.span,
                     name: param.name.clone(),
                     sym,
                     var: param.mutable,
@@ -949,8 +955,7 @@ fn scan_func(func: &Func, here: bool, acc: &mut Acc) {
 fn scan_stmt(stmt: &Stmt, here: bool, acc: &mut Acc) {
     match stmt {
         Stmt::Const {
-            line,
-            col,
+            span,
             name,
             parts,
             ty,
@@ -967,8 +972,7 @@ fn scan_stmt(stmt: &Stmt, here: bool, acc: &mut Acc) {
                     }
                     acc.binds.push(Bind {
                         func: acc.func,
-                        line: *line,
-                        col: *col,
+                        span: *span,
                         name: name.clone(),
                         sym: *sym,
                         var: false,
@@ -981,8 +985,7 @@ fn scan_stmt(stmt: &Stmt, here: bool, acc: &mut Acc) {
                     }
                     acc.binds.push(Bind {
                         func: acc.func,
-                        line: *line,
-                        col: *col,
+                        span: *span,
                         name: name.clone(),
                         sym: *sym,
                         var: false,
@@ -992,8 +995,7 @@ fn scan_stmt(stmt: &Stmt, here: bool, acc: &mut Acc) {
             }
         }
         Stmt::Var {
-            line,
-            col,
+            span,
             name,
             parts,
             ty,
@@ -1010,8 +1012,7 @@ fn scan_stmt(stmt: &Stmt, here: bool, acc: &mut Acc) {
                     }
                     acc.binds.push(Bind {
                         func: acc.func,
-                        line: *line,
-                        col: *col,
+                        span: *span,
                         name: name.clone(),
                         sym: *sym,
                         var: true,
@@ -1024,8 +1025,7 @@ fn scan_stmt(stmt: &Stmt, here: bool, acc: &mut Acc) {
                     }
                     acc.binds.push(Bind {
                         func: acc.func,
-                        line: *line,
-                        col: *col,
+                        span: *span,
                         name: name.clone(),
                         sym: *sym,
                         var: true,
@@ -1088,8 +1088,7 @@ fn scan_stmt(stmt: &Stmt, here: bool, acc: &mut Acc) {
             }
         }
         Stmt::For {
-            line,
-            col,
+            span,
             name,
             index,
             ty,
@@ -1127,8 +1126,7 @@ fn scan_stmt(stmt: &Stmt, here: bool, acc: &mut Acc) {
                     }
                     acc.binds.push(Bind {
                         func: acc.func,
-                        line: *line,
-                        col: *col,
+                        span: *span,
                         name: name.clone(),
                         sym: *sym,
                         var: false,
@@ -1162,8 +1160,7 @@ fn scan_then(then: &Then, here: bool, acc: &mut Acc) {
             }
             acc.binds.push(Bind {
                 func: acc.func,
-                line: then.line,
-                col: then.col,
+                span: then.span,
                 name: name.clone(),
                 sym: *sym,
                 var: false,
@@ -1235,8 +1232,7 @@ fn scan_expr(expr: &Expr, here: bool, acc: &mut Acc) {
                         if let Some(name) = &arm.bind {
                             acc.binds.push(Bind {
                                 func: acc.func,
-                                line: arm.line,
-                                col: arm.col,
+                                span: arm.span,
                                 name: name.clone(),
                                 sym,
                                 var: false,
@@ -1254,8 +1250,7 @@ fn scan_expr(expr: &Expr, here: bool, acc: &mut Acc) {
                     for (name, sym) in names.zip(&arm.tuple_syms) {
                         acc.binds.push(Bind {
                             func: acc.func,
-                            line: arm.line,
-                            col: arm.col,
+                            span: arm.span,
                             name: name.clone(),
                             sym: *sym,
                             var: false,

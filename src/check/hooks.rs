@@ -73,32 +73,26 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
     for module in prog.modules.iter().filter(|m| !m.params.is_empty()) {
         if let Some(hook) = module.hooks.first() {
             return Err(
-                error(hook.line, hook.col, "a generic module cannot declare hooks")
-                    .in_file(&module.origin),
+                error(hook.span, "a generic module cannot declare hooks").in_file(module.file)
             );
         }
     }
     let used: Vec<String> = prog.compose.iter().map(|u| u.name.clone()).collect();
     let impls = std::mem::take(&mut prog.hooks);
-    let mut written: Vec<(String, String, u32, u32)> = Vec::new();
+    let mut written: Vec<(String, String, Span)> = Vec::new();
     let mut placed = Vec::new();
     for mut imp in impls {
         let Some(of) = imp.hook_of.clone() else {
             continue;
         };
         let module = of.module.name.clone();
-        let (line, col) = (of.module.line, of.module.col);
+        let span = of.module.span;
         let Some(decl) = prog.modules.iter().find(|m| m.name == module) else {
-            return Err(error(
-                line,
-                col,
-                format!("unknown module `{}`", shown(&module)),
-            ));
+            return Err(error(span, format!("unknown module `{}`", shown(&module))));
         };
         if !used.contains(&module) {
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "the contract doesn't use `{}`, so it has no hook `{}` to implement",
                     shown(&module),
@@ -114,8 +108,7 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
                 format!("`{}`'s hooks: {}", shown(&module), have.join(", "))
             };
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "module `{}` has no hook `{}`\n\n{hint}",
                     shown(&module),
@@ -123,13 +116,13 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
                 ),
             ));
         };
-        if let Some((_, _, l, c)) = written
+        if let Some((_, _, first)) = written
             .iter()
-            .find(|(m, h, _, _)| *m == module && *h == of.name)
+            .find(|(m, h, _)| *m == module && *h == of.name)
         {
+            let (l, c) = prog.files.line_col(imp.file, *first);
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "hook `{}` is written twice; the first is at {l}:{c}",
                     label(&module, &of.name)
@@ -139,8 +132,7 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
         match &of.form {
             HookForm::Skip if sig.ret.is_some() => {
                 return Err(error(
-                    line,
-                    col,
+                    span,
                     format!(
                         "`{}` returns a value, so it can't be skipped; implement it:\n\n  {}",
                         label(&module, &of.name),
@@ -163,7 +155,7 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
             }
             _ => {}
         }
-        written.push((module.clone(), of.name.clone(), line, col));
+        written.push((module.clone(), of.name.clone(), span));
         imp.kind = sig.kind;
         imp.name = hook_fn(&module, &of.name);
         placed.push(imp);
@@ -174,28 +166,23 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
             continue;
         };
         for sig in &decl.hooks {
-            if written
-                .iter()
-                .any(|(m, h, _, _)| m == name && *h == sig.name)
-            {
+            if written.iter().any(|(m, h, _)| m == name && *h == sig.name) {
                 continue;
             }
-            let (line, col) = (sig.line, sig.col);
+            let span = sig.span;
             placed.push(Func {
                 name: hook_fn(name, &sig.name),
                 params: sig.params.clone(),
                 tail: sig.ret.as_ref().map(|_| Expr::Lit {
-                    line,
-                    col,
+                    span,
                     lit: Lit::Zero,
                     ty: 0,
                 }),
-                origin: decl.origin.clone(),
+                file: decl.file,
                 constant: false,
                 hook_of: Some(HookOf {
                     module: NameAt {
-                        line: decl.line,
-                        col: decl.col,
+                        span: decl.span,
                         name: name.clone(),
                     },
                     name: sig.name.clone(),
@@ -228,17 +215,15 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
 /// The hidden entrypoint a facet calls `imp` back through, calling the implementation with
 /// its parameters. It starts payable; `price_callbacks` keeps it so when value can reach it.
 fn callback_entry(imp: &Func, module: &str, name: &str) -> Func {
-    let (line, col) = (imp.line, imp.col);
+    let span = imp.span;
     let call = Expr::Call {
-        line,
-        col,
+        span,
         name: hook_fn(module, name),
         args: imp
             .params
             .iter()
             .map(|p| Expr::Ident {
-                line,
-                col,
+                span,
                 name: p.name.clone(),
                 sym: None,
                 builtin: None,
@@ -255,14 +240,7 @@ fn callback_entry(imp: &Func, module: &str, name: &str) -> Func {
     let (stmts, tail) = if imp.ret.is_some() {
         (Vec::new(), Some(call))
     } else {
-        (
-            vec![Stmt::Call {
-                line,
-                col,
-                expr: call,
-            }],
-            None,
-        )
+        (vec![Stmt::Call { span, expr: call }], None)
     };
     Func {
         kind: ItemKind::Entry,
@@ -285,8 +263,7 @@ fn callback_entry(imp: &Func, module: &str, name: &str) -> Func {
         constant: false,
         hook_of: Some(HookOf {
             module: NameAt {
-                line,
-                col,
+                span,
                 name: module.to_string(),
             },
             name: name.to_string(),
@@ -310,8 +287,7 @@ fn pass_params(
         .params
         .iter()
         .map(|p| Expr::Ident {
-            line: via.line,
-            col: via.col,
+            span: via.span,
             name: p.name.clone(),
             sym: None,
             builtin: None,
@@ -333,8 +309,7 @@ fn pass_params(
         if !found.is_empty() {
             if sig.ret.is_none() && found.iter().all(|f| f.ret.is_some()) {
                 return Err(error(
-                    via.line,
-                    via.col,
+                    via.span,
                     format!(
                         "`{}` returns a value, and `{hook}` has no result; name a function that returns nothing",
                         via.name
@@ -347,8 +322,7 @@ fn pass_params(
                 .any(|f| f.params.is_empty() || f.params.len() == count)
             {
                 return Err(error(
-                    via.line,
-                    via.col,
+                    via.span,
                     if count == 0 {
                         format!(
                             "`{}` takes {} parameters; `{hook}` has none to pass it",
@@ -416,18 +390,17 @@ impl Checker {
             .filter(|m| prog.compose.iter().any(|u| u.name == m.name))
         {
             for sig in &module.hooks {
-                let at = |err: Error| err.in_file(&module.origin);
+                let at = |err: Error| err.in_file(module.file);
                 let why = "a hook's parameters and result are ABI values, so any module with hooks can be `delegated`";
                 for p in &sig.params {
                     if p.flat {
-                        let (line, col) = (p.ty.line(), p.ty.col());
-                        return Err(at(error(line, col, crate::parse::FLAT_ONLY)));
+                        let span = p.ty.span();
+                        return Err(at(error(span, crate::parse::FLAT_ONLY)));
                     }
                     let id = self.build(&p.ty).map_err(at)?;
                     if p.storage || !abi_value(&self.types, id) {
                         return Err(at(error(
-                            p.line,
-                            p.col,
+                            p.span,
                             format!(
                                 "hook `{}` takes `{}` as `{}`; {why}",
                                 sig.name,
@@ -441,8 +414,7 @@ impl Checker {
                     let id = self.build(ret).map_err(at)?;
                     if !abi_value(&self.types, id) {
                         return Err(at(error(
-                            ret.line(),
-                            ret.col(),
+                            ret.span(),
                             format!("hook `{}` returns `{}`; {why}", sig.name, shape_ty(ret)),
                         )));
                     }
@@ -517,8 +489,7 @@ impl Checker {
             }
             if let Some(reason) = reason {
                 return Err(error(
-                    of.module.line,
-                    of.module.col,
+                    of.module.span,
                     format!(
                         "hook `{}` doesn't match {theirs} declaration: {reason}\n\n  module:    {}\n  contract:  {}",
                         label(&of.module.name, &of.name),
@@ -526,7 +497,7 @@ impl Checker {
                         header(&Func { name: of.name.clone(), ..func.clone() })
                     ),
                 )
-                .in_file(&func.origin));
+                .in_file(func.file));
             }
         }
         Ok(())
@@ -618,22 +589,21 @@ impl Checker {
                             of.name
                         ));
                     }
-                    let (line, col, origin) = if root == h || by_guard.contains(&root) {
-                        let (line, col) = prog.guard.as_ref().map_or((1, 1), |g| (g.line, g.col));
-                        (line, col, prog.origin.clone())
+                    let (span, origin) = if root == h || by_guard.contains(&root) {
+                        let span = prog.guard.as_ref().map_or(Span::default(), |g| g.span);
+                        (span, prog.file)
                     } else {
                         let r = &funcs[root];
-                        (r.line, r.col, r.origin.clone())
+                        (r.span, r.file)
                     };
-                    return Err(error(line, col, msg).in_file(&origin));
+                    return Err(error(span, msg).in_file(origin));
                 }
                 HookForm::Body | HookForm::Via(_) | HookForm::Skip if !seen[h] => {
                     return Err(error(
-                        of.module.line,
-                        of.module.col,
+                        of.module.span,
                         format!("no code the contract runs calls `{name}`; remove this hook"),
                     )
-                    .in_file(&funcs[h].origin));
+                    .in_file(funcs[h].file));
                 }
                 _ => {}
             }
@@ -675,15 +645,14 @@ impl Checker {
                 .map(|&i| crate::split::display_name(&funcs[i].name).to_string())
                 .collect();
             return Err(error(
-                of.module.line,
-                of.module.col,
+                of.module.span,
                 format!(
                     "hook `{}` reaches itself: {}\n\nrecursion is not supported: iteration is bounded, write a `for` loop",
                     label(&of.module.name, &of.name),
                     shown_chain.join(" → ")
                 ),
             )
-            .in_file(&funcs[h].origin));
+            .in_file(funcs[h].file));
         }
         Ok(())
     }

@@ -3,8 +3,7 @@ use super::*;
 impl Checker {
     pub(super) fn builtin_module(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         name: &str,
         args: &mut [Expr],
         base: &Option<Box<Expr>>,
@@ -27,13 +26,11 @@ impl Checker {
         }
         let Some(Tag::Call(kind)) = self.intrinsic(base_expr, name) else {
             return Err(self
-                .no_member(line, col, module, name, "a function")
-                .unwrap_or_else(|| {
-                    error(line, col, format!("unknown function `{module}.{name}`"))
-                }));
+                .no_member(span, module, name, "a function")
+                .unwrap_or_else(|| error(span, format!("unknown function `{module}.{name}`"))));
         };
         let module = crate::modules::shown(module);
-        self.check_builtin(line, col, kind, name, module, args, builtin, ty)?;
+        self.check_builtin(span, kind, name, module, args, builtin, ty)?;
         Ok(true)
     }
 
@@ -60,8 +57,7 @@ impl Checker {
 
     fn check_builtin(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         kind: Builtin,
         name: &str,
         module: &str,
@@ -71,15 +67,14 @@ impl Checker {
     ) -> Result<(), Error> {
         let call = format!("{module}.{name}");
         if self.is_pure() && env_builtin(kind) {
-            return Err(self.weaker(line, col, &format!("reads `{call}`")));
+            return Err(self.weaker(span, &format!("reads `{call}`")));
         }
         let need = |got: usize, n: usize| -> Result<(), Error> {
             if got == n {
                 Ok(())
             } else {
                 Err(error(
-                    line,
-                    col,
+                    span,
                     format!(
                         "`{call}` expects {n} argument{}",
                         if n == 1 { "" } else { "s" }
@@ -107,17 +102,13 @@ impl Checker {
             Builtin::Balance | Builtin::CodeSize | Builtin::CodeHash | Builtin::Code => {
                 need(args.len(), 1)?;
                 self.check_expr_as(&mut args[0], Some(TY_ADDRESS))?;
-                self.expect_addr(args[0].line(), args[0].col(), args[0].ty())?;
+                self.expect_addr(args[0].span(), args[0].ty())?;
             }
             Builtin::BlockHash | Builtin::BlobHash => {
                 need(args.len(), 1)?;
                 self.check_expr_as(&mut args[0], Some(TY_UINT))?;
                 if self.types[args[0].ty()].kind != TyKind::Uint {
-                    return Err(error(
-                        args[0].line(),
-                        args[0].col(),
-                        "an index must be `uint`",
-                    ));
+                    return Err(error(args[0].span(), "an index must be `uint`"));
                 }
             }
             Builtin::Keccak256 | Builtin::Sha256 | Builtin::Ripemd160 => {
@@ -125,8 +116,7 @@ impl Checker {
                 self.check_blob(&mut args[0])?;
                 if !self.is_dyn_ty(args[0].ty()) {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!("`{call}` expects `bytes` or `string`"),
                     ));
                 }
@@ -136,7 +126,7 @@ impl Checker {
                 self.check_word_arg(&mut args[0], self.bytes_n(32)?)?;
                 self.check_expr_as(&mut args[1], Some(TY_UINT))?;
                 if self.types[args[1].ty()].kind != TyKind::Uint {
-                    return Err(error(args[1].line(), args[1].col(), "`v` must be `uint`"));
+                    return Err(error(args[1].span(), "`v` must be `uint`"));
                 }
                 self.check_word_arg(&mut args[2], self.bytes_n(32)?)?;
                 self.check_word_arg(&mut args[3], self.bytes_n(32)?)?;
@@ -158,8 +148,7 @@ impl Checker {
                 self.check_expr_as(&mut args[1], Some(arg_ty))?;
                 if !self.same(args[0].ty(), args[1].ty()) {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("`{call}` expects two values of the same type"),
                     ));
                 }
@@ -175,7 +164,7 @@ impl Checker {
                     } else {
                         "`Uint.divRem` expects an unsigned integer"
                     };
-                    return Err(error(line, col, msg));
+                    return Err(error(span, msg));
                 }
                 let arg_ty = args[0].ty();
                 *ty = self.tuple_of(&[arg_ty, arg_ty]);
@@ -193,8 +182,7 @@ impl Checker {
                 self.check_expr_as(&mut args[1], Some(arg_ty))?;
                 if !self.same(args[0].ty(), args[1].ty()) {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("`{call}` expects two values of the same type"),
                     ));
                 }
@@ -204,7 +192,7 @@ impl Checker {
                     } else {
                         format!("`{call}` expects an unsigned integer")
                     };
-                    return Err(error(line, col, msg));
+                    return Err(error(span, msg));
                 }
                 *ty = arg_ty;
                 *builtin = Some(kind);
@@ -216,18 +204,13 @@ impl Checker {
                 self.check_expr_as(&mut args[0], Some(bytes))?;
                 if !self.same(self.peel(args[0].ty()), bytes) {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!("`{call}` reads a `bytes` value"),
                     ));
                 }
                 self.check_expr_as(&mut args[1], Some(TY_UINT))?;
                 if !self.same(args[1].ty(), TY_UINT) {
-                    return Err(error(
-                        args[1].line(),
-                        args[1].col(),
-                        "an offset must be `uint`",
-                    ));
+                    return Err(error(args[1].span(), "an offset must be `uint`"));
                 }
             }
             Builtin::Base64Encode
@@ -245,19 +228,14 @@ impl Checker {
                 self.check_blob(&mut args[0])?;
                 if !self.is_dyn_ty(args[0].ty()) {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!("`{call}` expects `bytes` or `string`"),
                     ));
                 }
                 for arg in args.iter_mut().skip(1) {
                     self.check_expr_as(arg, Some(TY_BOOL))?;
                     if !self.same(arg.ty(), TY_BOOL) {
-                        return Err(error(
-                            arg.line(),
-                            arg.col(),
-                            format!("`{call}` takes `bool` flags"),
-                        ));
+                        return Err(error(arg.span(), format!("`{call}` takes `bool` flags")));
                     }
                 }
             }
@@ -266,8 +244,7 @@ impl Checker {
                 self.check_expr(&mut args[0])?;
                 if !self.is_dyn_ty(args[0].ty()) {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!("`{call}` expects `string` or `bytes`"),
                     ));
                 }
@@ -278,8 +255,7 @@ impl Checker {
                     self.check_expr(arg)?;
                     if !self.is_dyn_ty(arg.ty()) {
                         return Err(error(
-                            arg.line(),
-                            arg.col(),
+                            arg.span(),
                             format!("`{call}` expects `string` or `bytes`"),
                         ));
                     }
@@ -287,8 +263,7 @@ impl Checker {
                 self.check_expr_as(&mut args[2], Some(TY_UINT))?;
                 if !self.same(args[2].ty(), TY_UINT) {
                     return Err(error(
-                        args[2].line(),
-                        args[2].col(),
+                        args[2].span(),
                         format!("`{call}` starts from a `uint` offset"),
                     ));
                 }
@@ -309,11 +284,7 @@ impl Checker {
                 for arg in args.iter_mut() {
                     self.check_expr_as(arg, Some(TY_UINT))?;
                     if !self.same(arg.ty(), TY_UINT) {
-                        return Err(error(
-                            arg.line(),
-                            arg.col(),
-                            format!("`{call}` expects `uint` values"),
-                        ));
+                        return Err(error(arg.span(), format!("`{call}` expects `uint` values")));
                     }
                 }
             }
@@ -328,8 +299,7 @@ impl Checker {
                     // tuples, nested lists, or lists of strings or bytes.
                     if kind == Builtin::AbiEncodePacked && !self.packable(arg.ty()) {
                         return Err(error(
-                            arg.line(),
-                            arg.col(),
+                            arg.span(),
                             format!(
                                 "`{call}` packs words, strings, bytes, and lists of words; encode records, tuples, and nested lists with `Abi.encode`"
                             ),
@@ -340,8 +310,7 @@ impl Checker {
             Builtin::AbiEncodeSelector => {
                 if args.is_empty() {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("`{call}` expects a selector and arguments"),
                     ));
                 }
@@ -363,8 +332,7 @@ impl Checker {
                 };
                 let Some((iface, method)) = target else {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("`{call}` expects an interface method, like `Token.transfer`"),
                     ));
                 };
@@ -378,29 +346,26 @@ impl Checker {
                     .map(|m| (m.params.clone(), m.sig.clone()));
                 let Some((params, sig)) = found else {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("unknown interface method `{iface}.{method}`"),
                     ));
                 };
                 if args.len() - 1 != params.len() {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("`{iface}.{method}` expects {} arguments", params.len()),
                     ));
                 }
                 for (arg, pty) in args.iter_mut().skip(1).zip(params) {
                     self.check_expr_as(arg, Some(pty))?;
                     if !self.same(arg.ty(), pty) {
-                        return Err(error(arg.line(), arg.col(), "argument has the wrong type"));
+                        return Err(error(arg.span(), "argument has the wrong type"));
                     }
                     self.take_form(arg, pty);
                 }
                 let sel = crate::keccak::selector(&sig);
                 args[0] = Expr::Lit {
-                    line,
-                    col,
+                    span,
                     lit: Lit::Int(Word::from_u64(u64::from(u32::from_be_bytes(sel))), None),
                     ty: self.bytes_n(4)?,
                 };
@@ -411,16 +376,14 @@ impl Checker {
             Builtin::AbiEncodeSignature => {
                 if args.is_empty() {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("`{call}` expects a signature and arguments"),
                     ));
                 }
                 self.check_expr_as(&mut args[0], Some(TY_STRING))?;
                 if !self.same(self.peel(args[0].ty()), TY_STRING) {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!("`{call}` expects a `string` signature"),
                     ));
                 }
@@ -433,15 +396,13 @@ impl Checker {
                 need(args.len(), 1)?;
                 let Expr::Ident { name: contract, .. } = &args[0] else {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!("`{call}` takes the name of a contract"),
                     ));
                 };
                 if !self.peers.iter().any(|(n, _)| n == contract) {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!("`{contract}` is not another contract of this file or its imports"),
                     ));
                 }
@@ -453,22 +414,19 @@ impl Checker {
                 need(args.len(), 1)?;
                 let Expr::Ident { name: module, .. } = &args[0] else {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!("`{call}` takes the name of a module"),
                     ));
                 };
                 if let Some(own) = &self.module_name {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("`{call}` is for contract code: `{own}`'s facet is built from the module alone, which knows no other facet"),
                     ));
                 }
                 if !self.delegated.iter().any(|m| m == module) {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!(
                             "`{}` has no facet: the contract doesn't use it `{}`",
                             crate::split::display_name(module),
@@ -484,11 +442,7 @@ impl Checker {
                 need(args.len(), 2)?;
                 self.check_blob(&mut args[0])?;
                 if !self.is_dyn_ty(args[0].ty()) && self.types[args[0].ty()].kind != TyKind::Bytes {
-                    return Err(error(
-                        args[0].line(),
-                        args[0].col(),
-                        "`Abi.decode` expects `bytes`",
-                    ));
+                    return Err(error(args[0].span(), "`Abi.decode` expects `bytes`"));
                 }
                 let decoded = self.decode_type(&args[1])?;
                 *builtin = Some(kind);
@@ -509,8 +463,7 @@ impl Checker {
                     };
                     if !ok {
                         return Err(error(
-                            arg.line(),
-                            arg.col(),
+                            arg.span(),
                             format!(
                                 "`{call}` joins {}",
                                 if string {
@@ -533,8 +486,7 @@ impl Checker {
                 self.check_expr(&mut args[0])?;
                 if !self.is_dyn_ty(args[0].ty()) {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!("`{call}` expects `string` or `bytes`"),
                     ));
                 }
@@ -545,8 +497,7 @@ impl Checker {
                     self.check_expr(arg)?;
                     if !self.is_dyn_ty(arg.ty()) {
                         return Err(error(
-                            arg.line(),
-                            arg.col(),
+                            arg.span(),
                             format!("`{call}` expects `string` or `bytes`"),
                         ));
                     }
@@ -570,8 +521,7 @@ impl Checker {
                     });
                 if !ok {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!(
                             "`{call}` joins a `list({})`",
                             if string { "string" } else { "bytes" }
@@ -586,8 +536,7 @@ impl Checker {
                 let peeled = self.types[self.peel(args[0].ty())].kind;
                 if peeled != if signed { TyKind::Int } else { TyKind::Uint } {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!(
                             "`{call}` expects {} integer",
                             if signed { "a signed" } else { "an unsigned" }
@@ -602,22 +551,21 @@ impl Checker {
                 self.check_expr_as(&mut args[0], None)?;
                 if self.types[self.peel(args[0].ty())].kind != TyKind::Uint {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!("`{call}` expects an unsigned integer"),
                     ));
                 }
                 if let Some(len) = args.get_mut(1) {
                     self.check_expr_as(len, Some(TY_UINT))?;
                     if self.types[len.ty()].kind != TyKind::Uint {
-                        return Err(error(len.line(), len.col(), "a length must be `uint`"));
+                        return Err(error(len.span(), "a length must be `uint`"));
                     }
                 }
             }
             Builtin::AddressToHexString(_) => {
                 need(args.len(), 1)?;
                 self.check_expr_as(&mut args[0], Some(TY_ADDRESS))?;
-                self.expect_addr(args[0].line(), args[0].col(), args[0].ty())?;
+                self.expect_addr(args[0].span(), args[0].ty())?;
             }
             Builtin::FromBits(signed) => {
                 need(args.len(), 1)?;
@@ -629,8 +577,7 @@ impl Checker {
                 self.check_expr_as(&mut args[0], Some(src))?;
                 if !self.same(args[0].ty(), src) {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!("`{call}` expects `{}`", if signed { "uint" } else { "int" }),
                     ));
                 }
@@ -641,14 +588,13 @@ impl Checker {
             Builtin::ListPop => {
                 need(args.len(), 1)?;
                 if !std::mem::take(&mut self.popping) {
-                    return Err(error(line, col, format!("`{call}` is a statement")));
+                    return Err(error(span, format!("`{call}` is a statement")));
                 }
                 self.check_expr(&mut args[0])?;
                 let list = self.peel(args[0].ty());
                 if !self.list_value(list) {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!("`{call}` expects a dynamic list"),
                     ));
                 }
@@ -656,7 +602,7 @@ impl Checker {
                 *ty = args[0].ty();
                 return Ok(());
             }
-            Builtin::ListPush => return Err(error(line, col, format!("`{call}` is a statement"))),
+            Builtin::ListPush => return Err(error(span, format!("`{call}` is a statement"))),
             Builtin::ListResized => {
                 need(args.len(), 2)?;
                 let expect = self.expect.filter(|&t| self.list_value(t));
@@ -664,18 +610,16 @@ impl Checker {
                 let list = self.peel(args[0].ty());
                 if !self.list_value(list) {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         format!("`{call}` expects a dynamic list"),
                     ));
                 }
                 let elem = self.types[list].elem.unwrap_or(0);
-                self.zero_value(line, col, elem)?;
+                self.zero_value(span, elem)?;
                 self.check_expr_as(&mut args[1], Some(TY_UINT))?;
                 if !self.same(args[1].ty(), TY_UINT) {
                     return Err(error(
-                        args[1].line(),
-                        args[1].col(),
+                        args[1].span(),
                         format!("`{call}` takes a `uint` length"),
                     ));
                 }
@@ -689,8 +633,7 @@ impl Checker {
                 need(args.len(), 1)?;
                 if self.module_name.is_some() {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("`{call}` answers for the contract, so only the contract's own functions can call it"),
                     ));
                 }
@@ -702,45 +645,42 @@ impl Checker {
                 for a in args.iter_mut() {
                     self.check_expr(a)?;
                 }
-                self.expect_addr(line, col, args[0].ty())?;
-                self.expect_kind(line, col, args[1].ty(), TyKind::Wei)?;
-                self.forbid_effect(line, col, "create an operation")?;
+                self.expect_addr(span, args[0].ty())?;
+                self.expect_kind(span, args[1].ty(), TyKind::Wei)?;
+                self.forbid_effect(span, "create an operation")?;
             }
             Builtin::RawCall | Builtin::DelegateCall | Builtin::StaticCall => {
                 need(args.len(), 2)?;
                 // A literal target, such as a precompile's address, is an address.
                 self.check_expr_as(&mut args[0], Some(TY_ADDRESS))?;
-                self.expect_addr(args[0].line(), args[0].col(), args[0].ty())?;
+                self.expect_addr(args[0].span(), args[0].ty())?;
                 let bytes = self.bytes_n(0)?;
                 self.check_expr_as(&mut args[1], Some(bytes))?;
                 if !self.same(self.peel(args[1].ty()), bytes) {
                     return Err(error(
-                        args[1].line(),
-                        args[1].col(),
+                        args[1].span(),
                         format!("`{call}` sends a `bytes` value as the calldata"),
                     ));
                 }
                 if kind == Builtin::StaticCall {
                     if !self.in_query {
                         return Err(error(
-                            line,
-                            col,
+                            span,
                             format!("`{call}` is read-only; write `query {call}(...)`"),
                         ));
                     }
                 } else {
                     if self.in_query {
                         return Err(error(
-                            line,
-                            col,
+                            span,
                             format!("`{call}` can change state; `defer` it"),
                         ));
                     }
-                    self.forbid_effect(line, col, "create an operation")?;
+                    self.forbid_effect(span, "create an operation")?;
                 }
             }
             Builtin::Precompile(pre) => {
-                let ret = self.check_precompile(line, col, &call, pre, args)?;
+                let ret = self.check_precompile(span, &call, pre, args)?;
                 *builtin = Some(kind);
                 *ty = ret;
                 return Ok(());
@@ -759,7 +699,7 @@ impl Checker {
             | Builtin::SpecSum
             | Builtin::SpecCount
             | Builtin::SpecForall => {
-                return Err(error(line, col, "internal: not a module built-in"));
+                return Err(error(span, "internal: not a module built-in"));
             }
         }
         *builtin = Some(kind);
@@ -774,14 +714,13 @@ impl Checker {
             name,
             args,
             base: Some(base),
-            line,
-            col,
+            span,
             ..
         } = e
         else {
             return Ok(None);
         };
-        let (line, col) = (*line, *col);
+        let span = *span;
         if !matches!(
             self.intrinsic(base, name),
             Some(Tag::AbiSelector | Tag::AbiInterfaceId)
@@ -804,8 +743,7 @@ impl Checker {
             ) => {
                 let Expr::Ident { name: iface, .. } = base.as_ref() else {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         "`Abi.selector` expects an interface method, like `Token.transfer`",
                     ));
                 };
@@ -818,15 +756,13 @@ impl Checker {
                     [m] => sel(&m.sig),
                     [] => {
                         return Err(error(
-                            line,
-                            col,
+                            span,
                             format!("unknown interface method `{iface}.{method}`"),
                         ))
                     }
                     _ => {
                         return Err(error(
-                            line,
-                            col,
+                            span,
                             format!(
                                 "`{iface}.{method}` is overloaded: {}\nwrite its selector with `Crypto.keccak256` of the signature",
                                 found.iter().map(|m| m.sig.as_str()).collect::<Vec<_>>().join(", ")
@@ -837,29 +773,26 @@ impl Checker {
             }
             ("selector", _) => {
                 return Err(error(
-                    line,
-                    col,
+                    span,
                     "`Abi.selector` expects an interface method, like `Token.transfer`",
                 ));
             }
             ("interfaceId", [Expr::Ident { name: iface, .. }]) => {
                 let Some(methods) = iface_methods(iface) else {
-                    return Err(error(line, col, format!("unknown interface `{iface}`")));
+                    return Err(error(span, format!("unknown interface `{iface}`")));
                 };
                 methods.iter().fold(0, |id, m| id ^ sel(&m.sig))
             }
             ("interfaceId", _) => {
                 return Err(error(
-                    line,
-                    col,
+                    span,
                     "`Abi.interfaceId` expects an interface, like `IERC721`",
                 ));
             }
             _ => return Ok(None),
         };
         Ok(Some(Expr::Lit {
-            line,
-            col,
+            span,
             lit: Lit::Int(Word::from_u64(u64::from(word)), None),
             ty: self.bytes_n(4)?,
         }))
@@ -871,7 +804,7 @@ impl Checker {
             let word = self.bytes_n(32)?;
             self.check_expr_as(salt, Some(word))?;
             if !self.same(salt.ty(), word) {
-                return Err(error(salt.line(), salt.col(), "a salt is a `bytes32`"));
+                return Err(error(salt.span(), "a salt is a `bytes32`"));
             }
         }
         Ok(())
@@ -885,12 +818,12 @@ impl Checker {
                 .named
                 .get(&format!("bytes{n}"))
                 .copied()
-                .ok_or_else(|| error(1, 1, format!("internal: missing `bytes{n}`")));
+                .ok_or_else(|| error_at(1, 1, format!("internal: missing `bytes{n}`")));
         };
         self.named
             .get(name)
             .copied()
-            .ok_or_else(|| error(1, 1, "internal: missing `bytes`"))
+            .ok_or_else(|| error_at(1, 1, "internal: missing `bytes`"))
     }
 
     /// An argument taking `bytes` or a `string`, where a hex literal is the bytes it spells.
@@ -909,7 +842,7 @@ impl Checker {
     fn check_word_arg(&mut self, arg: &mut Expr, expect: usize) -> Result<(), Error> {
         self.check_expr_as(arg, Some(expect))?;
         if !self.same(arg.ty(), expect) {
-            return Err(error(arg.line(), arg.col(), "argument has the wrong type"));
+            return Err(error(arg.span(), "argument has the wrong type"));
         }
         Ok(())
     }
@@ -918,18 +851,13 @@ impl Checker {
         if abi_value(&self.types, arg.ty()) {
             return Ok(());
         }
-        Err(error(
-            arg.line(),
-            arg.col(),
-            "this value cannot be ABI-encoded",
-        ))
+        Err(error(arg.span(), "this value cannot be ABI-encoded"))
     }
 
     /// A precompile's arguments, each of the type its input lays out, and its result's type.
     fn check_precompile(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         call: &str,
         pre: Pre,
         args: &mut [Expr],
@@ -961,8 +889,7 @@ impl Checker {
         };
         if args.len() != params.len() {
             return Err(error(
-                line,
-                col,
+                span,
                 format!("`{call}` expects {} arguments", params.len()),
             ));
         }
@@ -975,8 +902,7 @@ impl Checker {
             };
             if !self.same(got, want) {
                 return Err(error(
-                    arg.line(),
-                    arg.col(),
+                    arg.span(),
                     format!("`{call}` takes `{}` here", display_ty(&self.types, want)),
                 ));
             }
@@ -1001,21 +927,17 @@ impl Checker {
     /// decodes several values as Solidity's `abi.decode(data, (address, uint256))` does.
     fn decode_type(&mut self, arg: &Expr) -> Result<usize, Error> {
         let named = |c: &Self, e: &Expr| -> Result<usize, Error> {
-            let Expr::Ident {
-                name, line, col, ..
-            } = e
-            else {
+            let Expr::Ident { name, span, .. } = e else {
                 return Err(error(
-                    e.line(),
-                    e.col(),
+                    e.span(),
                     "`Abi.decode` expects a type name, or a tuple of type names",
                 ));
             };
             let Some(id) = c.named.get(name).copied() else {
-                return Err(error(*line, *col, format!("unknown type `{name}`")));
+                return Err(error(*span, format!("unknown type `{name}`")));
             };
             if !abi_value(&c.types, id) {
-                return Err(error(*line, *col, format!("`{name}` is not an ABI value")));
+                return Err(error(*span, format!("`{name}` is not an ABI value")));
             }
             Ok(id)
         };

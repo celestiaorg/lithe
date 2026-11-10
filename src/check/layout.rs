@@ -334,7 +334,7 @@ pub(super) fn check_storage_shape(types: &[RType], id: usize, at: &str) -> Resul
         | TyKind::String => Ok(()),
         TyKind::Nominal => {
             let Some(under) = types[id].elem else {
-                return Err(error(
+                return Err(error_at(
                     1,
                     1,
                     format!("storage field `{at}` cannot hold this type"),
@@ -356,7 +356,7 @@ pub(super) fn check_storage_shape(types: &[RType], id: usize, at: &str) -> Resul
         }
         TyKind::Map => {
             let (Some(key), Some(val)) = (types[id].left, types[id].right) else {
-                return Err(error(
+                return Err(error_at(
                     1,
                     1,
                     format!("storage field `{at}` cannot hold this type"),
@@ -373,7 +373,7 @@ pub(super) fn check_storage_shape(types: &[RType], id: usize, at: &str) -> Resul
         }
         TyKind::List | TyKind::Option => {
             let Some(elem) = types[id].elem else {
-                return Err(error(
+                return Err(error_at(
                     1,
                     1,
                     format!("storage field `{at}` cannot hold this type"),
@@ -383,7 +383,7 @@ pub(super) fn check_storage_shape(types: &[RType], id: usize, at: &str) -> Resul
                 && types[id].bits == 0
                 && types[elem].kind == TyKind::Operation
             {
-                return Err(error(
+                return Err(error_at(
                     1,
                     1,
                     format!("storage field `{at}` cannot hold this type"),
@@ -392,7 +392,7 @@ pub(super) fn check_storage_shape(types: &[RType], id: usize, at: &str) -> Resul
             // A stored list's elements are values, laid out as Solidity lays out an array's.
             let inner = types[peel_id(types, elem)].kind;
             if types[id].kind == TyKind::List && !is_value(types, elem) {
-                return Err(error(
+                return Err(error_at(
                     1,
                     1,
                     format!("storage field `{at}` is a list of maps; a stored list holds values"),
@@ -410,7 +410,7 @@ pub(super) fn check_storage_shape(types: &[RType], id: usize, at: &str) -> Resul
             }
             word_storage(types, elem, at)
         }
-        _ => Err(error(
+        _ => Err(error_at(
             1,
             1,
             format!("storage field `{at}` cannot hold this type"),
@@ -427,7 +427,7 @@ fn word_storage(types: &[RType], id: usize, at: &str) -> Result<(), Error> {
     if is_word(types[id].kind) && types[id].words == 1 {
         Ok(())
     } else {
-        Err(error(
+        Err(error_at(
             1,
             1,
             format!("storage field `{at}` must hold a single word"),
@@ -477,7 +477,7 @@ pub(super) fn check_transient_shape(types: &[RType], ty: usize, at: &str) -> Res
     if ok {
         Ok(())
     } else {
-        Err(error(
+        Err(error_at(
             1,
             1,
             format!(

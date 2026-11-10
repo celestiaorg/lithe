@@ -30,37 +30,33 @@ pub(super) fn require_payable(funcs: &[Func]) -> Result<(), Error> {
         match func.kind {
             ItemKind::Entry if !func.payable => {
                 return Err(error(
-                    func.line,
-                    func.col,
+                    func.span,
                     format!(
                         "external function `{}` reads `Evm.value()`; write `external payable function`",
                         func.name
                     ),
-                ).in_file(&func.origin));
+                ).in_file(func.file));
             }
             ItemKind::Deploy if !func.payable => {
                 return Err(error(
-                    func.line,
-                    func.col,
+                    func.span,
                     "`deploy` reads `Evm.value()`; write `payable deploy`",
                 )
-                .in_file(&func.origin));
+                .in_file(func.file));
             }
             ItemKind::Fallback if !func.payable => {
                 return Err(error(
-                    func.line,
-                    func.col,
+                    func.span,
                     "`fallback` reads `Evm.value()`; write `payable fallback`",
                 )
-                .in_file(&func.origin));
+                .in_file(func.file));
             }
             ItemKind::View => {
                 return Err(error(
-                    func.line,
-                    func.col,
+                    func.span,
                     format!("view `{}` cannot read `Evm.value()`", func.name),
                 )
-                .in_file(&func.origin));
+                .in_file(func.file));
             }
             _ => {}
         }

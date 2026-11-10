@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use crate::config::{self, Config, Dep, Pin};
-use crate::{error, Error};
+use crate::{error_at, Error};
 
 /// What each git package's url and pin resolved to, as `lithe.lock` records them: the commit,
 /// and for a version range, the tag it picked.
@@ -205,7 +205,7 @@ fn read_lock(project: &Path) -> Result<Lock, Error> {
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Lock::new()),
-        Err(err) => return Err(error(0, 0, format!("{}: {err}", path.display()))),
+        Err(err) => return Err(error_at(0, 0, format!("{}: {err}", path.display()))),
     };
     let mut lock = Lock::new();
     for (i, line) in text.lines().enumerate() {
@@ -217,7 +217,7 @@ fn read_lock(project: &Path) -> Result<Lock, Error> {
             [url, spec, commit] => (url, spec, commit, None),
             [url, spec, commit, tag] => (url, spec, commit, Some(tag.to_string())),
             _ => {
-                return Err(error(
+                return Err(error_at(
                     0,
                     0,
                     format!(
@@ -425,7 +425,7 @@ fn nested(dir: &Path, walked: &mut Vec<PathBuf>) -> Vec<Result<Config, Error>> {
 pub fn install(near: &Path, update: bool) -> Result<Vec<String>, Error> {
     let config = config::find(near)?;
     let Some(project) = config.root.clone() else {
-        return Err(error(
+        return Err(error_at(
             0,
             0,
             "no lithe.toml here or above; `lithe add` starts one",
@@ -437,7 +437,7 @@ pub fn install(near: &Path, update: bool) -> Result<Vec<String>, Error> {
         read_lock(&project)?
     };
     let mut walk = Walk {
-        store: store().map_err(|msg| error(0, 0, msg))?,
+        store: store().map_err(|msg| error_at(0, 0, msg))?,
         tags: HashMap::new(),
         fresh: Vec::new(),
     };
@@ -458,7 +458,7 @@ pub fn install(near: &Path, update: bool) -> Result<Vec<String>, Error> {
         let had = std::fs::read_to_string(&path).ok();
         if had.as_deref() != Some(text.as_str()) && (had.is_some() || !lock.is_empty()) {
             std::fs::write(&path, text)
-                .map_err(|err| error(0, 0, format!("{}: {err}", path.display())))?;
+                .map_err(|err| error_at(0, 0, format!("{}: {err}", path.display())))?;
         }
         let mut lines: Vec<String> = Vec::new();
         for (name, key) in reached {
@@ -474,7 +474,7 @@ pub fn install(near: &Path, update: bool) -> Result<Vec<String>, Error> {
         }
         return Ok(lines);
     }
-    Err(error(
+    Err(error_at(
         0,
         0,
         "the packages' version ranges never settle on one set of versions",
@@ -540,7 +540,7 @@ impl Walk {
                 continue;
             }
             'deps: for (name, dep) in &config.deps {
-                let fail = |msg: String| error(0, 0, format!("package `{name}`: {msg}"));
+                let fail = |msg: String| error_at(0, 0, format!("package `{name}`: {msg}"));
                 let found = 'dep: {
                     let (dir, src) = match dep {
                         Dep::Path(path) => (root.join(path), None),
@@ -803,7 +803,7 @@ pub struct Add {
 /// `rev`, by default the releases compatible with its newest version tag, `^1.4.2`, else the
 /// commit its default branch is at. If installing fails, the `lithe.toml` is left as it was.
 pub fn add(near: &Path, add: &Add) -> Result<Vec<String>, Error> {
-    let fail = |msg: String| error(0, 0, msg);
+    let fail = |msg: String| error_at(0, 0, msg);
     let config = config::find(near)?;
     let dir = config.root.clone().unwrap_or_else(|| near.to_path_buf());
     let toml = dir.join("lithe.toml");

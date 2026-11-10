@@ -1,7 +1,7 @@
 //! Reprint tokens. Line breaks stay; spacing and indent are canonical. A line over its width
 //! gets more breaks, outermost structure first, until it fits or nothing is left to break.
 
-use crate::error;
+use crate::error_at;
 use crate::lex::{self, Kind, Piece, PieceKind};
 use crate::Error;
 
@@ -13,7 +13,7 @@ pub fn format_source(src: &str, width: usize) -> Result<String, Error> {
     verify(&arranged, &out)?;
     let again = render(&header(&out)?, width)?;
     if again != out {
-        return Err(error(0, 0, "formatter is not idempotent"));
+        return Err(error_at(0, 0, "formatter is not idempotent"));
     }
     Ok(out)
 }
@@ -425,7 +425,7 @@ fn same_tokens(src: &str, out: &str) -> Result<(), Error> {
         Ok(out)
     };
     if kept(src)? != kept(out)? {
-        return Err(error(0, 0, "formatter changed the declarations"));
+        return Err(error_at(0, 0, "formatter changed the declarations"));
     }
     Ok(())
 }
@@ -1463,21 +1463,21 @@ fn verify(src: &str, out: &str) -> Result<(), Error> {
     let before = lex::pieces(src)?;
     let after = lex::pieces(out)?;
     if before.len() != after.len() {
-        return Err(error(0, 0, "formatter changed the token sequence"));
+        return Err(error_at(0, 0, "formatter changed the token sequence"));
     }
     for (a, b) in before.iter().zip(&after) {
         match (a.kind, b.kind) {
             (PieceKind::Comment, PieceKind::Comment) => {
                 if !same_comment(&src[a.start..a.end], &out[b.start..b.end]) {
-                    return Err(error(0, 0, "formatter changed a comment"));
+                    return Err(error_at(0, 0, "formatter changed a comment"));
                 }
             }
             (PieceKind::Token(x), PieceKind::Token(y)) if x == y => {
                 if src[a.start..a.end] != out[b.start..b.end] {
-                    return Err(error(0, 0, "formatter changed a token"));
+                    return Err(error_at(0, 0, "formatter changed a token"));
                 }
             }
-            _ => return Err(error(0, 0, "formatter changed the token sequence")),
+            _ => return Err(error_at(0, 0, "formatter changed the token sequence")),
         }
     }
     Ok(())

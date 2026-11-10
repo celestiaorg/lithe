@@ -98,9 +98,10 @@ pub(crate) fn find(near: &Path) -> Result<Config, Error> {
 /// The settings of the `lithe.toml` at `path`.
 pub(crate) fn read(path: &Path) -> Result<Config, Error> {
     let text = std::fs::read_to_string(path)
-        .map_err(|err| crate::error(0, 0, format!("{}: {err}", path.display())))?;
-    let mut config = parse(&text)
-        .map_err(|(line, msg)| crate::error(0, 0, format!("{}:{line}: {msg}", path.display())))?;
+        .map_err(|err| crate::error_at(0, 0, format!("{}: {err}", path.display())))?;
+    let mut config = parse(&text).map_err(|(line, msg)| {
+        crate::error_at(0, 0, format!("{}:{line}: {msg}", path.display()))
+    })?;
     config.root = path.parent().map(Path::to_path_buf);
     Ok(config)
 }

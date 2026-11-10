@@ -46,12 +46,13 @@ impl Cat {
 #[derive(Debug, Clone)]
 pub(crate) struct Decl {
     pub cat: Cat,
+    /// The file the declaration is in, by its path and in the build's source map.
     pub origin: String,
+    pub file: FileId,
     pub name: String,
     pub canonical: String,
     pub private: bool,
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
     kind: Option<ItemKind>,
     shape: Vec<String>,
 }
@@ -113,6 +114,7 @@ pub(crate) struct Scopes {
 /// One file, or one contract of a file of contracts, with its imports.
 pub(crate) struct Unit<'a> {
     pub key: Key,
+    pub file: FileId,
     pub prog: &'a mut Program,
     pub imports: Vec<Import>,
     /// The contracts of its file.
@@ -141,62 +143,48 @@ impl Scopes {
 /// Builds each unit's scope, gives every declaration its canonical name, and rewrites every
 /// unit's declarations and references to canonical names. `units` comes deepest import
 /// first, as the files are merged.
-pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
+pub(crate) fn link(units: &mut [Unit], files: &SourceMap) -> Result<Scopes, Error> {
     let mut scopes = Scopes::default();
     let mut own: HashMap<Key, Vec<usize>> = HashMap::new();
     let mut file_modules: HashMap<String, Vec<usize>> = HashMap::new();
     for unit in units.iter() {
         let origin = &unit.key.0;
+        let file = unit.file;
         let prog = &*unit.prog;
         let mut ids = Vec::new();
         let mut add = |scopes: &mut Scopes, decl: Decl| {
             scopes.decls.push(decl);
             ids.push(scopes.decls.len() - 1);
         };
-        let item = |cat: Cat, name: &str, private: bool, line: u32, col: u32| Decl {
+        let item = |cat: Cat, name: &str, private: bool, span: Span| Decl {
             cat,
             origin: origin.clone(),
+            file,
             name: name.to_string(),
             canonical: String::new(),
             private,
-            line,
-            col,
+            span,
             kind: None,
             shape: Vec::new(),
         };
         for d in &prog.types {
-            add(
-                &mut scopes,
-                item(Cat::Type, &d.name, d.private, d.line, d.col),
-            );
+            add(&mut scopes, item(Cat::Type, &d.name, d.private, d.span));
         }
         for d in &prog.errors {
-            add(
-                &mut scopes,
-                item(Cat::Error, &d.name, d.private, d.line, d.col),
-            );
+            add(&mut scopes, item(Cat::Error, &d.name, d.private, d.span));
         }
         for d in &prog.error_sets {
-            add(
-                &mut scopes,
-                item(Cat::ErrorSet, &d.name, false, d.line, d.col),
-            );
+            add(&mut scopes, item(Cat::ErrorSet, &d.name, false, d.span));
         }
         for d in &prog.events {
-            add(
-                &mut scopes,
-                item(Cat::Event, &d.name, d.private, d.line, d.col),
-            );
+            add(&mut scopes, item(Cat::Event, &d.name, d.private, d.span));
         }
         for d in &prog.interfaces {
-            add(
-                &mut scopes,
-                item(Cat::Interface, &d.name, false, d.line, d.col),
-            );
+            add(&mut scopes, item(Cat::Interface, &d.name, false, d.span));
         }
         for f in &prog.funcs {
             let cat = if f.constant { Cat::Const } else { Cat::Func };
-            let mut decl = item(cat, &f.name, f.private, f.line, f.col);
+            let mut decl = item(cat, &f.name, f.private, f.span);
             decl.kind = (!f.constant).then_some(f.kind);
             decl.shape = f
                 .params
@@ -209,9 +197,7 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
         if !file_modules.contains_key(origin) {
             let mut ids = Vec::new();
             for m in &prog.modules {
-                scopes
-                    .decls
-                    .push(item(Cat::Module, &m.name, false, m.line, m.col));
+                scopes.decls.push(item(Cat::Module, &m.name, false, m.span));
                 ids.push(scopes.decls.len() - 1);
             }
             file_modules.insert(origin.clone(), ids);
@@ -274,6 +260,7 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
             for id in public {
                 let name = spell(&scopes.decls[id].name);
                 insert(
+                    files,
                     &scopes.decls,
                     &mut groups,
                     &mut scope,
@@ -282,23 +269,32 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
                     Some(k),
                     via,
                 )
-                .map_err(|err| err.in_file(&unit.key.0))?;
+                .map_err(|err| err.in_path(&unit.key.0))?;
             }
             for &id in file_modules.get(target).into_iter().flatten() {
                 let name = spell(&scopes.decls[id].name);
-                insert_module(&scopes.decls, &mut scope, name, id, Some(k), via)
-                    .map_err(|err| err.in_file(&unit.key.0))?;
+                insert_module(files, &scopes.decls, &mut scope, name, id, Some(k), via)
+                    .map_err(|err| err.in_path(&unit.key.0))?;
             }
         }
         for &id in &own[&unit.key] {
             let name = scopes.decls[id].name.clone();
-            insert(&scopes.decls, &mut groups, &mut scope, name, id, None, None)
-                .map_err(|err| err.in_file(&unit.key.0))?;
+            insert(
+                files,
+                &scopes.decls,
+                &mut groups,
+                &mut scope,
+                name,
+                id,
+                None,
+                None,
+            )
+            .map_err(|err| err.in_path(&unit.key.0))?;
         }
         for &id in &file_modules[&unit.key.0] {
             let name = scopes.decls[id].name.clone();
-            insert_module(&scopes.decls, &mut scope, name, id, None, None)
-                .map_err(|err| err.in_file(&unit.key.0))?;
+            insert_module(files, &scopes.decls, &mut scope, name, id, None, None)
+                .map_err(|err| err.in_path(&unit.key.0))?;
         }
         if unit.key.1.is_none() {
             file_domains.insert(unit.key.0.clone(), scope.domains.clone());
@@ -478,7 +474,7 @@ pub(crate) fn link(units: &mut [Unit]) -> Result<Scopes, Error> {
             locals: HashSet::new(),
         };
         r.program(unit.prog, &module_names)
-            .map_err(|err| err.in_file(&unit.key.0))?;
+            .map_err(|err| err.in_path(&unit.key.0))?;
         unit.prog.refs = std::mem::take(&mut r.refs).into_iter().collect();
         scopes.scopes.insert(unit.key.clone(), scope);
     }
@@ -597,16 +593,18 @@ fn single(kind: Option<ItemKind>) -> bool {
     )
 }
 
-fn site(decl: &Decl) -> Site<'_> {
+fn site<'a>(files: &'a SourceMap, decl: &Decl) -> Site<'a> {
     let kind = match decl.kind {
         Some(kind) => kind_name(kind),
         None => decl.cat.noun(),
     };
-    Site::of(&decl.origin, decl.line, decl.col, kind)
+    Site::of(files, decl.file, decl.span, kind)
 }
 
 /// Adds `id` to the scope as `name`, or fails as two declarations of one name do.
+#[allow(clippy::too_many_arguments)]
 fn insert(
+    files: &SourceMap,
     decls: &[Decl],
     groups: &mut [usize],
     scope: &mut Scope,
@@ -627,18 +625,16 @@ fn insert(
             .filter(|decl| decl.cat == Cat::Func)
             .collect();
         if let Some(first) = funcs.first() {
-            let (line, col) = at(via, new.line, new.col);
+            let span = at(via, new.span);
             if single(new.kind) && first.kind == new.kind {
                 return Err(error(
-                    line,
-                    col,
+                    span,
                     format!("a contract has at most one `{}`", new.name),
                 ));
             }
             if single(new.kind) || single(first.kind) {
                 return Err(error(
-                    line,
-                    col,
+                    span,
                     format!(
                         "the contract declares `{}`, so no function can take that name",
                         new.name
@@ -675,6 +671,7 @@ fn insert(
                 "overloads need different parameter types; rename one or change its parameters"
             };
             return Err(taken_error(
+                files,
                 &decls[have[0].decl],
                 new,
                 &name,
@@ -684,7 +681,14 @@ fn insert(
         }
     }
     if let Some(entry) = have.first() {
-        return Err(taken_error(&decls[entry.decl], new, &name, via, None));
+        return Err(taken_error(
+            files,
+            &decls[entry.decl],
+            new,
+            &name,
+            via,
+            None,
+        ));
     }
     scope
         .names
@@ -695,6 +699,7 @@ fn insert(
 }
 
 fn insert_module(
+    files: &SourceMap,
     decls: &[Decl],
     scope: &mut Scope,
     name: String,
@@ -708,8 +713,8 @@ fn insert_module(
         }
         let have = &decls[have.decl];
         let new = &decls[id];
-        let have_site = Site::of(&have.origin, have.line, have.col, "");
-        let new_site = Site::of(&new.origin, new.line, new.col, "");
+        let have_site = Site::of(files, have.file, have.span, "");
+        let new_site = Site::of(files, new.file, new.span, "");
         return Err(clash(
             format!("duplicate module `{name}`"),
             &name,
@@ -725,14 +730,15 @@ fn insert_module(
 
 /// In one file, `fix` or a rename resolves a clash; across files, so does an alias.
 fn taken_error(
+    files: &SourceMap,
     have: &Decl,
     new: &Decl,
     name: &str,
     via: Option<&UseDecl>,
     fix: Option<&str>,
 ) -> Error {
-    let have_site = site(have);
-    let new_site = site(new);
+    let have_site = site(files, have);
+    let new_site = site(files, new);
     if have.origin == new.origin {
         let noun = |decl: &Decl| decl.cat.noun();
         let what = if noun(have) == noun(new) {
@@ -774,8 +780,8 @@ fn taken_error(
     )
 }
 
-fn at(via: Option<&UseDecl>, line: u32, col: u32) -> (u32, u32) {
-    via.map(|decl| (decl.line, decl.col)).unwrap_or((line, col))
+fn at(via: Option<&UseDecl>, span: Span) -> Span {
+    via.map(|decl| decl.span).unwrap_or(span)
 }
 
 /// The types every file knows.
@@ -849,13 +855,7 @@ impl Resolver<'_> {
         }
         for d in &mut prog.error_sets {
             for member in &mut d.members {
-                self.named(
-                    &mut member.name,
-                    member.line,
-                    member.col,
-                    &[Cat::Error],
-                    "error",
-                )?;
+                self.named(&mut member.name, member.span, &[Cat::Error], "error")?;
             }
         }
         for d in &mut prog.events {
@@ -876,42 +876,30 @@ impl Resolver<'_> {
         }
         for guard in &mut prog.guards {
             if let Some(of) = &mut guard.guard_of {
-                self.module_ref(&mut of.module.name, of.module.line, of.module.col)?;
+                self.module_ref(&mut of.module.name, of.module.span)?;
             }
             self.func(guard)?;
         }
         for hook in &mut prog.hooks {
             if let Some(of) = &mut hook.hook_of {
-                self.module_ref(&mut of.module.name, of.module.line, of.module.col)?;
+                self.module_ref(&mut of.module.name, of.module.span)?;
             }
             self.func(hook)?;
         }
         for use_ in prog.compose.iter_mut().chain(&mut prog.facets) {
-            self.module_ref(&mut use_.name, use_.line, use_.col)?;
+            self.module_ref(&mut use_.name, use_.span)?;
         }
         for exposed in &mut prog.exposes {
-            self.module_ref(&mut exposed.module, exposed.line, exposed.col)?;
+            self.module_ref(&mut exposed.module, exposed.span)?;
             for iface in &mut exposed.interfaces {
-                self.named(
-                    &mut iface.name,
-                    iface.line,
-                    iface.col,
-                    &[Cat::Interface],
-                    "interface",
-                )?;
+                self.named(&mut iface.name, iface.span, &[Cat::Interface], "interface")?;
             }
             for decl in &mut exposed.decls {
                 self.header(decl)?;
             }
         }
         for iface in &mut prog.supports {
-            self.named(
-                &mut iface.name,
-                iface.line,
-                iface.col,
-                &[Cat::Interface],
-                "interface",
-            )?;
+            self.named(&mut iface.name, iface.span, &[Cat::Interface], "interface")?;
         }
         if let Some(guard) = &mut prog.guard {
             self.locals.clear();
@@ -943,7 +931,7 @@ impl Resolver<'_> {
 
     fn module_body(&mut self, module: &mut ModuleDecl) -> Result<(), Error> {
         for req in &mut module.requires {
-            self.module_ref(&mut req.name, req.line, req.col)?;
+            self.module_ref(&mut req.name, req.span)?;
         }
         let requires: Vec<String> = module.requires.iter().map(|r| r.name.clone()).collect();
         let mut members: HashSet<String> = module
@@ -984,13 +972,7 @@ impl Resolver<'_> {
             }
             for d in &mut module.error_sets {
                 for member in &mut d.members {
-                    self.named(
-                        &mut member.name,
-                        member.line,
-                        member.col,
-                        &[Cat::Error],
-                        "error",
-                    )?;
+                    self.named(&mut member.name, member.span, &[Cat::Error], "error")?;
                 }
             }
             for d in &mut module.events {
@@ -1041,7 +1023,7 @@ impl Resolver<'_> {
         }
         let result = (|| {
             for p in &func.params {
-                self.unshadowed([&p.name], p.line, p.col)?;
+                self.unshadowed([&p.name], p.span)?;
             }
             self.header(func)?;
             self.stmts(&mut func.stmts)?;
@@ -1065,8 +1047,7 @@ impl Resolver<'_> {
             for part in &mut raises.parts {
                 self.named(
                     &mut part.name,
-                    part.line,
-                    part.col,
+                    part.span,
                     &[Cat::Error, Cat::ErrorSet],
                     "error",
                 )?;
@@ -1086,7 +1067,7 @@ impl Resolver<'_> {
             }
             self.spec_owner = None;
             if let Some(module) = &mut block.module {
-                self.module_ref(module, block.line, block.col)?;
+                self.module_ref(module, block.span)?;
                 self.spec_owner = Some(module.clone());
             } else if let Some(target) = &mut block.target {
                 if let Some(name) = self.lookup(&target.name, &[Cat::Func]) {
@@ -1096,17 +1077,11 @@ impl Resolver<'_> {
             for clause in &mut block.clauses {
                 match &mut clause.kind {
                     ClauseKind::Const { ty, name } => {
-                        self.unshadowed([&*name], clause.line, clause.col)?;
+                        self.unshadowed([&*name], clause.span)?;
                         self.ty(ty)?;
                     }
                     ClauseKind::Raises(named) => {
-                        self.named(
-                            &mut named.name,
-                            named.line,
-                            named.col,
-                            &[Cat::Error],
-                            "error",
-                        )?;
+                        self.named(&mut named.name, named.span, &[Cat::Error], "error")?;
                     }
                     ClauseKind::Invariant(_) | ClauseKind::Panics | ClauseKind::Ensures => {}
                 }
@@ -1151,12 +1126,12 @@ impl Resolver<'_> {
         self.members.contains(name)
     }
 
-    fn module_ref(&mut self, name: &mut String, line: u32, col: u32) -> Result<(), Error> {
+    fn module_ref(&mut self, name: &mut String, span: Span) -> Result<(), Error> {
         if let Some(canonical) = self.lookup_module(name) {
             *name = canonical;
             return Ok(());
         }
-        self.missing(&name.clone(), &[Cat::Module], "module", line, col)
+        self.missing(&name.clone(), &[Cat::Module], "module", span)
     }
 
     /// A name that some file this one does not import declares.
@@ -1209,20 +1184,9 @@ impl Resolver<'_> {
         ))
     }
 
-    fn missing(
-        &self,
-        spelled: &str,
-        cats: &[Cat],
-        what: &str,
-        line: u32,
-        col: u32,
-    ) -> Result<(), Error> {
+    fn missing(&self, spelled: &str, cats: &[Cat], what: &str, span: Span) -> Result<(), Error> {
         match self.hidden(spelled, cats) {
-            Some(note) => Err(error(
-                line,
-                col,
-                format!("unknown {what} `{spelled}`\n\n{note}"),
-            )),
+            Some(note) => Err(error(span, format!("unknown {what} `{spelled}`\n\n{note}"))),
             None => Ok(()),
         }
     }
@@ -1237,8 +1201,7 @@ impl Resolver<'_> {
     fn named(
         &mut self,
         name: &mut String,
-        line: u32,
-        col: u32,
+        span: Span,
         cats: &[Cat],
         what: &str,
     ) -> Result<(), Error> {
@@ -1252,12 +1215,12 @@ impl Resolver<'_> {
         if self.member(name) {
             return Ok(());
         }
-        self.missing(name, cats, what, line, col)
+        self.missing(name, cats, what, span)
     }
 
     fn ty(&mut self, ty: &mut TypeRef) -> Result<(), Error> {
         match ty {
-            TypeRef::Name { name, line, col } => {
+            TypeRef::Name { name, span } => {
                 if self.type_params.contains(name.as_str())
                     || universe_type(name)
                     || self.own_member(name)
@@ -1271,14 +1234,8 @@ impl Resolver<'_> {
                 if self.member(name) {
                     return Ok(());
                 }
-                let (line, col) = (*line, *col);
-                self.missing(
-                    &name.clone(),
-                    &[Cat::Type, Cat::Interface],
-                    "type",
-                    line,
-                    col,
-                )
+                let span = *span;
+                self.missing(&name.clone(), &[Cat::Type, Cat::Interface], "type", span)
             }
             TypeRef::Record { fields, .. } => {
                 for field in fields {
@@ -1312,17 +1269,13 @@ impl Resolver<'_> {
                 Ok(())
             }
             TypeRef::Apply {
-                name,
-                args,
-                line,
-                col,
-                ..
+                name, args, span, ..
             } => {
                 if let Some(canonical) = self.lookup_module(name) {
                     *name = canonical;
                 } else if self.lookup(name, &[Cat::Type]).is_none() {
-                    let (line, col) = (*line, *col);
-                    self.missing(&name.clone(), &[Cat::Module], "module", line, col)?;
+                    let span = *span;
+                    self.missing(&name.clone(), &[Cat::Module], "module", span)?;
                 }
                 for arg in args {
                     self.ty(arg)?;
@@ -1347,8 +1300,7 @@ impl Resolver<'_> {
                 if let Expr::Ident { name, .. } = &*size {
                     if module.consts.contains(name) {
                         *base = Some(Box::new(Expr::Ident {
-                            line: size.line(),
-                            col: size.col(),
+                            span: size.span(),
                             name: module.name.clone(),
                             sym: None,
                             builtin: None,
@@ -1364,8 +1316,7 @@ impl Resolver<'_> {
             Expr::Call {
                 name,
                 base: base @ None,
-                line,
-                col,
+                span,
                 ..
             },
             Some(module),
@@ -1373,8 +1324,7 @@ impl Resolver<'_> {
         {
             if module.funcs.contains(name.as_str()) {
                 *base = Some(Box::new(Expr::Ident {
-                    line: *line,
-                    col: *col,
+                    span: *span,
                     name: module.name.clone(),
                     sym: None,
                     builtin: None,
@@ -1420,8 +1370,7 @@ impl Resolver<'_> {
                 expr,
                 name,
                 parts,
-                line,
-                col,
+                span,
                 ..
             }
             | Stmt::Var {
@@ -1429,11 +1378,10 @@ impl Resolver<'_> {
                 expr,
                 name,
                 parts,
-                line,
-                col,
+                span,
                 ..
             } => {
-                self.unshadowed(std::iter::once(&*name).chain(&*parts), *line, *col)?;
+                self.unshadowed(std::iter::once(&*name).chain(&*parts), *span)?;
                 self.ty(ty)?;
                 self.expr(expr)
             }
@@ -1442,11 +1390,10 @@ impl Resolver<'_> {
                 index,
                 keys,
                 expr,
-                line,
-                col,
+                span,
                 ..
             } => {
-                self.path(path, *line, *col)?;
+                self.path(path, *span)?;
                 if let Some(index) = index {
                     self.expr(index)?;
                 }
@@ -1471,13 +1418,8 @@ impl Resolver<'_> {
                 self.raised(reason)
             }
             Stmt::Fail { reason } => self.raised(reason),
-            Stmt::Emit {
-                name,
-                fields,
-                line,
-                col,
-            } => {
-                self.named(name, *line, *col, &[Cat::Event], "event")?;
+            Stmt::Emit { name, fields, span } => {
+                self.named(name, *span, &[Cat::Event], "event")?;
                 for (_, expr) in fields {
                     self.expr(expr)?;
                 }
@@ -1495,13 +1437,13 @@ impl Resolver<'_> {
                     self.expr(value)?;
                 }
                 if let Some(then) = then {
-                    self.unshadowed(&then.names, then.line, then.col)?;
+                    self.unshadowed(&then.names, then.span)?;
                     if let Some(ty) = &mut then.ty {
                         self.ty(ty)?;
                     }
                     self.stmts(&mut then.stmts)?;
                     if let Some(failed) = &mut then.error {
-                        self.unshadowed(&failed.names, failed.line, failed.col)?;
+                        self.unshadowed(&failed.names, failed.span)?;
                         if let Some(ty) = &mut failed.ty {
                             self.ty(ty)?;
                         }
@@ -1519,11 +1461,10 @@ impl Resolver<'_> {
                 invariants,
                 index,
                 name,
-                line,
-                col,
+                span,
                 ..
             } => {
-                self.unshadowed(index.iter().chain([&*name]), *line, *col)?;
+                self.unshadowed(index.iter().chain([&*name]), *span)?;
                 for inv in invariants.iter_mut() {
                     self.expr(inv)?;
                 }
@@ -1548,7 +1489,7 @@ impl Resolver<'_> {
     }
 
     /// `M.domain.field := v` and `A.M.domain := v`: the module named as this file names it.
-    fn path(&mut self, path: &mut Vec<String>, line: u32, col: u32) -> Result<(), Error> {
+    fn path(&mut self, path: &mut Vec<String>, span: Span) -> Result<(), Error> {
         let Some(first) = path.first() else {
             return Ok(());
         };
@@ -1575,8 +1516,7 @@ impl Resolver<'_> {
         }
         if path.len() >= 2 {
             let first = Expr::Ident {
-                line,
-                col,
+                span,
                 name: path[0].clone(),
                 sym: None,
                 builtin: None,
@@ -1619,15 +1559,14 @@ impl Resolver<'_> {
 
     /// `storage.d` and `M.storage.d`, written as fields: the domain as one name.
     fn domain_expr(&mut self, expr: &mut Expr) -> bool {
-        let (at_line, at_col) = (expr.line(), expr.col());
+        let at_span = expr.span();
         let Expr::Field { base, name, .. } = expr else {
             return false;
         };
-        let (line, col) = (base.line(), base.col());
+        let span = base.span();
         let rewritten = match base.as_mut() {
             Expr::Ident { name: kind, .. } if self.owns(kind, name) => Expr::Ident {
-                line,
-                col,
+                span,
                 name: format!("{kind}.{name}"),
                 sym: None,
                 builtin: None,
@@ -1645,11 +1584,9 @@ impl Resolver<'_> {
                     return false;
                 }
                 Expr::Field {
-                    line: at_line,
-                    col: at_col,
+                    span: at_span,
                     base: Box::new(Expr::Ident {
-                        line: module.line(),
-                        col: module.col(),
+                        span: module.span(),
                         name: canonical,
                         sym: None,
                         builtin: None,
@@ -1669,8 +1606,8 @@ impl Resolver<'_> {
 
     fn raised(&mut self, reason: &mut Raised) -> Result<(), Error> {
         if !reason.forward {
-            let (line, col) = (reason.line, reason.col);
-            self.named(&mut reason.name, line, col, &[Cat::Error], "error")?;
+            let span = reason.span;
+            self.named(&mut reason.name, span, &[Cat::Error], "error")?;
         }
         match &mut reason.form {
             RaisedForm::Unit => Ok(()),
@@ -1715,10 +1652,9 @@ impl Resolver<'_> {
                         if !self.consts.contains(&format!("{module}.{name}")) {
                             return None;
                         }
-                        let (line, col) = (base.line(), base.col());
+                        let span = base.span();
                         let base = Expr::Ident {
-                            line,
-                            col,
+                            span,
                             name: module,
                             sym: None,
                             builtin: None,
@@ -1731,8 +1667,7 @@ impl Resolver<'_> {
             _ => return None,
         };
         Some(Expr::Call {
-            line: expr.line(),
-            col: expr.col(),
+            span: expr.span(),
             name,
             args: Vec::new(),
             base,
@@ -1748,8 +1683,7 @@ impl Resolver<'_> {
     fn unshadowed<'n>(
         &self,
         names: impl IntoIterator<Item = &'n String>,
-        line: u32,
-        col: u32,
+        span: Span,
     ) -> Result<(), Error> {
         for name in names {
             let module = self
@@ -1763,8 +1697,7 @@ impl Resolver<'_> {
             });
             if module || file {
                 return Err(error(
-                    line,
-                    col,
+                    span,
                     format!("`{name}` names a constant; rename one of them"),
                 ));
             }
@@ -1790,21 +1723,14 @@ impl Resolver<'_> {
 
     /// A namespace this file does not import: `Evm` with no `import "std/evm";`.
     fn hidden_namespace(&self, expr: &Expr) -> Result<(), Error> {
-        let Expr::Ident {
-            name, line, col, ..
-        } = expr
-        else {
+        let Expr::Ident { name, span, .. } = expr else {
             return Ok(());
         };
         if self.locals.contains(name) || self.scope.aliases.contains_key(name) {
             return Ok(());
         }
         match self.hidden(name, &[Cat::Module]) {
-            Some(note) => Err(error(
-                *line,
-                *col,
-                format!("unknown name `{name}`\n\n{note}"),
-            )),
+            Some(note) => Err(error(*span, format!("unknown name `{name}`\n\n{note}"))),
             None => Ok(()),
         }
     }
@@ -1829,24 +1755,16 @@ impl Resolver<'_> {
             (Tag::Call(Builtin::AbiDecode), [_, ty, ..]) => {
                 self.named_expr(ty, &[Cat::Type, Cat::Interface], "type")
             }
-            (
-                Tag::Call(Builtin::CreationCode),
-                [Expr::Ident {
-                    name, line, col, ..
-                }, ..],
-            ) => self.visible_contract(name, *line, *col),
-            (
-                Tag::Call(Builtin::FacetAddress),
-                [Expr::Ident {
-                    name, line, col, ..
-                }, ..],
-            ) => {
+            (Tag::Call(Builtin::CreationCode), [Expr::Ident { name, span, .. }, ..]) => {
+                self.visible_contract(name, *span)
+            }
+            (Tag::Call(Builtin::FacetAddress), [Expr::Ident { name, span, .. }, ..]) => {
                 if let Some(canonical) = self.lookup_module(name) {
                     *name = canonical;
                     return Ok(());
                 }
                 let spelled = name.clone();
-                self.missing(&spelled, &[Cat::Module], "module", *line, *col)
+                self.missing(&spelled, &[Cat::Module], "module", *span)
             }
             _ => Ok(()),
         }
@@ -1854,7 +1772,7 @@ impl Resolver<'_> {
 
     /// A type or interface named as a value, `T` or `A.T`.
     fn named_expr(&mut self, expr: &mut Expr, cats: &[Cat], what: &str) -> Result<(), Error> {
-        let (line, col) = (expr.line(), expr.col());
+        let span = expr.span();
         let spelled = match &*expr {
             Expr::Ident { name, .. } if !self.locals.contains(name) => name.clone(),
             Expr::Field { base, name, .. } => match base.as_ref() {
@@ -1873,8 +1791,7 @@ impl Resolver<'_> {
         }
         if let Some(canonical) = self.lookup(&spelled, cats) {
             *expr = Expr::Ident {
-                line,
-                col,
+                span,
                 name: canonical,
                 sym: None,
                 builtin: None,
@@ -1885,17 +1802,16 @@ impl Resolver<'_> {
         if self.member(&spelled) {
             return Ok(());
         }
-        self.missing(&spelled, cats, what, line, col)
+        self.missing(&spelled, cats, what, span)
     }
 
     /// A contract this file names must be its file's or come from a file it imports.
-    fn visible_contract(&self, name: &str, line: u32, col: u32) -> Result<(), Error> {
+    fn visible_contract(&self, name: &str, span: Span) -> Result<(), Error> {
         if self.scope.contracts.contains(name) || self.locals.contains(name) {
             return Ok(());
         }
         Err(error(
-            line,
-            col,
+            span,
             format!("`{name}` is not another contract of this file or its imports"),
         ))
     }
@@ -1928,10 +1844,9 @@ impl Resolver<'_> {
                     return Ok(());
                 }
                 if let Some(canonical) = self.module_expr(expr) {
-                    let (line, col) = (expr.line(), expr.col());
+                    let span = expr.span();
                     *expr = Expr::Ident {
-                        line,
-                        col,
+                        span,
                         name: canonical,
                         sym: None,
                         builtin: None,
@@ -1943,10 +1858,9 @@ impl Resolver<'_> {
                     unreachable!()
                 };
                 if let Some(canonical) = self.module_expr(base) {
-                    let (line, col) = (base.line(), base.col());
+                    let span = base.span();
                     **base = Expr::Ident {
-                        line,
-                        col,
+                        span,
                         name: canonical,
                         sym: None,
                         builtin: None,
@@ -1976,7 +1890,7 @@ impl Resolver<'_> {
             Expr::Case { scrut, arms, .. } => {
                 self.expr(scrut)?;
                 for arm in arms {
-                    self.unshadowed(arm.bind.iter().chain(&arm.tuple_names), arm.line, arm.col)?;
+                    self.unshadowed(arm.bind.iter().chain(&arm.tuple_names), arm.span)?;
                     self.stmts(&mut arm.stmts)?;
                     self.expr(&mut arm.expr)?;
                 }
@@ -2003,23 +1917,20 @@ impl Resolver<'_> {
                 args,
                 base,
                 builtin,
-                line,
-                col,
+                span,
                 ..
             } => {
-                let (line, col) = (*line, *col);
+                let span = *span;
                 let named = match base.as_deref() {
                     None => Some(Expr::Ident {
-                        line,
-                        col,
+                        span,
                         name: name.clone(),
                         sym: None,
                         builtin: None,
                         ty: 0,
                     }),
                     Some(inner @ Expr::Ident { .. }) => Some(Expr::Field {
-                        line,
-                        col,
+                        span,
                         base: Box::new(inner.clone()),
                         name: name.clone(),
                         root: None,
@@ -2030,8 +1941,7 @@ impl Resolver<'_> {
                 };
                 if builtin.is_none() && named.is_some_and(|e| self.constant(&e).is_some()) {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("`{name}` is a constant, not a function: name it without `()`"),
                     ));
                 }
@@ -2041,16 +1951,12 @@ impl Resolver<'_> {
                 if let Some(kind) = builtin.as_ref().filter(|k| **k != Builtin::Braced) {
                     if *kind == Builtin::Create {
                         self.contract_ref(&name.clone());
-                        self.visible_contract(name, line, col)?;
+                        self.visible_contract(name, span)?;
                     }
                     if *kind == Builtin::SpecForall {
-                        if let Some(Expr::Ident {
-                            name, line, col, ..
-                        }) = args.get_mut(1)
-                        {
+                        if let Some(Expr::Ident { name, span, .. }) = args.get_mut(1) {
                             let mut ty = TypeRef::Name {
-                                line: *line,
-                                col: *col,
+                                span: *span,
                                 name: name.clone(),
                             };
                             self.ty(&mut ty)?;
@@ -2086,7 +1992,7 @@ impl Resolver<'_> {
                         {
                             return Ok(());
                         }
-                        self.missing(&name.clone(), &callable, "function", line, col)
+                        self.missing(&name.clone(), &callable, "function", span)
                     }
                     Some(inner) => {
                         if let Expr::Ident { name: alias, .. } = inner.as_ref() {
@@ -2102,15 +2008,14 @@ impl Resolver<'_> {
                             }
                         }
                         if let Some(canonical) = self.module_expr(inner) {
-                            let (line, col) = (inner.line(), inner.col());
+                            let span = inner.span();
                             let tag = self
                                 .intrinsics
                                 .get(&canonical)
                                 .and_then(|members| members.get(name.as_str()))
                                 .copied();
                             **inner = Expr::Ident {
-                                line,
-                                col,
+                                span,
                                 name: canonical,
                                 sym: None,
                                 builtin: None,

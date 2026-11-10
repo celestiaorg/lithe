@@ -73,11 +73,15 @@ struct Phase<'a> {
     params: Vec<(String, usize)>,
     stmts: Vec<&'a [Stmt]>,
     tail: Option<&'a Expr>,
+    /// The file its code is in.
+    file: FileId,
     /// Why the phase cannot be proved at all, when it cannot.
     blocked: Option<String>,
 }
 
 struct Inv<'a> {
+    /// The file of its spec block.
+    file: FileId,
     label: String,
     expr: &'a Expr,
     text: &'a str,
@@ -122,16 +126,17 @@ fn source(specs: &Specs, opts: &ProveOptions) -> Result<Report, Error> {
             Some(m) => format!("{m}.#spec invariant {}", inv.name),
             None => format!("#spec invariant {}", inv.name),
         };
-        let Some(expr) = checked
+        let Some((file, expr)) = checked
             .prog
             .funcs
             .iter()
             .find(|f| f.name == name)
-            .and_then(|f| f.tail.as_ref())
+            .and_then(|f| Some((f.file, f.tail.as_ref()?)))
         else {
             continue;
         };
         invs.push(Inv {
+            file,
             label: match &inv.module {
                 Some(m) => format!("{m}.{}", inv.name),
                 None => inv.name.clone(),
@@ -348,6 +353,7 @@ fn tracked_totals(
     };
     for inv in invs {
         let mut st = exec.start();
+        exec.file = inv.file;
         let _ = exec.eval(&mut st, inv.expr, &ctx);
     }
     exec.tracked
@@ -377,6 +383,7 @@ fn phases(checked: &Checked) -> Vec<Phase<'_>> {
             params: named(f),
             stmts: vec![&f.stmts],
             tail: f.tail.as_ref(),
+            file: f.file,
             blocked: None,
         }),
         None => out.push(Phase {
@@ -387,6 +394,7 @@ fn phases(checked: &Checked) -> Vec<Phase<'_>> {
             params: Vec::new(),
             stmts: Vec::new(),
             tail: None,
+            file: checked.prog.file,
             blocked: None,
         }),
     }
@@ -423,6 +431,7 @@ fn phases(checked: &Checked) -> Vec<Phase<'_>> {
                     params: named(f),
                     stmts: vec![&f.stmts],
                     tail: f.tail.as_ref(),
+                    file: f.file,
                     blocked: f.forward.map(|_| {
                         "it passes its call to other code, which can change anything".to_string()
                     }),
@@ -445,6 +454,7 @@ fn phases(checked: &Checked) -> Vec<Phase<'_>> {
                     params,
                     stmts: vec![&route.guards, &route.stmts],
                     tail: route.tail.as_ref(),
+                    file: route.root().map_or(checked.prog.file, |f| funcs[f].file),
                     blocked: None,
                 }
             }
@@ -460,6 +470,7 @@ fn phases(checked: &Checked) -> Vec<Phase<'_>> {
             params: named(f),
             stmts: vec![&f.stmts],
             tail: f.tail.as_ref(),
+            file: f.file,
             blocked: None,
         });
     }
@@ -501,11 +512,12 @@ fn run_phase<'a>(
         exec.reads = Some(Vec::new());
         exec.touched = Some(Default::default());
         exec.mode = Mode::Spec;
+        exec.file = inv.file;
         let held = exec.eval(&mut st, inv.expr, &spec(&before));
         pre_reads.push(exec.reads.take().unwrap_or_default());
         footprints.push(exec.touched.take().unwrap_or_default());
         unreadable.push(match &held {
-            Err(stop) => Some(format!("{} (at {}:{})", stop.reason, stop.line, stop.col)),
+            Err(stop) => Some(format!("{} (at {})", stop.reason, exec.stopped_at(stop))),
             Ok(exec::Val::Bool(_)) => None,
             Ok(_) => Some("the invariant is not a `bool` the prover models".to_string()),
         });
@@ -527,6 +539,7 @@ fn run_phase<'a>(
         balance: exec.balance.clone(),
     };
     exec.mode = Mode::Code;
+    exec.file = phase.file;
     let ran: Result<(), Stop> = (|| {
         for stmts in &phase.stmts {
             exec.stmts(&mut st, stmts, &code)?;
@@ -538,7 +551,7 @@ fn run_phase<'a>(
     })();
     if let Err(stop) = ran {
         return (
-            unknown(&format!("{} (at {}:{})", stop.reason, stop.line, stop.col)),
+            unknown(&format!("{} (at {})", stop.reason, exec.stopped_at(&stop))),
             Vec::new(),
         );
     }
@@ -558,7 +571,10 @@ fn run_phase<'a>(
         let mut end = st.clone();
         exec.reads = Some(Vec::new());
         exec.mode = Mode::Spec;
-        let held = exec.eval(&mut end, inv.expr, &spec(&after));
+        exec.file = inv.file;
+        let held = exec
+            .eval(&mut end, inv.expr, &spec(&after))
+            .map_err(|stop| format!("{} (at {})", stop.reason, exec.stopped_at(&stop)));
         let reads = exec.reads.take().unwrap_or_default();
         posts.push((held, reads));
     }
@@ -583,11 +599,8 @@ fn run_phase<'a>(
                 ));
                 continue;
             }
-            Err(stop) => {
-                outcomes.push(Outcome::Unknown(format!(
-                    "{} (at {}:{})",
-                    stop.reason, stop.line, stop.col
-                )));
+            Err(why) => {
+                outcomes.push(Outcome::Unknown(why));
                 continue;
             }
         };
@@ -641,6 +654,7 @@ fn run_phase<'a>(
                 params,
                 stmts: vec![&arm.stmts],
                 tail: None,
+                file: phase.file,
                 blocked: None,
             });
         }

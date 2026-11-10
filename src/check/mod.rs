@@ -2,6 +2,7 @@ use crate::asm::{FxHashMap, FxHashSet};
 
 use crate::ast::*;
 use crate::error;
+use crate::error_at;
 use crate::word::Word;
 use crate::Error;
 
@@ -250,7 +251,7 @@ pub(crate) struct Checked {
     /// Each storage domain's record type, by qualified name: `Module.name` inside a module.
     pub domain_tys: FxHashMap<String, usize>,
     /// Each `list(T)(xs)` target and its file, which the built program no longer shows.
-    pub conversions: Vec<(String, TypeRef)>,
+    pub conversions: Vec<(Option<FileId>, TypeRef)>,
     /// The program as it came in, before its modules were composed. A module's facet is
     /// built from it. It is everything a build depends on besides the compiler and its options.
     pub source: Program,
@@ -370,9 +371,9 @@ struct Checker {
     types: Vec<RType>,
     named: FxHashMap<String, usize>,
     decls: FxHashMap<String, TypeRef>,
-    decl_at: FxHashMap<String, (u32, u32)>,
+    decl_at: FxHashMap<String, Span>,
     /// The file each type declaration is in.
-    decl_origin: FxHashMap<String, String>,
+    decl_origin: FxHashMap<String, FileId>,
     syms: Vec<Sym>,
     scopes: Vec<Scope>,
     scope: usize,
@@ -418,9 +419,12 @@ struct Checker {
     /// Snapshot warnings already given: (continuation floor, symbol).
     warned: FxHashSet<(usize, usize)>,
     warnings: Vec<Note>,
-    conversions: Vec<(String, TypeRef)>,
-    /// File of the function being checked. Empty while checking the root file's guard.
-    origin: String,
+    conversions: Vec<(Option<FileId>, TypeRef)>,
+    /// File of the function being checked. `None` while checking the root file's guard.
+    file: Option<FileId>,
+    /// The files the program reads, and the contract's own.
+    files: std::sync::Arc<SourceMap>,
+    root: FileId,
     module_name: Option<String>,
     /// Checking the value of `List.pop(xs)`'s assignment, the only place it may appear.
     popping: bool,
@@ -469,9 +473,9 @@ const GUARD_FN: usize = usize::MAX;
 #[derive(Clone)]
 enum Piece {
     Err(usize),
-    Call(usize, u32, u32),
+    Call(usize, Span),
     /// A write to an immutable, and the immutable's name.
-    Write(u32, u32, String),
+    Write(Span, String),
 }
 
 fn const_fns(prog: &Program) -> FxHashMap<String, Func> {
@@ -496,6 +500,13 @@ fn const_fns(prog: &Program) -> FxHashMap<String, Func> {
     fns
 }
 
+impl Checked {
+    /// `err` at a line and column: in the file it names, else in the contract's own.
+    pub(crate) fn place(&self, err: Error) -> Error {
+        err.placed(&self.prog.files, self.prog.file)
+    }
+}
+
 /// `evm` is the fork `Evm.osaka` answers for.
 pub(crate) fn check(prog: Program, evm: crate::EvmVersion) -> Result<Checked, Error> {
     check_in(prog, true, evm)
@@ -507,8 +518,8 @@ pub(crate) fn check_in(
     require_entries: bool,
     evm: crate::EvmVersion,
 ) -> Result<Checked, Error> {
-    let origin = prog.origin.clone();
-    check_program(prog, require_entries, evm).map_err(|err| err.in_file(&origin))
+    let (file, files) = (prog.file, prog.files.clone());
+    check_program(prog, require_entries, evm).map_err(|err| err.in_file(file).placed(&files, file))
 }
 
 fn check_program(
@@ -529,14 +540,15 @@ fn check_program(
     }
     let source = prog.clone();
     for module in &prog.modules {
-        reject_mixed_names(&module.funcs)?;
+        reject_mixed_names(&prog.files, &module.funcs)?;
     }
     compose(&mut prog)?;
     let mut overloads = FxHashMap::default();
-    name_overloads(&mut prog.funcs, "", &mut overloads)?;
+    let files = prog.files.clone();
+    name_overloads(&files, &mut prog.funcs, "", &mut overloads)?;
     for module in prog.modules.iter_mut().filter(|m| !m.params.is_empty()) {
         let prefix = format!("{}.", module.name);
-        name_overloads(&mut module.funcs, &prefix, &mut overloads)?;
+        name_overloads(&files, &mut module.funcs, &prefix, &mut overloads)?;
     }
     let mut generic_fns = Vec::new();
     prog.funcs.retain(|func| {
@@ -601,7 +613,9 @@ fn check_program(
         warned: FxHashSet::default(),
         warnings: Vec::new(),
         conversions: Vec::new(),
-        origin: String::new(),
+        file: None,
+        files: prog.files.clone(),
+        root: prog.file,
         fn_name: String::new(),
         module_name: None,
         popping: false,
@@ -694,13 +708,11 @@ fn check_program(
     let mut seen = FxHashSet::default();
     for d in &prog.types {
         if !seen.insert(d.name.clone()) {
-            return Err(
-                error(d.line, d.col, format!("duplicate type `{}`", d.name)).in_file(&d.origin)
-            );
+            return Err(error(d.span, format!("duplicate type `{}`", d.name)).in_file(d.file));
         }
         c.decls.insert(d.name.clone(), d.ty.clone());
-        c.decl_at.insert(d.name.clone(), (d.line, d.col));
-        c.decl_origin.insert(d.name.clone(), d.origin.clone());
+        c.decl_at.insert(d.name.clone(), d.span);
+        c.decl_origin.insert(d.name.clone(), d.file);
     }
     // Interfaces first, so a storage field or a type can hold one.
     c.register_interfaces(&prog)?;
@@ -708,7 +720,7 @@ fn check_program(
         c.resolve_decl(&d.name)?;
     }
     if prog.upgradeable && prog.guard.is_none() {
-        return Err(error(
+        return Err(error_at(
             1,
             1,
             "upgradeable contract requires an upgrade guard",
@@ -716,11 +728,7 @@ fn check_program(
     }
     if let Some(guard) = &prog.guard {
         if !prog.upgradeable {
-            return Err(error(
-                guard.line,
-                guard.col,
-                "upgrade guard requires `upgradeable`",
-            ));
+            return Err(error(guard.span, "upgrade guard requires `upgradeable`"));
         }
     }
     if let Some(extra) = prog
@@ -729,11 +737,7 @@ fn check_program(
         .filter(|f| f.kind == ItemKind::Deploy)
         .nth(1)
     {
-        return Err(error(
-            extra.line,
-            extra.col,
-            "a contract has at most one `deploy`",
-        ));
+        return Err(error(extra.span, "a contract has at most one `deploy`"));
     }
     for (kind, word) in [
         (ItemKind::Receive, "receive"),
@@ -741,16 +745,15 @@ fn check_program(
     ] {
         if let Some(extra) = prog.funcs.iter().filter(|f| f.kind == kind).nth(1) {
             return Err(error(
-                extra.line,
-                extra.col,
+                extra.span,
                 format!("a contract has at most one `{word}`"),
             ));
         }
     }
     let storage = if let Some(id) = c.named.get("storage").copied() {
         if c.types[id].kind != TyKind::Record {
-            let (line, col) = c.decl_at.get("storage").copied().unwrap_or((1, 1));
-            return Err(error(line, col, "`storage` must be a record"));
+            let span = c.decl_at.get("storage").copied().unwrap_or_default();
+            return Err(error(span, "`storage` must be a record"));
         }
         id
     } else {
@@ -818,12 +821,10 @@ fn check_program(
             None => "the contract".to_string(),
         };
         if !seen_names.insert(qualified.clone()) {
-            return Err(error(
-                decl.line,
-                decl.col,
-                format!("duplicate storage domain `{qualified}`"),
-            )
-            .in_file(&decl.origin));
+            return Err(
+                error(decl.span, format!("duplicate storage domain `{qualified}`"))
+                    .in_file(decl.file),
+            );
         }
         let shape = shape_ty(&decl.ty);
         if let Some((prev_label, prev_qualified, prev_shape)) = seen_ids.get(&decl.id) {
@@ -836,36 +837,33 @@ fn check_program(
                     "\n\nschema mismatch:\n  {prev_qualified}: {prev_shape}\n  {qualified}: {shape}"
                 ));
             }
-            return Err(error(decl.line, decl.col, msg).in_file(&decl.origin));
+            return Err(error(decl.span, msg).in_file(decl.file));
         }
         seen_ids.insert(decl.id.clone(), (label, qualified.clone(), shape));
-        let ty = c.build(&decl.ty).map_err(|err| err.in_file(&decl.origin))?;
+        let ty = c.build(&decl.ty).map_err(|err| err.in_file(decl.file))?;
         c.domain_tys.insert(qualified.clone(), ty);
         if c.types[ty].kind != TyKind::Record {
             return Err(error(
-                decl.line,
-                decl.col,
+                decl.span,
                 if decl.immutable {
                     "immutables must be a record"
                 } else {
                     "storage domain must be a record"
                 },
             )
-            .in_file(&decl.origin));
+            .in_file(decl.file));
         }
         layout(&mut c.types, ty);
         if decl.immutable {
             check_immutable_shape(&c.types, ty, &decl.name)
-                .map_err(|msg| error(decl.line, decl.col, msg).in_file(&decl.origin))?;
+                .map_err(|msg| error(decl.span, msg).in_file(decl.file))?;
             if !prog.upgradeable {
                 code_immutables.push((decl, ty));
                 continue;
             }
-            check_storage_shape(&c.types, ty, &decl.name)
-                .map_err(|err| err.in_file(&decl.origin))?;
+            check_storage_shape(&c.types, ty, &decl.name).map_err(|err| err.in_file(decl.file))?;
         } else {
-            check_storage_shape(&c.types, ty, &decl.name)
-                .map_err(|err| err.in_file(&decl.origin))?;
+            check_storage_shape(&c.types, ty, &decl.name).map_err(|err| err.in_file(decl.file))?;
         }
         let start = leaf_keys.len() as u32;
         let root = crate::keccak::erc7201(&decl.id);
@@ -895,7 +893,7 @@ fn check_program(
                 ty,
                 (&leaf_keys[start..], &leaf_pack[start..]),
             )
-            .map_err(|err| err.in_file(&decl.origin))?,
+            .map_err(|err| err.in_file(decl.file))?,
         );
     }
     // Immutables built into the code come next, one leaf per word. A leaf's pack is how many
@@ -951,23 +949,18 @@ fn check_program(
             None => decl.name.clone(),
         };
         if !seen_names.insert(qualified.clone()) {
-            return Err(error(
-                decl.line,
-                decl.col,
-                format!("duplicate storage domain `{qualified}`"),
-            )
-            .in_file(&decl.origin));
-        }
-        let ty = c.build(&decl.ty).map_err(|err| err.in_file(&decl.origin))?;
-        c.domain_tys.insert(qualified.clone(), ty);
-        if c.types[ty].kind != TyKind::Record {
             return Err(
-                error(decl.line, decl.col, "transient storage must be a record")
-                    .in_file(&decl.origin),
+                error(decl.span, format!("duplicate storage domain `{qualified}`"))
+                    .in_file(decl.file),
             );
         }
+        let ty = c.build(&decl.ty).map_err(|err| err.in_file(decl.file))?;
+        c.domain_tys.insert(qualified.clone(), ty);
+        if c.types[ty].kind != TyKind::Record {
+            return Err(error(decl.span, "transient storage must be a record").in_file(decl.file));
+        }
         layout(&mut c.types, ty);
-        check_transient_shape(&c.types, ty, &decl.name).map_err(|err| err.in_file(&decl.origin))?;
+        check_transient_shape(&c.types, ty, &decl.name).map_err(|err| err.in_file(decl.file))?;
         let start = leaf_keys.len();
         let words = c.types[ty].words as u64;
         let base = match &decl.owner {
@@ -983,11 +976,10 @@ fn check_program(
                     .find(|(at, len, _)| base < at + len && *at < base + words.max(1))
                 {
                     return Err(error(
-                        decl.line,
-                        decl.col,
+                        decl.span,
                         format!("transient storage `{qualified}` overlaps `{other}`; rename one"),
                     )
-                    .in_file(&decl.origin));
+                    .in_file(decl.file));
                 }
                 module_slots.push((base, words.max(1), qualified.clone()));
                 base
@@ -1017,7 +1009,7 @@ fn check_program(
                 ty,
                 (&leaf_keys[start..], &leaf_pack[start..]),
             )
-            .map_err(|err| err.in_file(&decl.origin))?,
+            .map_err(|err| err.in_file(decl.file))?,
         );
     }
     for decl in &domains {
@@ -1034,8 +1026,7 @@ fn check_program(
         };
         if record.is_some_and(|ty| c.types[ty].fields.iter().any(|f| f.name == short)) {
             return Err(error(
-                decl.line,
-                decl.col,
+                decl.span,
                 format!(
                     "`{}` and field `{short}` of `{}` are both `{}`; rename one of them",
                     qualify(&decl.name),
@@ -1043,7 +1034,7 @@ fn check_program(
                     qualify(&decl.name),
                 ),
             )
-            .in_file(&decl.origin));
+            .in_file(decl.file));
         }
     }
     let leaves = leaf_keys.len();
@@ -1053,7 +1044,7 @@ fn check_program(
         for member in &iface.methods {
             if let Some(raises) = &member.raises {
                 c.resolve_raises(raises)
-                    .map_err(|err| err.in_file(&iface.origin))?;
+                    .map_err(|err| err.in_file(iface.file))?;
             }
         }
     }
@@ -1076,7 +1067,7 @@ fn check_program(
         let mut storage_param = false;
         if internal {
             for p in &func.params {
-                let id = c.build(&p.ty).map_err(|err| err.in_file(&func.origin))?;
+                let id = c.build(&p.ty).map_err(|err| err.in_file(func.file))?;
                 storage_param |= p.storage || c.storage_only(id);
             }
         }
@@ -1099,7 +1090,7 @@ fn check_program(
             g.name == f.name && !(external && matches!(g.kind, ItemKind::Entry | ItemKind::View))
         });
         if !names.insert(f.name.clone()) && (!external || clash) {
-            return Err(error(f.line, f.col, format!("duplicate name `{}`", f.name)));
+            return Err(error(f.span, format!("duplicate name `{}`", f.name)));
         }
         c.prepare_sig(f)?;
     }
@@ -1138,8 +1129,7 @@ fn check_program(
             .any(|have| have.name == named.name)
         {
             return Err(error(
-                named.line,
-                named.col,
+                named.span,
                 format!("`supports` lists `{}` twice", named.name),
             ));
         }
@@ -1149,13 +1139,7 @@ fn check_program(
             .any(|iface| iface.name == named.name)
             .then(|| c.named.get(&named.name).and_then(|id| c.ifaces.get(id)))
             .flatten()
-            .ok_or_else(|| {
-                error(
-                    named.line,
-                    named.col,
-                    format!("unknown interface `{}`", named.name),
-                )
-            })?;
+            .ok_or_else(|| error(named.span, format!("unknown interface `{}`", named.name)))?;
         let mut sigs = Vec::new();
         for method in methods {
             let hash = crate::keccak::keccak256(method.sig.as_bytes());
@@ -1288,7 +1272,7 @@ struct CheckSave {
     spec_module: Option<String>,
     spec_places: Vec<String>,
     in_spec: bool,
-    origin: String,
+    file: Option<FileId>,
     guard_label: Option<String>,
     hook_label: Option<String>,
 }
@@ -1580,8 +1564,7 @@ fn mark_immutable_reads(
 
         fn read(e: Expr) -> Expr {
             Expr::Call {
-                line: e.line(),
-                col: e.col(),
+                span: e.span(),
                 name: "#immutable".to_string(),
                 ty: e.ty(),
                 args: vec![e],
@@ -1605,8 +1588,7 @@ fn mark_immutable_reads(
             }
             if self.leaves(e) {
                 let unit = Expr::Lit {
-                    line: 0,
-                    col: 0,
+                    span: Span::NONE,
                     lit: Lit::Unit,
                     ty: TY_UNIT,
                 };
@@ -1749,8 +1731,7 @@ fn mark_immutable_reads(
                                 span: 0,
                             });
                             let local = Expr::Ident {
-                                line: base.line(),
-                                col: base.col(),
+                                span: base.span(),
                                 name: "$list".to_string(),
                                 sym: Some(sid),
                                 builtin: None,

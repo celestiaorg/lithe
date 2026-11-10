@@ -7,16 +7,14 @@ use super::*;
 impl Checker {
     pub(super) fn check_spec_form(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         kind: Builtin,
         args: &mut [Expr],
         ty: &mut usize,
     ) -> Result<(), Error> {
         if !self.in_spec {
             return Err(error(
-                line,
-                col,
+                span,
                 "only a spec block reads `old.`, `new.`, `sum`, `count`, and `forall`",
             ));
         }
@@ -32,18 +30,14 @@ impl Checker {
                     "count"
                 };
                 if args.len() != 1 {
-                    return Err(error(line, col, format!("`{word}` takes one map")));
+                    return Err(error(span, format!("`{word}` takes one map")));
                 }
                 let expect = self.expect.take();
                 self.check_expr(&mut args[0])?;
                 self.expect = expect;
                 let map = self.peel(args[0].ty());
                 if self.types[map].kind != TyKind::Map {
-                    return Err(error(
-                        args[0].line(),
-                        args[0].col(),
-                        format!("`{word}` takes a map"),
-                    ));
+                    return Err(error(args[0].span(), format!("`{word}` takes a map")));
                 }
                 let val = self.types[map].right.unwrap_or(TY_UNIT);
                 let numeric = matches!(
@@ -53,8 +47,7 @@ impl Checker {
                 *ty = if kind == Builtin::SpecCount {
                     if !is_word(self.types[self.peel(val)].kind) {
                         return Err(error(
-                            args[0].line(),
-                            args[0].col(),
+                            args[0].span(),
                             "`count` counts a map whose values are words",
                         ));
                     }
@@ -63,40 +56,36 @@ impl Checker {
                     val
                 } else {
                     return Err(error(
-                        args[0].line(),
-                        args[0].col(),
+                        args[0].span(),
                         "`sum` adds a map whose values are numbers",
                     ));
                 };
             }
             Builtin::SpecForall => {
                 let [binder, ty_name, body] = args else {
-                    return Err(error(line, col, "expected `forall x : T . e`"));
+                    return Err(error(span, "expected `forall x : T . e`"));
                 };
                 let Expr::Ident {
                     name: tname,
-                    line: tline,
-                    col: tcol,
+                    span: tspan,
                     ..
                 } = ty_name
                 else {
-                    return Err(error(line, col, "expected `forall x : T . e`"));
+                    return Err(error(span, "expected `forall x : T . e`"));
                 };
                 let bound = self.build(&TypeRef::Name {
-                    line: *tline,
-                    col: *tcol,
+                    span: *tspan,
                     name: tname.clone(),
                 })?;
                 let Expr::Ident {
                     name,
                     sym,
                     ty: bty,
-                    line: bline,
-                    col: bcol,
+                    span: bspan,
                     ..
                 } = binder
                 else {
-                    return Err(error(line, col, "expected `forall x : T . e`"));
+                    return Err(error(span, "expected `forall x : T . e`"));
                 };
                 let parent = self.scope;
                 self.scope = self.push_scope(parent);
@@ -107,7 +96,7 @@ impl Checker {
                     slot: 0,
                     span: 0,
                 });
-                self.define(*bline, *bcol, name, id)?;
+                self.define(*bspan, name, id)?;
                 *sym = Some(id);
                 *bty = bound;
                 let expect = self.expect.take();
@@ -116,7 +105,7 @@ impl Checker {
                 self.scope = parent;
                 checked?;
                 if self.peel(body.ty()) != TY_BOOL {
-                    return Err(error(body.line(), body.col(), "`forall` needs a `bool`"));
+                    return Err(error(body.span(), "`forall` needs a `bool`"));
                 }
                 *ty = TY_BOOL;
             }

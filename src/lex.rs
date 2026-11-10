@@ -2,7 +2,7 @@
 
 use logos::{Lexer, Logos, Skip};
 
-use crate::error;
+use crate::error_at;
 use crate::word::Word;
 use crate::Error;
 
@@ -569,8 +569,6 @@ pub(crate) enum Kind {
 
 pub(crate) struct Token {
     pub kind: Kind,
-    pub line: u32,
-    pub col: u32,
     pub start: usize,
     pub end: usize,
     pub word: Word,
@@ -582,8 +580,6 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Token>, Error> {
     let mut out = Vec::new();
     while let Some(item) = lex.next() {
         let span = lex.span();
-        let line = lex.extras.line;
-        let col = (span.start.saturating_sub(lex.extras.line_start) + 1) as u32;
         let raw = item.map_err(|err| lex_error(src, &lex, err))?;
         let (word, string) = match &raw {
             Raw::Skipped | Raw::Comment => continue,
@@ -595,20 +591,14 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Token>, Error> {
         let kind = kind_of(raw);
         out.push(Token {
             kind,
-            line,
-            col,
             start: span.start,
             end: span.end,
             word,
             string,
         });
     }
-    let line = lex.extras.line;
-    let col = (src.len().saturating_sub(lex.extras.line_start) + 1) as u32;
     out.push(Token {
         kind: Kind::Eof,
-        line,
-        col,
         start: src.len(),
         end: src.len(),
         word: Word::from_u64(0),
@@ -671,12 +661,12 @@ fn lex_error(src: &str, lex: &Lexer<Raw>, err: LexError) -> Error {
     match err {
         LexError::Unexpected => {
             let ch = src.get(span.clone()).unwrap_or("?");
-            error(line, col, format!("unexpected character `{ch}`"))
+            error_at(line, col, format!("unexpected character `{ch}`"))
         }
-        LexError::UnterminatedComment { line, col } => error(line, col, "unterminated comment"),
-        LexError::UnterminatedString { line, col } => error(line, col, "unterminated string"),
+        LexError::UnterminatedComment { line, col } => error_at(line, col, "unterminated comment"),
+        LexError::UnterminatedString { line, col } => error_at(line, col, "unterminated string"),
         LexError::BadNumber { line, col, message } | LexError::BadEscape { line, col, message } => {
-            error(line, col, message)
+            error_at(line, col, message)
         }
     }
 }

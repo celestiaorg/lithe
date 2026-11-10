@@ -5,11 +5,10 @@ impl<'a> Gen<'a> {
         &mut self,
         expr: &Expr,
         ty: usize,
-        line: u32,
-        col: u32,
+        span: Span,
     ) -> Result<(), Error> {
         if self.in_query {
-            return Err(error(line, col, "nested query is not supported"));
+            return Err(error(span, "nested query is not supported"));
         }
         if let Expr::Call {
             builtin: Some(Builtin::StaticCall),
@@ -35,9 +34,9 @@ impl<'a> Gen<'a> {
             ..
         } = expr
         else {
-            return Err(error(line, col, "query expects an interface method"));
+            return Err(error(span, "query expects an interface method"));
         };
-        if let Some(&buf) = self.hoisted.get(&(line, col)) {
+        if let Some(&buf) = self.hoisted.get(&span) {
             self.mload(buf);
             self.op(ISZERO);
             self.revert_if_true()?;
@@ -47,7 +46,7 @@ impl<'a> Gen<'a> {
         }
         if self.tree(ty) {
             let at = self.temp();
-            self.query_into(expr, ty, at, line, col)?;
+            self.query_into(expr, ty, at, span)?;
             self.mload(at);
             return Ok(());
         }
@@ -87,7 +86,7 @@ impl<'a> Gen<'a> {
     fn returned_option_word(&mut self, oty: usize, base: &Expr) -> Result<(), Error> {
         let elem = self.checked.types[oty].elem.unwrap_or(0);
         let Some(flip) = self.flip(oty) else {
-            return Err(error(0, 0, "internal: a query's option takes one word"));
+            return Err(error_at(0, 0, "internal: a query's option takes one word"));
         };
         let (none, done) = (self.fresh(), self.fresh());
         self.op(RETURNDATASIZE);
@@ -160,8 +159,7 @@ impl<'a> Gen<'a> {
         &mut self,
         args: &[Expr],
         arms: &[crate::ast::Arm],
-        line: u32,
-        col: u32,
+        span: Span,
         sink: Sink,
     ) -> Result<(), Error> {
         let arm = |name: &str| {
@@ -170,11 +168,7 @@ impl<'a> Gen<'a> {
                 .cloned()
         };
         let (Some(ok), Some(failed)) = (arm("Ok"), arm("Error")) else {
-            return Err(error(
-                line,
-                col,
-                "a query outcome needs `Ok` and `Error` arms",
-            ));
+            return Err(error(span, "a query outcome needs `Ok` and `Error` arms"));
         };
         let failed_l = self.fresh();
         let end = self.fresh();
@@ -225,8 +219,7 @@ impl<'a> Gen<'a> {
         call: &Expr,
         ty: usize,
         arms: &[crate::ast::Arm],
-        line: u32,
-        col: u32,
+        span: Span,
         sink: Sink,
     ) -> Result<(), Error> {
         if let Expr::Call {
@@ -235,7 +228,7 @@ impl<'a> Gen<'a> {
             ..
         } = call
         {
-            return self.compile_raw_query_case(args, arms, line, col, sink);
+            return self.compile_raw_query_case(args, arms, span, sink);
         }
         let Expr::Call {
             base: Some(base),
@@ -245,7 +238,7 @@ impl<'a> Gen<'a> {
             ..
         } = call
         else {
-            return Err(error(line, col, "query expects an interface method"));
+            return Err(error(span, "query expects an interface method"));
         };
         let arm = |name: &str| {
             arms.iter()
@@ -253,11 +246,7 @@ impl<'a> Gen<'a> {
                 .cloned()
         };
         let (Some(ok), Some(failed)) = (arm("Ok"), arm("Error")) else {
-            return Err(error(
-                line,
-                col,
-                "a query outcome needs `Ok` and `Error` arms",
-            ));
+            return Err(error(span, "a query outcome needs `Ok` and `Error` arms"));
         };
         if self.checked.types[ty].kind != TyKind::Option
             && (self.checked.types[ty].words > 1 || self.tree(ty))
@@ -265,7 +254,7 @@ impl<'a> Gen<'a> {
             // An answer of several words, or with dynamic values in it, decoded in the
             // `Ok` arm into its binding.
             let (failed_l, end) = (self.fresh(), self.fresh());
-            self.query_raw(call, line, col)?;
+            self.query_raw(call, span)?;
             self.op(ISZERO);
             self.push_label(failed_l);
             self.op(JUMPI);
@@ -371,11 +360,10 @@ impl<'a> Gen<'a> {
                 name,
                 args,
                 base,
-                line,
-                col,
+                span,
                 ..
             } => {
-                let (marker, len) = self.peer_code(name, *line, *col)?;
+                let (marker, len) = self.peer_code(name, *span)?;
                 let value_at = self.capture_value(value)?;
                 let gas = self.arena_word(gas)?;
                 let salt_at = match base {
@@ -514,11 +502,7 @@ impl<'a> Gen<'a> {
                 ..
             } => {
                 if value.is_some() {
-                    return Err(error(
-                        args[0].line(),
-                        args[0].col(),
-                        "transfer already sets its value",
-                    ));
+                    return Err(error(args[0].span(), "transfer already sets its value"));
                 }
                 if self.calls_now(args, None, gas) {
                     return self.call_now(&args[0], None, Some(&args[1]), gas, then);
@@ -618,14 +602,10 @@ impl<'a> Gen<'a> {
             Expr::Ident { sym: Some(sid), .. } => {
                 let init = self
                     .const_init(*sid)
-                    .ok_or_else(|| error(expr.line(), expr.col(), "defer expects an operation"))?;
+                    .ok_or_else(|| error(expr.span(), "defer expects an operation"))?;
                 self.compile_defer(&init, value, gas, then)
             }
-            other => Err(error(
-                other.line(),
-                other.col(),
-                "defer expects an operation",
-            )),
+            other => Err(error(other.span(), "defer expects an operation")),
         }
     }
 
@@ -1021,8 +1001,7 @@ impl<'a> Gen<'a> {
         for arg in args {
             if self.is_dynamic(arg.ty()) {
                 return Err(error(
-                    arg.line(),
-                    arg.col(),
+                    arg.span(),
                     "a dynamic value cannot be sent in an external call",
                 ));
             }
@@ -1459,7 +1438,7 @@ impl<'a> Gen<'a> {
             // The nodes were written as the plan said, so they are read the same way.
             let single = self.plan.single_queues.contains(&queue_id);
             if single && ops.len() != 1 {
-                return Err(error(
+                return Err(error_at(
                     0,
                     0,
                     format!(
@@ -1887,13 +1866,9 @@ impl<'a> Gen<'a> {
         let bytes = raw.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
-            if raw[i..].starts_with("line: ") {
-                // `line: N, col: M, `
-                let end = raw[i..].find("col: ").map(|at| i + at + 5).unwrap_or(i);
-                let mut j = end;
-                while j < bytes.len() && bytes[j].is_ascii_digit() {
-                    j += 1;
-                }
+            if raw[i..].starts_with("span: Span { ") {
+                // `span: Span { lo: N, hi: M }, `
+                let j = raw[i..].find('}').map_or(bytes.len(), |at| i + at + 1);
                 i = if raw[j..].starts_with(", ") { j + 2 } else { j };
                 continue;
             }
@@ -2079,12 +2054,7 @@ impl<'a> Gen<'a> {
     /// The creation code of another contract of this file or its imports, embedded once.
     /// Its place in this code is a placeholder word until the code's length is known.
     /// Creation code keeps it ahead of its end, where its arguments begin.
-    pub(super) fn peer_code(
-        &mut self,
-        name: &str,
-        line: u32,
-        col: u32,
-    ) -> Result<(Word, u64), Error> {
+    pub(super) fn peer_code(&mut self, name: &str, span: Span) -> Result<(Word, u64), Error> {
         if let Some((marker, code)) = self
             .data
             .iter()
@@ -2093,7 +2063,7 @@ impl<'a> Gen<'a> {
         {
             return Ok((marker, code as u64));
         }
-        let code = self.peer_creation(name, line, col)?;
+        let code = self.peer_creation(name, span)?;
         let marker = self.data_marker();
         let len = code.len() as u64;
         let end = self
@@ -2105,12 +2075,7 @@ impl<'a> Gen<'a> {
     }
 
     /// A peer's creation code, compiled once however often it is embedded or hashed.
-    pub(super) fn peer_creation(
-        &mut self,
-        name: &str,
-        line: u32,
-        col: u32,
-    ) -> Result<Vec<u8>, Error> {
+    pub(super) fn peer_creation(&mut self, name: &str, span: Span) -> Result<Vec<u8>, Error> {
         if let Some(code) = self.peer_built.get(name) {
             return Ok(code.clone());
         }
@@ -2125,7 +2090,7 @@ impl<'a> Gen<'a> {
         let (code, needs) = match cached {
             Some(built) => built,
             None => {
-                let built = self.peer_build(name, line, col)?;
+                let built = self.peer_build(name, span)?;
                 builds.lock().unwrap_or_else(|e| e.into_inner()).push((
                     name.to_string(),
                     opts.clone(),
@@ -2141,7 +2106,7 @@ impl<'a> Gen<'a> {
     }
 
     /// A peer's creation code and what must be deployed before it.
-    fn peer_build(&self, name: &str, line: u32, col: u32) -> Result<(Vec<u8>, Vec<Facet>), Error> {
+    fn peer_build(&self, name: &str, span: Span) -> Result<(Vec<u8>, Vec<Facet>), Error> {
         let own = self.checked.prog.contract_name.clone();
         let peers = &self.checked.prog.peers;
         let Some(peer) = peers
@@ -2149,15 +2114,14 @@ impl<'a> Gen<'a> {
             .find(|p| p.contract_name.as_deref() == Some(name))
         else {
             return Err(error(
-                line,
-                col,
+                span,
                 format!("`{name}` is not another contract of this file or its imports"),
             ));
         };
         // A created contract of this file may create the others, but never itself or its
         // creator. An imported one keeps what its own file lets it create.
         let mut unit = peer.clone();
-        if peer.origin == self.checked.prog.origin {
+        if peer.file == self.checked.prog.file {
             unit.peers = peers
                 .iter()
                 .filter(|p| p.contract_name.as_deref() != Some(name) && p.contract_name != own)
@@ -2179,14 +2143,12 @@ impl<'a> Gen<'a> {
     pub(super) fn creation_code_of<'e>(
         &self,
         name: &'e Expr,
-        line: u32,
-        col: u32,
+        span: Span,
     ) -> Result<&'e str, Error> {
         match name {
             Expr::Ident { name, .. } => Ok(name),
             _ => Err(error(
-                line,
-                col,
+                span,
                 "`Evm.creationCode` takes the name of a contract",
             )),
         }

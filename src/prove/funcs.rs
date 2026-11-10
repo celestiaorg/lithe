@@ -29,6 +29,8 @@ struct Subject<'a> {
     params: Vec<(String, usize)>,
     stmts: Vec<&'a [Stmt]>,
     tail: Option<&'a Expr>,
+    /// The file its code is in.
+    file: FileId,
     assume: bool,
     arrival: Arrival,
     /// Its own block first, if it has one, then the guards' it inherits.
@@ -97,6 +99,7 @@ fn subjects(specs: &Specs) -> Vec<Subject<'_>> {
                     params: named(f),
                     stmts: vec![&f.stmts],
                     tail: None,
+                    file: f.file,
                     assume: true,
                     arrival: Arrival::None,
                     blocks: vec![spec],
@@ -120,6 +123,7 @@ fn subjects(specs: &Specs) -> Vec<Subject<'_>> {
                     params: named(f),
                     stmts: vec![&f.stmts],
                     tail: f.tail.as_ref(),
+                    file: f.file,
                     assume: external,
                     arrival: if payable {
                         Arrival::Value
@@ -172,6 +176,7 @@ fn route_subject<'a>(
                 params: named(f),
                 stmts: vec![&f.stmts],
                 tail: f.tail.as_ref(),
+                file: f.file,
                 assume: true,
                 arrival,
                 blocks,
@@ -192,6 +197,9 @@ fn route_subject<'a>(
                 params,
                 stmts: vec![&route.guards, &route.stmts],
                 tail: route.tail.as_ref(),
+                file: route
+                    .root()
+                    .map_or(checked.prog.file, |f| checked.prog.funcs[f].file),
                 assume: true,
                 arrival,
                 blocks,
@@ -250,6 +258,7 @@ fn prove_subject(
         exec.mode = Mode::Spec;
         for inv in invs {
             let mut st = exec.start();
+            exec.file = inv.file;
             if let Ok(Val::Bool(t)) = exec.eval(&mut st, inv.expr, &spec_ctx(&before)) {
                 exec.smt.assume(&t);
             }
@@ -270,6 +279,7 @@ fn prove_subject(
         mode: Mode::Code,
         balance: exec.balance.clone(),
     };
+    exec.file = subject.file;
     let ran: Result<(), exec::Stop> = (|| {
         for stmts in &subject.stmts {
             exec.stmts(&mut st, stmts, &code)?;
@@ -280,7 +290,7 @@ fn prove_subject(
         Ok(())
     })();
     if let Err(stop) = ran {
-        return unknown_all(format!("{} (at {}:{})", stop.reason, stop.line, stop.col));
+        return unknown_all(format!("{} (at {})", stop.reason, exec.stopped_at(&stop)));
     }
     let approximations = std::mem::take(&mut exec.approximations);
     let after = exec.smt.define(
@@ -325,6 +335,7 @@ fn prove_subject(
                 continue;
             };
             exec.reads = Some(Vec::new());
+            exec.file = spec_fn.file;
             let value = exec.eval(&mut names, expr, &spec_ctx(&after));
             let reads = exec.reads.take().unwrap_or_default();
             let text = &clause.text;
@@ -340,8 +351,9 @@ fn prove_subject(
                     claims.push(Claim {
                         label: said,
                         outcome: Outcome::Unknown(format!(
-                            "{} (at {}:{})",
-                            stop.reason, stop.line, stop.col
+                            "{} (at {})",
+                            stop.reason,
+                            exec.stopped_at(&stop)
                         )),
                         relies: Vec::new(),
                     });

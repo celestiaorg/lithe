@@ -89,6 +89,8 @@ enum Placed {
 /// Reads specs in one run's states.
 pub(crate) struct Reader<'a> {
     pub checked: &'a Checked,
+    /// The file of the expression being read, which an error's place is in.
+    file: FileId,
     pub layout: &'a SpecLayout,
     /// The maps the run keeps totals of, by leaf and whether each counts.
     pub totals: &'a [(u32, bool)],
@@ -115,9 +117,11 @@ impl<'a> Reader<'a> {
         layout: &'a SpecLayout,
         totals: &'a [(u32, bool)],
         view: View,
+        file: FileId,
     ) -> Reader<'a> {
         Reader {
             checked,
+            file,
             layout,
             totals,
             view,
@@ -140,7 +144,8 @@ impl<'a> Reader<'a> {
     }
 
     pub(crate) fn eval(&mut self, m: &mut Machine, e: &Expr) -> Res<SVal> {
-        let at = |why: String| format!("{why} (at {}:{})", e.line(), e.col());
+        let (line, col) = self.checked.prog.files.line_col(self.file, e.span());
+        let at = |why: String| format!("{why} (at {line}:{col})");
         self.eval_inner(m, e)
             .map_err(|why| if why.contains(" (at ") { why } else { at(why) })
     }
@@ -278,7 +283,9 @@ impl<'a> Reader<'a> {
             self.locals.insert(sym, v);
         }
         self.calls += 1;
+        let caller = std::mem::replace(&mut self.file, func.file);
         let v = self.body(m, &func.stmts, tail);
+        self.file = caller;
         self.calls -= 1;
         for (sym, v) in saved {
             match v {

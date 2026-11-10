@@ -512,7 +512,7 @@ impl<'a> Gen<'a> {
                 leaf,
                 ..
             } => Ok(self.addr(*sid, *leaf)),
-            other => Err(error(other.line(), other.col(), "value is not in memory")),
+            other => Err(error(other.span(), "value is not in memory")),
         }
     }
 

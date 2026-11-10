@@ -9,7 +9,7 @@
 
 use std::hash::{BuildHasherDefault, Hash};
 
-use crate::error;
+use crate::error_at;
 use crate::word::Word;
 use crate::Error;
 
@@ -215,17 +215,17 @@ pub(crate) fn assemble_marked(code: &[Inst]) -> Result<(Vec<u8>, Vec<Mark>), Err
                 }
                 PushLabel(_) => pc += if wide[i] { 3 } else { 2 },
                 Table(_) | Imm(..) => pc += inst_len(inst),
-                Mem(_) => return Err(error(0, 0, "internal: unplaced memory address")),
+                Mem(_) => return Err(error_at(0, 0, "internal: unplaced memory address")),
             }
         }
         let mut grew = false;
         for (i, inst) in code.iter().enumerate() {
             let PushLabel(l) = inst else { continue };
             let Some(&at) = pos.get(l) else {
-                return Err(error(0, 0, "internal: missing jump target"));
+                return Err(error_at(0, 0, "internal: missing jump target"));
             };
             if at > 0xffff {
-                return Err(error(0, 0, "contract too large"));
+                return Err(error_at(0, 0, "contract too large"));
             }
             if at > 0xff && !wide[i] {
                 wide[i] = true;
@@ -239,7 +239,7 @@ pub(crate) fn assemble_marked(code: &[Inst]) -> Result<(Vec<u8>, Vec<Mark>), Err
             .iter()
             .any(|inst| matches!(inst, Table(t) if entries(t).any(|l| !pos.contains_key(&l))))
         {
-            return Err(error(0, 0, "internal: missing jump target"));
+            return Err(error_at(0, 0, "internal: missing jump target"));
         }
         track::note(|t| {
             t.pos = pos.iter().map(|(l, p)| (*l, *p)).collect();
@@ -304,7 +304,7 @@ pub(crate) fn assemble_marked(code: &[Inst]) -> Result<(Vec<u8>, Vec<Mark>), Err
                         out.extend_from_slice(&(pos[&l] as u16).to_be_bytes());
                     }
                 }
-                Mem(_) => return Err(error(0, 0, "internal: unplaced memory address")),
+                Mem(_) => return Err(error_at(0, 0, "internal: unplaced memory address")),
             }
         }
         return Ok((out, marks));

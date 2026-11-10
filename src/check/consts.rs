@@ -18,22 +18,20 @@ impl Checker {
             named: FxHashMap::default(),
         };
         for idx in 0..funcs.len() {
-            fold.func(idx)
-                .map_err(|err| err.in_file(&funcs[idx].origin))?;
+            fold.func(idx).map_err(|err| err.in_file(funcs[idx].file))?;
         }
         for f in funcs.iter().filter(|f| f.constant) {
             let Some(tail) = f.tail.as_ref().filter(|t| !fold.folds(t, &mut Vec::new())) else {
                 continue;
             };
             return Err(error(
-                tail.line(),
-                tail.col(),
+                tail.span(),
                 format!(
                     "constant `{}` is not known when the contract compiles: its value is literals, other constants, and operators, casts, and hashes of literals over those",
                     f.name
                 ),
             )
-            .in_file(&f.origin));
+            .in_file(f.file));
         }
         if let Some(guard) = guard {
             fold.stmts(&guard.stmts)?;
@@ -53,7 +51,7 @@ impl Checker {
             &FxHashMap::default(),
             &mut Vec::new(),
         )?;
-        crate::parse::list_len(w, size.line(), size.col())
+        crate::parse::list_len(w, size.span())
     }
 
     /// A loop's `bound`, a constant as a list length is.
@@ -61,11 +59,7 @@ impl Checker {
         let what = "a loop bound";
         let w = self.size_value(what, bound, None, &FxHashMap::default(), &mut Vec::new())?;
         if w.0[1..] != [0; 3] {
-            return Err(error(
-                bound.line(),
-                bound.col(),
-                format!("{what} overflows `uint64`"),
-            ));
+            return Err(error(bound.span(), format!("{what} overflows `uint64`")));
         }
         Ok(w.0[0])
     }
@@ -78,18 +72,16 @@ impl Checker {
         locals: &FxHashMap<String, Word>,
         busy: &mut Vec<String>,
     ) -> Result<Word, Error> {
-        let (line, col) = (e.line(), e.col());
+        let span = e.span();
         let not_const = || {
             error(
-                line,
-                col,
+                span,
                 format!("{what} is a constant: a number, a named constant, a cast, or arithmetic over those"),
             )
         };
         let not_named = |name: &str| {
             error(
-                line,
-                col,
+                span,
                 format!("`{name}` is not a named constant: a `const` or a pure function of no parameters"),
             )
         };
@@ -110,7 +102,7 @@ impl Checker {
                     BinOp::Mul => l.overflowing_mul(r),
                     BinOp::Pow => l.overflowing_pow(r),
                     BinOp::Div | BinOp::Mod if r.is_zero() => {
-                        return Err(error(line, col, format!("division by zero in {what}")))
+                        return Err(error(span, format!("division by zero in {what}")))
                     }
                     BinOp::Div => (l.div(r), false),
                     BinOp::Mod => (l.rem(r), false),
@@ -125,7 +117,7 @@ impl Checker {
                     _ => return Err(not_const()),
                 };
                 if over {
-                    return Err(error(line, col, format!("{what} overflows `uint`")));
+                    return Err(error(span, format!("{what} overflows `uint`")));
                 }
                 Ok(v)
             }
@@ -133,8 +125,7 @@ impl Checker {
                 name, args, base, ..
             } if args.len() == 1 && base.is_none() => {
                 let ty = TypeRef::Name {
-                    line,
-                    col,
+                    span,
                     name: name.clone(),
                 };
                 let id = self.build(&ty).map_err(|_| not_named(name))?;
@@ -145,7 +136,7 @@ impl Checker {
                 let bits = if t.bits == 0 { 256 } else { u32::from(t.bits) };
                 let w = self.size_value(what, &args[0], module, locals, busy)?;
                 if bits < 256 && !w.shr(bits).is_zero() {
-                    return Err(error(line, col, format!("{what} does not fit `{name}`")));
+                    return Err(error(span, format!("{what} does not fit `{name}`")));
                 }
                 Ok(w)
             }
@@ -165,8 +156,7 @@ impl Checker {
                 };
                 if busy.contains(&key) {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("named constant `{name}` depends on itself"),
                     ));
                 }
@@ -174,8 +164,7 @@ impl Checker {
                     let id = self.build(ret)?;
                     if self.types[self.peel(id)].kind != TyKind::Uint {
                         return Err(error(
-                            line,
-                            col,
+                            span,
                             format!("{what} is a `uint`, and `{name}` is not one"),
                         ));
                     }
@@ -286,7 +275,7 @@ impl Fold<'_> {
     }
 
     fn fail(&self, e: &Expr, msg: String) -> Error {
-        error(e.line(), e.col(), msg)
+        error(e.span(), msg)
     }
 
     fn by_zero(&self, e: &Expr) -> Error {

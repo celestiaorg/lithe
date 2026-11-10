@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use super::Inst;
+use crate::ast::Span;
 use crate::word::Word;
 
 /// The stand-in for a loop's counter among the words held at its head.
@@ -47,15 +48,17 @@ pub(crate) enum Kind {
 pub(crate) struct Site {
     pub kind: Kind,
     pub func: String,
-    pub line: u32,
-    pub col: u32,
+    /// The loop's place in its function's file; a guard's end has none.
+    pub span: Span,
+    /// A guard's end: the route it guards.
+    pub route: usize,
     pub top: u32,
     pub done: u32,
     /// The counter is on the stack at the head; else it counts from zero by iterations.
     pub counter: bool,
     /// Each local of the loop's function, by its declaration's place and name: its memory
     /// word before placing, which the held words name, and where it is.
-    pub locals: Vec<((u32, u32, String), Option<u32>, Place)>,
+    pub locals: Vec<((Span, String), Option<u32>, Place)>,
 }
 
 #[derive(Clone, Default)]

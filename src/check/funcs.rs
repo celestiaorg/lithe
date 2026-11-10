@@ -1,10 +1,19 @@
 use super::*;
 
 impl Checker {
+    /// Where a warning at `span` in the code being checked is: its file, empty in the
+    /// contract's own guard, and its line and column.
+    pub(super) fn warning_at(&self, span: Span) -> (String, u32, u32) {
+        let file = self.file.unwrap_or(self.root);
+        let (line, col) = self.files.line_col(file, span);
+        let origin = self.file.map_or("", |f| self.files.path(f));
+        (origin.to_string(), line, col)
+    }
+
     pub(super) fn check_func(&mut self, f: &mut Func) -> Result<(), Error> {
-        let origin = f.origin.clone();
+        let file = f.file;
         let notes = self.warnings.len();
-        let checked = self.check_body(f).map_err(|err| err.in_file(&origin));
+        let checked = self.check_body(f).map_err(|err| err.in_file(file));
         // An exposed entrypoint runs a copy of its module external's body, which is checked
         // in the module's own file and warns there.
         if f.declares.is_some() {
@@ -14,7 +23,7 @@ impl Checker {
     }
 
     fn check_body(&mut self, f: &mut Func) -> Result<(), Error> {
-        self.origin = f.origin.clone();
+        self.file = Some(f.file);
         let idx = self.cur_fn;
         self.module_name = f.module.clone();
         self.requires = f.requires.clone();
@@ -56,14 +65,14 @@ impl Checker {
             ItemKind::Deploy => Some("deploy"),
             _ => None,
         };
-        self.bind_storage(f.line, f.col)?;
+        self.bind_storage(f.span)?;
         let slot_params = std::mem::take(&mut self.slot_params);
         let abi = matches!(
             f.kind,
             ItemKind::Entry | ItemKind::View | ItemKind::Deploy | ItemKind::Migrate
         ) || f.exported.is_some()
             || self.in_spec;
-        let not_abi = |line, col| error(line, col, crate::parse::FLAT_ONLY);
+        let not_abi = |span| error(span, crate::parse::FLAT_ONLY);
         // A record that crosses between the contract and a facet, as a module function's or a
         // hook's argument or result, is its fields: both sides build the call from the same
         // declaration, and spread fields take the shorter paths.
@@ -84,22 +93,21 @@ impl Checker {
             let mut id = self.build(&p.ty)?;
             if p.flat {
                 if !abi {
-                    return Err(not_abi(p.ty.line(), p.ty.col()));
+                    return Err(not_abi(p.ty.span()));
                 }
-                id = self.flat_ty(p.ty.line(), p.ty.col(), id)?;
+                id = self.flat_ty(p.ty.span(), id)?;
             } else if crosses && self.spreads(id) {
-                id = self.flat_ty(p.ty.line(), p.ty.col(), id)?;
+                id = self.flat_ty(p.ty.span(), id)?;
             }
             p.ty_id = id;
             if id == self.storage {
                 return Err(error(
-                    p.line,
-                    p.col,
+                    p.span,
                     "storage is implicit; take its fields, not the record",
                 ));
             }
             if f.kind == ItemKind::View && self.types[id].kind == TyKind::Operation {
-                return Err(error(p.line, p.col, "view cannot take an operation"));
+                return Err(error(p.span, "view cannot take an operation"));
             }
             let by_slot = slot_params
                 .iter()
@@ -116,20 +124,20 @@ impl Checker {
                 self.slot_syms.insert(sym, transient);
             }
             p.sym = Some(sym);
-            self.define(p.line, p.col, &p.name, sym)?;
+            self.define(p.span, &p.name, sym)?;
         }
         let ret = match &f.ret {
             Some(ty) if f.ret_flat => {
                 if !abi {
-                    return Err(not_abi(ty.line(), ty.col()));
+                    return Err(not_abi(ty.span()));
                 }
                 let id = self.build(ty)?;
-                self.flat_ty(ty.line(), ty.col(), id)?
+                self.flat_ty(ty.span(), id)?
             }
             Some(ty) => {
                 let id = self.build(ty)?;
                 if crosses && self.spreads(id) {
-                    self.flat_ty(ty.line(), ty.col(), id)?
+                    self.flat_ty(ty.span(), id)?
                 } else {
                     id
                 }
@@ -138,36 +146,23 @@ impl Checker {
         };
         f.ret_ty = ret;
         if matches!(f.kind, ItemKind::View | ItemKind::Entry) && has_option(&self.types, ret) {
-            let (line, col) = f
-                .ret
-                .as_ref()
-                .map(|t| (t.line(), t.col()))
-                .unwrap_or((f.line, f.col));
-            return Err(error(line, col, "an option cannot be an ABI value"));
+            let span = f.ret.as_ref().map(|t| t.span()).unwrap_or(f.span);
+            return Err(error(span, "an option cannot be an ABI value"));
         }
         if f.kind == ItemKind::View && !abi_value(&self.types, ret) {
-            let (line, col) = f
-                .ret
-                .as_ref()
-                .map(|t| (t.line(), t.col()))
-                .unwrap_or((f.line, f.col));
-            return Err(error(line, col, "a view returns an ABI value"));
+            let span = f.ret.as_ref().map(|t| t.span()).unwrap_or(f.span);
+            return Err(error(span, "a view returns an ABI value"));
         }
         if f.kind == ItemKind::View && self.types[ret].kind == TyKind::Operation {
-            return Err(error(f.line, f.col, "view cannot return an operation"));
+            return Err(error(f.span, "view cannot return an operation"));
         }
         if f.kind == ItemKind::Entry && f.ret.is_some() && !abi_value(&self.types, ret) {
-            return Err(error(f.line, f.col, "an entry returns an ABI value"));
+            return Err(error(f.span, "an entry returns an ABI value"));
         }
         if f.kind == ItemKind::Fallback && f.ret.is_some() && !self.same(ret, self.named["bytes"]) {
-            let (line, col) = f
-                .ret
-                .as_ref()
-                .map(|t| (t.line(), t.col()))
-                .unwrap_or((f.line, f.col));
+            let span = f.ret.as_ref().map(|t| t.span()).unwrap_or(f.span);
             return Err(error(
-                line,
-                col,
+                span,
                 "a `fallback` returns `bytes`, sent back as they are",
             ));
         }
@@ -185,8 +180,7 @@ impl Checker {
                 self.check_expr_as(tail, Some(ret))?;
                 if !self.same(tail.ty(), ret) {
                     return Err(error(
-                        tail.line(),
-                        tail.col(),
+                        tail.span(),
                         "body type does not match its return type",
                     ));
                 }
@@ -197,12 +191,12 @@ impl Checker {
             }
             None => {
                 if ret != TY_UNIT {
-                    return Err(error(f.line, f.col, "missing return value"));
+                    return Err(error(f.span, "missing return value"));
                 }
             }
         }
         if f.kind == ItemKind::Migrate && ret != TY_UNIT {
-            return Err(error(f.line, f.col, "a migration does not return a value"));
+            return Err(error(f.span, "a migration does not return a value"));
         }
         self.scope = parent;
         self.cur_fn += 1;
@@ -216,18 +210,15 @@ impl Checker {
         self.forwarding = true;
         let checked = match &mut f.tail {
             Some(target) => self.check_expr(target).and_then(|()| {
-                self.expect_addr(target.line(), target.col(), target.ty())
-                    .map_err(|_| {
-                        error(
-                            target.line(),
-                            target.col(),
-                            "a `fallback` passes its call to an address or an interface value",
-                        )
-                    })
+                self.expect_addr(target.span(), target.ty()).map_err(|_| {
+                    error(
+                        target.span(),
+                        "a `fallback` passes its call to an address or an interface value",
+                    )
+                })
             }),
             None => Err(error(
-                f.line,
-                f.col,
+                f.span,
                 "internal: a forwarding `fallback` needs a target",
             )),
         };
@@ -254,15 +245,15 @@ impl Checker {
                 continue;
             }
             let Some(idx) = self.errors.iter().position(|e| e.name == part.name) else {
-                return Err(self.unknown(part.line, part.col, "error", &part.name));
+                return Err(self.unknown(part.span, "error", &part.name));
             };
             push_unique(&mut out, idx);
         }
         Ok(out)
     }
 
-    pub(super) fn note_call(&mut self, idx: usize, line: u32, col: u32) {
-        self.note(Piece::Call(idx, line, col));
+    pub(super) fn note_call(&mut self, idx: usize, span: Span) {
+        self.note(Piece::Call(idx, span));
     }
 
     fn note_error(&mut self, idx: usize) {
@@ -270,9 +261,9 @@ impl Checker {
     }
 
     /// A write to a storage symbol: one to an immutable is kept for the write rule.
-    pub(super) fn note_write(&mut self, sym: usize, line: u32, col: u32, path: &[String]) {
+    pub(super) fn note_write(&mut self, sym: usize, span: Span, path: &[String]) {
         if self.imm_syms.contains(&sym) {
-            self.note(Piece::Write(line, col, path.join(".")));
+            self.note(Piece::Write(span, path.join(".")));
         }
     }
 
@@ -301,7 +292,7 @@ impl Checker {
                     continue;
                 }
                 let found = self.pieces[i].iter().find_map(|piece| match piece {
-                    Piece::Write(_, _, name) => Some(name.clone()),
+                    Piece::Write(_, name) => Some(name.clone()),
                     Piece::Call(j, ..) => writes.get(*j).cloned().flatten(),
                     Piece::Err(_) => None,
                 });
@@ -322,18 +313,16 @@ impl Checker {
         let offending = |pieces: &[Piece], who: &str| -> Result<(), Error> {
             for piece in pieces {
                 match piece {
-                    Piece::Write(line, col, name) => {
+                    Piece::Write(span, name) => {
                         return Err(error(
-                            *line,
-                            *col,
+                            *span,
                             format!("{who} writes immutable `{name}`; immutables are written only by {rule}"),
                         ));
                     }
-                    Piece::Call(j, line, col) => {
+                    Piece::Call(j, span) => {
                         if let Some(name) = writes.get(*j).cloned().flatten() {
                             return Err(error(
-                                *line,
-                                *col,
+                                *span,
                                 format!(
                                     "{who} calls `{}`, which writes immutable `{name}`; call it only from {rule}",
                                     source_name(&funcs[*j].name)
@@ -362,7 +351,7 @@ impl Checker {
                     ),
                     None => describe(func.kind, source_name(&func.name)),
                 };
-                offending(&self.pieces[i], &who).map_err(|err| err.in_file(&func.origin))?;
+                offending(&self.pieces[i], &who).map_err(|err| err.in_file(func.file))?;
             }
         }
         Ok(())
@@ -381,8 +370,7 @@ impl Checker {
                 .filter(|&sym| self.peel(self.syms[sym].ty) == self.named["bytes"]);
             if raw.is_some() {
                 let mut expr = Expr::Ident {
-                    line: raised.line,
-                    col: raised.col,
+                    span: raised.span,
                     name: raised.name.clone(),
                     sym: None,
                     builtin: None,
@@ -393,14 +381,10 @@ impl Checker {
                 self.note_error(FORWARDED);
                 return Ok(());
             }
-            return Err(error(
-                raised.line,
-                raised.col,
-                "`forward` passes on a `bytes` value",
-            ));
+            return Err(error(raised.span, "`forward` passes on a `bytes` value"));
         }
         let Some(idx) = self.errors.iter().position(|e| e.name == raised.name) else {
-            return Err(self.unknown(raised.line, raised.col, "error", &raised.name));
+            return Err(self.unknown(raised.span, "error", &raised.name));
         };
         let payload = self.errors[idx].payload;
         let field_tys = self.errors[idx].field_tys.clone();
@@ -409,50 +393,41 @@ impl Checker {
             RaisedForm::Unit if payload.is_none() => {}
             RaisedForm::Positional(_) | RaisedForm::Fields(_) if payload.is_none() => {
                 return Err(error(
-                    raised.line,
-                    raised.col,
+                    raised.span,
                     format!("error `{}` does not take a payload", raised.name),
                 ));
             }
             RaisedForm::Positional(literal @ Expr::Record { .. }) => {
                 return Err(error(
-                    raised.line,
-                    raised.col,
+                    raised.span,
                     super::expr::record_in_parens(&raised.name, literal),
                 ));
             }
             RaisedForm::Positional(expr) => {
                 self.check_expr_as(expr, payload)?;
                 if !self.same(expr.ty(), payload.unwrap_or(TY_UNIT)) {
-                    return Err(error(
-                        expr.line(),
-                        expr.col(),
-                        "error payload has the wrong type",
-                    ));
+                    return Err(error(expr.span(), "error payload has the wrong type"));
                 }
                 self.take_form(expr, payload.unwrap_or(TY_UNIT));
             }
             RaisedForm::Fields(fields) if record => {
                 if fields.len() != field_tys.len() {
                     return Err(error(
-                        raised.line,
-                        raised.col,
+                        raised.span,
                         format!("`{}` field list does not match", raised.name),
                     ));
                 }
                 for ((fname, expr), (ename, ety)) in fields.iter_mut().zip(field_tys) {
                     if fname != &ename {
                         return Err(error(
-                            raised.line,
-                            raised.col,
+                            raised.span,
                             format!("expected error field `{ename}`"),
                         ));
                     }
                     self.check_expr_as(expr, Some(ety))?;
                     if !self.same(expr.ty(), ety) {
                         return Err(error(
-                            raised.line,
-                            raised.col,
+                            raised.span,
                             format!("field `{ename}` has the wrong type"),
                         ));
                     }
@@ -460,15 +435,13 @@ impl Checker {
             }
             RaisedForm::Unit => {
                 return Err(error(
-                    raised.line,
-                    raised.col,
+                    raised.span,
                     format!("error `{}` expects a payload", raised.name),
                 ));
             }
             RaisedForm::Fields(_) => {
                 return Err(error(
-                    raised.line,
-                    raised.col,
+                    raised.span,
                     format!("error `{}` expects a value", raised.name),
                 ));
             }
@@ -564,7 +537,7 @@ impl Checker {
                 ),
                 None => (funcs[i].kind, source_name(&funcs[i].name).to_string()),
             };
-            let (line, col) = (funcs[i].line, funcs[i].col);
+            let span = funcs[i].span;
             if let Some(declared) = &self.declared[i] {
                 let extra: Vec<usize> = inferred
                     .iter()
@@ -574,11 +547,10 @@ impl Checker {
                 // An interface's method is held to its module's external instead.
                 if !extra.is_empty() && funcs[i].declares.is_none() {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         raise_mismatch(&self.errors, kind, &name, &extra, declared, &inferred),
                     )
-                    .in_file(&funcs[i].origin));
+                    .in_file(funcs[i].file));
                 }
                 effective[i] = declared.clone();
                 for &id in &through[i] {
@@ -598,12 +570,10 @@ impl Checker {
                 // A facet's way back into a hook raises what the hook does.
                 && funcs[i].hook_of.is_none()
             {
-                return Err(error(
-                    line,
-                    col,
-                    must_declare(&self.errors, kind, &name, &inferred),
-                )
-                .in_file(&funcs[i].origin));
+                return Err(
+                    error(span, must_declare(&self.errors, kind, &name, &inferred))
+                        .in_file(funcs[i].file),
+                );
             } else {
                 effective[i] = inferred;
             }
@@ -791,7 +761,7 @@ impl Checker {
                     raises.join(" | ")
                 ));
             }
-            return Err(error(decl.line, decl.col, msg).in_file(&decl.origin));
+            return Err(error(decl.span, msg).in_file(decl.file));
         }
         Ok(())
     }
@@ -868,18 +838,15 @@ impl Checker {
                 ));
             }
             if let Some(reason) = reason {
-                return Err(error(
-                    decl.line,
-                    decl.col,
-                    interface_mismatch(decl, impl_, &reason),
-                )
-                .in_file(&decl.origin));
+                return Err(
+                    error(decl.span, interface_mismatch(decl, impl_, &reason)).in_file(decl.file)
+                );
             }
         }
         Ok(())
     }
 
-    fn bind_storage(&mut self, line: u32, col: u32) -> Result<(), Error> {
+    fn bind_storage(&mut self, span: Span) -> Result<(), Error> {
         self.domain_syms.clear();
         // A module with a default record of its own reaches the contract's only through the
         // name a storage argument gives it.
@@ -898,7 +865,7 @@ impl Checker {
                 slot: 0,
                 span: 0,
             });
-            self.define(line, col, "storage", sym)?;
+            self.define(span, "storage", sym)?;
         }
         let binds = self.domain_binds.clone();
         for bind in binds {
@@ -924,14 +891,14 @@ impl Checker {
             if visible && bind.short == "storage" {
                 self.scopes[self.scope].vars.insert(bind.short.clone(), sym);
             } else if visible {
-                self.define(line, col, &bind.short, sym)?;
+                self.define(span, &bind.short, sym)?;
             }
         }
         Ok(())
     }
 
     pub(super) fn check_guard(&mut self, guard: &mut GuardDecl) -> Result<(), Error> {
-        self.origin.clear();
+        self.file = None;
         let parent = self.scope;
         self.scope = self.push_scope(parent);
         self.kind = ItemKind::Readonly;
@@ -941,7 +908,7 @@ impl Checker {
         self.guard_label = Some("the upgrade guard".to_string());
         self.once = None;
         let cur_fn = std::mem::replace(&mut self.cur_fn, GUARD_FN);
-        self.bind_storage(guard.line, guard.col)?;
+        self.bind_storage(guard.span)?;
         for stmt in &mut guard.stmts {
             self.check_stmt(stmt)?;
         }
@@ -951,20 +918,16 @@ impl Checker {
         Ok(())
     }
 
-    pub(super) fn forbid_effect(&self, line: u32, col: u32, kind: &str) -> Result<(), Error> {
+    pub(super) fn forbid_effect(&self, span: Span, kind: &str) -> Result<(), Error> {
         if let Some(once) = self.once {
-            return Err(error(line, col, format!("{once} cannot {kind}")));
+            return Err(error(span, format!("{once} cannot {kind}")));
         }
         if let Some(label) = &self.guard_label {
-            return Err(error(
-                line,
-                col,
-                format!("{label} cannot {kind}{ONLY_FAILS}"),
-            ));
+            return Err(error(span, format!("{label} cannot {kind}{ONLY_FAILS}")));
         }
         match self.kind {
             ItemKind::View | ItemKind::Readonly | ItemKind::Pure => {
-                Err(self.weaker(line, col, &format!("cannot {kind}")))
+                Err(self.weaker(span, &format!("cannot {kind}")))
             }
             _ => Ok(()),
         }
@@ -974,8 +937,7 @@ impl Checker {
     /// that came from state is a snapshot, which the author is warned about.
     pub(super) fn across_phases(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         name: &str,
         sym: usize,
     ) -> Result<(), Error> {
@@ -987,16 +949,16 @@ impl Checker {
         }
         if self.syms[sym].mutable {
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "`{name}` is a `var` of an earlier phase; mutable locals do not cross an external call"
                 ),
             ));
         }
         if self.state_syms.contains(&sym) && self.warned.insert((floor, sym)) {
+            let (origin, line, col) = self.warning_at(span);
             self.warnings.push(Note {
-                origin: self.origin.clone(),
+                origin,
                 line,
                 col,
                 rule: "stale-capture",
@@ -1094,7 +1056,7 @@ impl Checker {
     }
 
     /// What a deferred operation returns, for its continuation's binding.
-    pub(super) fn op_return(&self, line: u32, col: u32, e: &Expr) -> Result<usize, Error> {
+    pub(super) fn op_return(&self, span: Span, e: &Expr) -> Result<usize, Error> {
         match e {
             Expr::Call {
                 builtin: Some(Builtin::Transfer),
@@ -1114,22 +1076,21 @@ impl Checker {
                 method: Some(method),
                 ..
             } => Ok(self.ifaces[iface][*method].ret),
-            Expr::Ident { sym: Some(sym), .. } => {
-                self.op_returns.get(sym).copied().ok_or_else(|| {
-                    error(line, col, "this operation's return type is not known here")
-                })
-            }
+            Expr::Ident { sym: Some(sym), .. } => self
+                .op_returns
+                .get(sym)
+                .copied()
+                .ok_or_else(|| error(span, "this operation's return type is not known here")),
             _ => Err(error(
-                line,
-                col,
+                span,
                 "`then` follows a call to an interface method or an operation bound to a `const`",
             )),
         }
     }
 
-    pub(super) fn pure_storage(&self, line: u32, col: u32, sym: usize) -> Result<(), Error> {
+    pub(super) fn pure_storage(&self, span: Span, sym: usize) -> Result<(), Error> {
         if self.is_pure() && self.syms[sym].storage {
-            return Err(self.weaker(line, col, "reads contract storage"));
+            return Err(self.weaker(span, "reads contract storage"));
         }
         Ok(())
     }
@@ -1139,11 +1100,10 @@ impl Checker {
     }
 
     /// A module's `private` function is called only by the module's own code.
-    pub(super) fn check_private(&self, idx: usize, line: u32, col: u32) -> Result<(), Error> {
+    pub(super) fn check_private(&self, idx: usize, span: Span) -> Result<(), Error> {
         match &self.sigs[idx].private_to {
             Some(owner) if self.module_name.as_ref() != Some(owner) && !self.in_spec => Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "`{}` is private to `{owner}`; only `{owner}`'s own functions call it",
                     source_name(&self.fn_names[idx])
@@ -1158,14 +1118,13 @@ impl Checker {
     /// what calling it does.
     pub(super) fn callee_effect(
         &self,
-        line: u32,
-        col: u32,
+        span: Span,
         name: &str,
         kind: ItemKind,
     ) -> Result<(), Error> {
         let name = source_name(name);
         if self.is_pure() && kind != ItemKind::Pure {
-            return Err(self.weaker(line, col, &format!("calls `{name}`, which is not pure")));
+            return Err(self.weaker(span, &format!("calls `{name}`, which is not pure")));
         }
         if matches!(self.kind, ItemKind::View | ItemKind::Readonly)
             && matches!(
@@ -1178,33 +1137,30 @@ impl Checker {
                     | ItemKind::Fallback
             )
         {
-            return Err(self.weaker(line, col, &format!("calls `{name}`, which is stateful")));
+            return Err(self.weaker(span, &format!("calls `{name}`, which is stateful")));
         }
         Ok(())
     }
 
-    pub(super) fn weaker(&self, line: u32, col: u32, did: &str) -> Error {
+    pub(super) fn weaker(&self, span: Span, did: &str) -> Error {
         if let Some(label) = &self.guard_label {
-            return error(line, col, format!("{label} {did}{ONLY_FAILS}"));
+            return error(span, format!("{label} {did}{ONLY_FAILS}"));
         }
         if self.forwarding {
             return error(
-                line,
-                col,
+                span,
                 format!("a `fallback` that passes its call on only reads; its target {did}"),
             );
         }
         if let Some(label) = &self.hook_label {
             return error(
-                line,
-                col,
+                span,
                 format!("declared effect is weaker than the body's: {label} {did}"),
             );
         }
         if self.work.get(self.cur_fn).is_some_and(|f| f.constant) {
             return error(
-                line,
-                col,
+                span,
                 format!(
                     "constant `{}` {did}: its value must be known when the contract compiles",
                     self.fn_name
@@ -1217,8 +1173,7 @@ impl Checker {
             kind_word(self.kind)
         };
         error(
-            line,
-            col,
+            span,
             format!(
                 "declared effect is weaker than the body's: {declared} `{}` {did}",
                 self.fn_name

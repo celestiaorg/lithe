@@ -21,8 +21,7 @@ impl Checker {
         }
         match s {
             Stmt::Const {
-                line,
-                col,
+                span,
                 name,
                 parts,
                 ty,
@@ -45,41 +44,40 @@ impl Checker {
                         // A map key `op=` binds: indexing with it reports a wrong type.
                         expr.ty()
                     } else {
-                        self.annotated(*line, *col, ty, expr.ty())?
+                        self.annotated(*span, ty, expr.ty())?
                     }
                 };
                 if !parts.is_empty() {
                     let derived = self.reads_state(expr);
-                    return self.bind_parts(*line, *col, id, parts, part_syms, false, derived);
+                    return self.bind_parts(*span, id, parts, part_syms, false, derived);
                 }
                 if id == self.storage
                     || self.types[id].words == 0 && self.types[id].kind != TyKind::Operation
                 {
-                    return Err(error(*line, *col, "this value cannot be stored"));
+                    return Err(error(*span, "this value cannot be stored"));
                 }
-                let span = self.list_span(*line, *col, id, expr)?;
+                let words = self.list_span(*span, id, expr)?;
                 let sid = self.add_sym(Sym {
                     ty: id,
                     mutable: false,
                     storage: false,
                     slot: 0,
-                    span,
+                    span: words,
                 });
                 *sym = Some(sid);
-                if let Ok(ret) = self.op_return(*line, *col, expr) {
+                if let Ok(ret) = self.op_return(*span, expr) {
                     self.op_returns.insert(sid, ret);
                 }
                 if self.reads_state(expr) {
                     self.state_syms.insert(sid);
                 }
                 if name != "_" {
-                    self.define(*line, *col, name, sid)?;
+                    self.define(*span, name, sid)?;
                 }
                 Ok(())
             }
             Stmt::Var {
-                line,
-                col,
+                span,
                 name,
                 parts,
                 ty,
@@ -89,15 +87,15 @@ impl Checker {
             } => {
                 let want = self.build(ty)?;
                 self.check_expr_as(expr, Some(want))?;
-                let id = self.annotated(*line, *col, ty, expr.ty())?;
+                let id = self.annotated(*span, ty, expr.ty())?;
                 if !parts.is_empty() {
-                    return self.bind_parts(*line, *col, id, parts, part_syms, true, false);
+                    return self.bind_parts(*span, id, parts, part_syms, true, false);
                 }
                 if id == self.storage
                     || self.types[id].words == 0
                     || self.types[id].kind == TyKind::Operation
                 {
-                    return Err(error(*line, *col, "this value cannot be stored"));
+                    return Err(error(*span, "this value cannot be stored"));
                 }
                 let sid = self.add_sym(Sym {
                     ty: id,
@@ -107,12 +105,11 @@ impl Checker {
                     span: 0,
                 });
                 *sym = Some(sid);
-                self.define(*line, *col, name, sid)?;
+                self.define(*span, name, sid)?;
                 Ok(())
             }
             Stmt::Assign {
-                line,
-                col,
+                span,
                 path,
                 index,
                 keys,
@@ -124,7 +121,7 @@ impl Checker {
                 ..
             } => {
                 let written = path.clone();
-                let place = self.lookup_path(*line, *col, path)?;
+                let place = self.lookup_path(*span, path)?;
                 // An index into a transient fixed list writes its slot, as a deep place does.
                 let transient_list = self.syms[place.sym].storage
                     && (self.syms[place.sym].slot + place.leaf) as usize >= self.transient_from
@@ -133,7 +130,7 @@ impl Checker {
                     && (transient_list || self.deep_assign(place.ty, keys.len() + 1, fields))
                 {
                     return self.check_deep_assign(
-                        *line, *col, &written, index, keys, fields, expr, root, leaf, target,
+                        *span, &written, index, keys, fields, expr, root, leaf, target,
                     );
                 }
                 if let Some(owner) = self
@@ -145,23 +142,23 @@ impl Checker {
                     path.insert(0, owner);
                 }
                 let mut value_ty = if let Some(index) = index {
-                    self.indexed(*line, *col, place.sym, place.ty, index)?
+                    self.indexed(*span, place.sym, place.ty, index)?
                 } else {
                     place.ty
                 };
                 for key in keys.iter_mut() {
                     if self.types[value_ty].kind != TyKind::Map {
-                        return Err(error(*line, *col, "only a map of maps takes more keys"));
+                        return Err(error(*span, "only a map of maps takes more keys"));
                     }
-                    value_ty = self.indexed(*line, *col, place.sym, value_ty, key)?;
+                    value_ty = self.indexed(*span, place.sym, value_ty, key)?;
                 }
                 let map_value = index.is_some() && is_stored_aggregate(&self.types, value_ty);
                 if !fields.is_empty() {
                     if !map_value {
-                        return Err(error(*line, *col, "only a record in a map has fields here"));
+                        return Err(error(*span, "only a record in a map has fields here"));
                     }
                     let names: Vec<String> = fields.iter().map(|(_, name)| name.clone()).collect();
-                    value_ty = self.walk_fields(*line, *col, value_ty, 0, &names)?.0;
+                    value_ty = self.walk_fields(*span, value_ty, 0, &names)?.0;
                 }
                 self.check_expr_as(expr, Some(value_ty))?;
                 let fixed_list =
@@ -177,7 +174,7 @@ impl Checker {
                     && !self.list_value(value_ty)
                     && !(map_value && is_stored_aggregate(&self.types, value_ty))
                 {
-                    return Err(error(*line, *col, "only a single field can be assigned"));
+                    return Err(error(*span, "only a single field can be assigned"));
                 }
                 let sym_storage = self.syms[place.sym].storage;
                 let sym_mutable = self.syms[place.sym].mutable;
@@ -187,19 +184,15 @@ impl Checker {
                         ItemKind::View | ItemKind::Readonly | ItemKind::Pure
                     )
                 {
-                    return Err(self.weaker(*line, *col, "writes storage"));
+                    return Err(self.weaker(*span, "writes storage"));
                 }
                 if !sym_mutable {
-                    return Err(error(*line, *col, "cannot assign to a const"));
+                    return Err(error(*span, "cannot assign to a const"));
                 }
                 if !self.same(expr.ty(), value_ty) {
-                    return Err(error(
-                        *line,
-                        *col,
-                        "assignment type does not match the field",
-                    ));
+                    return Err(error(*span, "assignment type does not match the field"));
                 }
-                self.note_write(place.sym, *line, *col, &written);
+                self.note_write(place.sym, *span, &written);
                 *root = Some(place.sym);
                 *leaf = place.leaf;
                 Ok(())
@@ -208,13 +201,12 @@ impl Checker {
                 cond,
                 then_body,
                 else_body,
-                line,
-                col,
+                span,
                 ..
             } => {
                 self.check_expr(cond)?;
                 if self.types[cond.ty()].kind != TyKind::Bool {
-                    return Err(error(*line, *col, "`if` condition must be bool"));
+                    return Err(error(*span, "`if` condition must be bool"));
                 }
                 let parent = self.scope;
                 self.scope = self.push_scope(parent);
@@ -228,44 +220,37 @@ impl Checker {
                 self.scope = parent;
                 Ok(())
             }
-            Stmt::Assert {
-                cond,
-                reason,
-                line,
-                col,
-            } => {
+            Stmt::Assert { cond, reason, span } => {
                 self.check_expr(cond)?;
                 if self.types[cond.ty()].kind != TyKind::Bool {
-                    return Err(error(*line, *col, "assert condition must be bool"));
+                    return Err(error(*span, "assert condition must be bool"));
                 }
                 self.check_reason(reason)
             }
             Stmt::Fail { reason, .. } => self.check_reason(reason),
-            Stmt::Call { expr, line, col } if is_list_call(expr, "push") => {
-                let (line, col) = (*line, *col);
-                self.check_push(line, col, s)
+            Stmt::Call { expr, span } if is_list_call(expr, "push") => {
+                let span = *span;
+                self.check_push(span, s)
             }
-            Stmt::Call { expr, line, col } if is_list_call(expr, "pop") => {
-                let (line, col) = (*line, *col);
+            Stmt::Call { expr, span } if is_list_call(expr, "pop") => {
+                let span = *span;
                 let Expr::Call { args, .. } = expr else {
                     unreachable!()
                 };
                 let Some(path) = args.first().and_then(place_path) else {
-                    return self.check_deep_pop(line, col, s);
+                    return self.check_deep_pop(span, s);
                 };
                 let expr = std::mem::replace(
                     expr,
                     Expr::Lit {
-                        line,
-                        col,
+                        span,
                         lit: Lit::Unit,
                         ty: 0,
                     },
                 );
                 *s = Stmt::Assign {
                     op: None,
-                    line,
-                    col,
+                    span,
                     path,
                     index: None,
                     keys: Vec::new(),
@@ -281,63 +266,45 @@ impl Checker {
                 self.popping = false;
                 checked
             }
-            Stmt::Call { expr, line, col } => {
+            Stmt::Call { expr, span } => {
                 self.check_expr(expr)?;
                 if expr.ty() != TY_UNIT {
-                    return Err(error(*line, *col, "a call statement must return unit"));
+                    return Err(error(*span, "a call statement must return unit"));
                 }
                 Ok(())
             }
             Stmt::Skip => Ok(()),
-            Stmt::Emit {
-                line,
-                col,
-                name,
-                fields,
-            } => {
+            Stmt::Emit { span, name, fields } => {
                 // Creation announces itself; only calls to others wait for the code to exist.
                 if self.once != Some("deploy") {
-                    self.forbid_effect(*line, *col, "emit")?;
+                    self.forbid_effect(*span, "emit")?;
                 }
                 let ev = self
                     .events
                     .iter()
                     .find(|e| e.name == *name)
-                    .ok_or_else(|| self.unknown(*line, *col, "event", name))?;
+                    .ok_or_else(|| self.unknown(*span, "event", name))?;
                 let expected: Vec<(String, usize)> = ev
                     .fields
                     .iter()
                     .map(|field| (field.name.clone(), field.ty))
                     .collect();
                 if fields.len() != expected.len() {
-                    return Err(error(
-                        *line,
-                        *col,
-                        format!("`{name}` field list does not match"),
-                    ));
+                    return Err(error(*span, format!("`{name}` field list does not match")));
                 }
                 for ((fname, expr), (ename, ety)) in fields.iter_mut().zip(expected) {
                     if fname != &ename {
-                        return Err(error(
-                            *line,
-                            *col,
-                            format!("expected event field `{ename}`"),
-                        ));
+                        return Err(error(*span, format!("expected event field `{ename}`")));
                     }
                     self.check_expr_as(expr, Some(ety))?;
                     if !self.same(expr.ty(), ety) {
-                        return Err(error(
-                            *line,
-                            *col,
-                            format!("field `{ename}` has the wrong type"),
-                        ));
+                        return Err(error(*span, format!("field `{ename}` has the wrong type")));
                     }
                 }
                 Ok(())
             }
             Stmt::For {
-                line,
-                col,
+                span,
                 index,
                 name,
                 ty,
@@ -355,7 +322,7 @@ impl Checker {
                 declared,
                 invariants,
             } => {
-                let (line, col) = (*line, *col);
+                let span = *span;
                 // The bound is a number fixed when the contract is compiled.
                 if let Some(b) = bound {
                     *cap = Some(self.loop_bound(b)?);
@@ -377,12 +344,11 @@ impl Checker {
                     match iter {
                         ForIter::Range { lo, hi } => {
                             if index.is_some() {
-                                return Err(error(line, col, "a range loop binds one name"));
+                                return Err(error(span, "a range loop binds one name"));
                             }
                             if !self.is_integer(declared_ty) {
                                 return Err(error(
-                                    line,
-                                    col,
+                                    span,
                                     "a range loop counts with an integer type",
                                 ));
                             }
@@ -391,8 +357,7 @@ impl Checker {
                             if !self.same(lo.ty(), declared_ty) || !self.same(hi.ty(), declared_ty)
                             {
                                 return Err(error(
-                                    line,
-                                    col,
+                                    span,
                                     "the range's ends must have the loop variable's type",
                                 ));
                             }
@@ -408,7 +373,7 @@ impl Checker {
                                 self.state_syms.insert(sid);
                             }
                             *counter = Some(sid);
-                            self.define(line, col, &counter_name, sid)?;
+                            self.define(span, &counter_name, sid)?;
                             *limit = Some(self.add_sym(Sym {
                                 ty: declared_ty,
                                 mutable: false,
@@ -425,8 +390,7 @@ impl Checker {
                                     || !self.same(t.fields[0].ty, TY_UINT)
                                 {
                                     return Err(error(
-                                        line,
-                                        col,
+                                        span,
                                         "an indexed loop is declared `(i, x) : (uint, T)`",
                                     ));
                                 }
@@ -443,11 +407,7 @@ impl Checker {
                             if !is_place {
                                 self.check_expr(xs)?;
                                 if self.types[xs.ty()].kind != TyKind::List {
-                                    return Err(error(
-                                        line,
-                                        col,
-                                        "`for` iterates a list or a range",
-                                    ));
+                                    return Err(error(span, "`for` iterates a list or a range"));
                                 }
                             }
                             let converted = if is_place {
@@ -459,30 +419,28 @@ impl Checker {
                                 std::mem::replace(
                                     xs,
                                     Expr::Lit {
-                                        line,
-                                        col,
+                                        span,
                                         lit: Lit::Unit,
                                         ty: TY_UNIT,
                                     },
                                 )
                             } else {
                                 let lt = xs.ty();
-                                let span = self.list_span(line, col, lt, xs)?;
+                                let words = self.list_span(span, lt, xs)?;
                                 let lsid = self.add_sym(Sym {
                                     ty: lt,
                                     mutable: false,
                                     storage: false,
                                     slot: 0,
-                                    span,
+                                    span: words,
                                 });
                                 if self.reads_state(xs) {
                                     self.state_syms.insert(lsid);
                                 }
                                 *list = Some(lsid);
-                                self.define(line, col, "$list", lsid)?;
+                                self.define(span, "$list", lsid)?;
                                 Expr::Ident {
-                                    line,
-                                    col,
+                                    span,
                                     name: "$list".to_string(),
                                     sym: None,
                                     builtin: None,
@@ -502,24 +460,16 @@ impl Checker {
                                 TyKind::List => {}
                                 TyKind::Map => {
                                     return Err(error(
-                                        line,
-                                        col,
+                                        span,
                                         "a map cannot be iterated; keep an enumerable set",
                                     ))
                                 }
-                                _ => {
-                                    return Err(error(
-                                        line,
-                                        col,
-                                        "`for` iterates a list or a range",
-                                    ))
-                                }
+                                _ => return Err(error(span, "`for` iterates a list or a range")),
                             }
                             let held = self.types[p.ty].elem.unwrap_or(TY_UNIT);
                             if !self.same(held, elem_ty) {
                                 return Err(error(
-                                    line,
-                                    col,
+                                    span,
                                     "the loop variable's type does not match the list's elements",
                                 ));
                             }
@@ -536,10 +486,9 @@ impl Checker {
                                 span: 0,
                             });
                             *counter = Some(sid);
-                            self.define(line, col, &counter_name, sid)?;
+                            self.define(span, &counter_name, sid)?;
                             let mut idx = Expr::Ident {
-                                line,
-                                col,
+                                span,
                                 name: counter_name.clone(),
                                 sym: None,
                                 builtin: None,
@@ -548,8 +497,7 @@ impl Checker {
                             self.check_expr_as(&mut idx, Some(TY_UINT))?;
                             if self.types[p.ty].bits == 0 {
                                 *length = Some(Expr::Field {
-                                    line,
-                                    col,
+                                    span,
                                     base: Box::new(base.clone()),
                                     name: "length".to_string(),
                                     root: Some(p.sym),
@@ -558,21 +506,20 @@ impl Checker {
                                 });
                             }
                             let init = Expr::Index {
-                                line,
-                                col,
+                                span,
                                 base: Box::new(base),
                                 index: Box::new(idx),
                                 root: Some(p.sym),
                                 leaf: p.leaf,
                                 ty: held,
                             };
-                            let span = self.list_span(line, col, held, &init)?;
+                            let words = self.list_span(span, held, &init)?;
                             let esid = self.add_sym(Sym {
                                 ty: held,
                                 mutable: false,
                                 storage: false,
                                 slot: 0,
-                                span,
+                                span: words,
                             });
                             if stateful {
                                 self.state_syms.insert(esid);
@@ -580,7 +527,7 @@ impl Checker {
                             *elem = Some(esid);
                             *elem_init = Some(init);
                             if name != "_" {
-                                self.define(line, col, name, esid)?;
+                                self.define(span, name, esid)?;
                             }
                             *limit = Some(self.add_sym(Sym {
                                 ty: TY_UINT,
@@ -592,8 +539,9 @@ impl Checker {
                         }
                     }
                     if bound.is_none() && stateful {
+                        let (origin, line, col) = self.warning_at(span);
                         self.warnings.push(Note {
-                            origin: self.origin.clone(),
+                            origin,
                             line,
                             col,
                             rule: "unbounded-loop",
@@ -604,7 +552,7 @@ impl Checker {
                     if let Some(c) = until {
                         self.check_expr(c)?;
                         if self.types[c.ty()].kind != TyKind::Bool {
-                            return Err(error(c.line(), c.col(), "`until` must be bool"));
+                            return Err(error(c.span(), "`until` must be bool"));
                         }
                     }
                     // A loop invariant is a spec, and may use a spec's forms.
@@ -614,11 +562,7 @@ impl Checker {
                         self.in_spec = in_spec;
                         checked?;
                         if self.peel(inv.ty()) != TY_BOOL {
-                            return Err(error(
-                                inv.line(),
-                                inv.col(),
-                                "a loop invariant is a `bool`",
-                            ));
+                            return Err(error(inv.span(), "a loop invariant is a `bool`"));
                         }
                     }
                     for s in body.iter_mut() {
@@ -632,25 +576,20 @@ impl Checker {
                 Ok(())
             }
             Stmt::AssignTuple {
-                line,
-                col,
+                span,
                 names,
                 expr,
                 syms,
             } => {
                 let mut elems = Vec::new();
                 for name in names.iter() {
-                    let sym = self.resolve(*line, *col, name)?;
-                    self.across_phases(*line, *col, name, sym)?;
+                    let sym = self.resolve(*span, name)?;
+                    self.across_phases(*span, name, sym)?;
                     if self.syms[sym].storage {
-                        return Err(error(*line, *col, "a tuple assignment writes locals"));
+                        return Err(error(*span, "a tuple assignment writes locals"));
                     }
                     if !self.syms[sym].mutable {
-                        return Err(error(
-                            *line,
-                            *col,
-                            format!("cannot assign to a const `{name}`"),
-                        ));
+                        return Err(error(*span, format!("cannot assign to a const `{name}`")));
                     }
                     elems.push(self.syms[sym].ty);
                     syms.push(sym);
@@ -658,26 +597,21 @@ impl Checker {
                 let want = self.tuple_of(&elems);
                 self.check_expr_as(expr, Some(want))?;
                 if !self.same(expr.ty(), want) {
-                    return Err(error(
-                        *line,
-                        *col,
-                        "assignment type does not match the names",
-                    ));
+                    return Err(error(*span, "assignment type does not match the names"));
                 }
                 Ok(())
             }
             Stmt::Defer {
-                line,
-                col,
+                span,
                 expr,
                 value,
                 gas,
                 then,
             } => {
-                self.forbid_effect(*line, *col, "defer an operation")?;
+                self.forbid_effect(*span, "defer an operation")?;
                 self.check_expr(expr)?;
                 if self.types[expr.ty()].kind != TyKind::Operation {
-                    return Err(error(*line, *col, "defer expects an operation"));
+                    return Err(error(*span, "defer expects an operation"));
                 }
                 if let Some(gas) = gas {
                     if matches!(
@@ -688,8 +622,7 @@ impl Checker {
                         }
                     ) {
                         return Err(error(
-                            gas.line(),
-                            gas.col(),
+                            gas.span(),
                             "a contract's creation uses all the gas left; `create` takes no `with gas`",
                         ));
                     }
@@ -704,14 +637,13 @@ impl Checker {
                         }
                     ) {
                         return Err(error(
-                            *line,
-                            *col,
+                            *span,
                             "a delegate call runs with this call's own value; it takes no `with value`",
                         ));
                     }
                     self.check_expr(v)?;
                     if self.types[v.ty()].kind != TyKind::Uint {
-                        return Err(error(*line, *col, "`value` must be uint"));
+                        return Err(error(*span, "`value` must be uint"));
                     }
                     // Only a payable method accepts value.
                     if let Expr::Call {
@@ -723,8 +655,7 @@ impl Checker {
                     {
                         if !self.ifaces[bid][*mi].payable {
                             return Err(error(
-                                *line,
-                                *col,
+                                *span,
                                 format!(
                                     "`{name}` is not payable; declare it `payable function {name}` in its interface to send value"
                                 ),
@@ -733,7 +664,7 @@ impl Checker {
                     }
                 }
                 if let Some(then) = then {
-                    then.ret = self.op_return(*line, *col, expr)?;
+                    then.ret = self.op_return(*span, expr)?;
                     self.check_then(then)?;
                     if let Some(failed) = &mut then.error {
                         failed.ret = self.named["bytes"];
@@ -748,7 +679,7 @@ impl Checker {
     /// A continuation is a new phase: a new scope, a barrier against earlier `var`s, and
     /// the call's result bound under its declared type.
     fn check_then(&mut self, then: &mut Then) -> Result<(), Error> {
-        let (line, col) = (then.line, then.col);
+        let span = then.span;
         let ret = then.ret;
         let parent = self.scope;
         self.scope = self.push_scope(parent);
@@ -757,8 +688,7 @@ impl Checker {
             if !then.names.is_empty() {
                 if ret == TY_UNIT {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         "this call returns nothing; write `then { ... }` without a result",
                     ));
                 }
@@ -766,20 +696,18 @@ impl Checker {
                 let want = self.build(declared)?;
                 if !self.same(want, ret) {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         "the result type does not match what the call returns",
                     ));
                 }
                 let tys: Vec<usize> = if then.tuple {
                     if self.types[ret].kind != TyKind::Tuple {
-                        return Err(error(line, col, "destructuring expects a tuple"));
+                        return Err(error(span, "destructuring expects a tuple"));
                     }
                     let elems: Vec<usize> = self.types[ret].fields.iter().map(|f| f.ty).collect();
                     if elems.len() != then.names.len() {
                         return Err(error(
-                            line,
-                            col,
+                            span,
                             format!(
                                 "tuple pattern has {} names and the type has {} elements",
                                 then.names.len(),
@@ -800,7 +728,7 @@ impl Checker {
                         span: 0,
                     });
                     then.syms.push(sid);
-                    self.define(line, col, name, sid)?;
+                    self.define(span, name, sid)?;
                 }
             }
             for s in &mut then.stmts {
@@ -847,7 +775,7 @@ impl Checker {
     }
 
     /// `List.push(xs, v)` becomes `xs[xs.length] := v`, marked as the write that grows `xs`.
-    fn check_push(&mut self, line: u32, col: u32, s: &mut Stmt) -> Result<(), Error> {
+    fn check_push(&mut self, span: Span, s: &mut Stmt) -> Result<(), Error> {
         let Stmt::Call {
             expr: Expr::Call { args, .. },
             ..
@@ -856,27 +784,21 @@ impl Checker {
             return Ok(());
         };
         if args.len() != 2 {
-            return Err(error(line, col, "`List.push` expects 2 arguments"));
+            return Err(error(span, "`List.push` expects 2 arguments"));
         }
         let (list, value) = (args[0].clone(), args[1].clone());
         let Some((path, mut keys, fields)) = assign_parts(&list) else {
             return Err(error(
-                line,
-                col,
+                span,
                 "`List.push` takes a list variable or a stored list",
             ));
         };
         let place = self.place(&mut list.clone())?;
         if !self.list_value(place.ty) {
-            return Err(error(
-                list.line(),
-                list.col(),
-                "`List.push` expects a dynamic list",
-            ));
+            return Err(error(list.span(), "`List.push` expects a dynamic list"));
         }
         keys.push(Expr::Field {
-            line,
-            col,
+            span,
             base: Box::new(list),
             name: "length".into(),
             root: None,
@@ -885,8 +807,7 @@ impl Checker {
         });
         *s = Stmt::Assign {
             op: None,
-            line,
-            col,
+            span,
             path,
             index: Some(keys.remove(0)),
             keys,
@@ -902,7 +823,7 @@ impl Checker {
 
     /// `List.pop(m[k].xs)`: a list past a key or an index, popped through the place the
     /// argument names. It becomes an assignment of the pop to that place.
-    fn check_deep_pop(&mut self, line: u32, col: u32, s: &mut Stmt) -> Result<(), Error> {
+    fn check_deep_pop(&mut self, span: Span, s: &mut Stmt) -> Result<(), Error> {
         let Stmt::Call { expr, .. } = s else {
             return Ok(());
         };
@@ -911,28 +832,25 @@ impl Checker {
         };
         let Some(arg) = args.first_mut() else {
             return Err(error(
-                line,
-                col,
+                span,
                 "`List.pop` takes a list variable or a stored list",
             ));
         };
         if !matches!(arg, Expr::Index { .. } | Expr::Field { .. }) {
             return Err(error(
-                line,
-                col,
+                span,
                 "`List.pop` takes a list variable or a stored list",
             ));
         }
         let place = self.place(arg)?;
         if !self.list_value(place.ty) {
             return Err(error(
-                line,
-                col,
+                span,
                 "`List.pop` takes a list variable or a stored list",
             ));
         }
         if !self.syms[place.sym].storage && !self.syms[place.sym].mutable {
-            return Err(error(line, col, "cannot assign to a const"));
+            return Err(error(span, "cannot assign to a const"));
         }
         if self.syms[place.sym].storage
             && matches!(
@@ -940,7 +858,7 @@ impl Checker {
                 ItemKind::View | ItemKind::Readonly | ItemKind::Pure
             )
         {
-            return Err(self.weaker(line, col, "writes storage"));
+            return Err(self.weaker(span, "writes storage"));
         }
         let target = arg.clone();
         let (found, named) = place_keys(&target);
@@ -949,8 +867,7 @@ impl Checker {
         let expr = std::mem::replace(
             expr,
             Expr::Lit {
-                line,
-                col,
+                span,
                 lit: Lit::Unit,
                 ty: 0,
             },
@@ -960,8 +877,7 @@ impl Checker {
             name,
             base,
             ty,
-            line: cline,
-            col: ccol,
+            span: cspan,
             ..
         } = expr
         else {
@@ -970,15 +886,13 @@ impl Checker {
         args[0] = target.clone();
         *s = Stmt::Assign {
             op: None,
-            line,
-            col,
+            span,
             path,
             index: found.next(),
             keys: found.collect(),
             fields: Vec::new(),
             expr: Expr::Call {
-                line: cline,
-                col: ccol,
+                span: cspan,
                 name,
                 args,
                 base,
@@ -1001,8 +915,7 @@ impl Checker {
     #[allow(clippy::too_many_arguments)]
     fn check_deep_assign(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         path: &[String],
         index: &mut Option<Expr>,
         keys: &mut Vec<Expr>,
@@ -1013,13 +926,12 @@ impl Checker {
         target: &mut Option<Box<Expr>>,
     ) -> Result<(), Error> {
         let all = index.take().into_iter().chain(keys.drain(..));
-        let mut place_expr = place_of(line, col, path, all, fields);
+        let mut place_expr = place_of(span, path, all, fields);
         let place = self.place(&mut place_expr)?;
         if matches!(&place_expr, Expr::Index { base, .. } if self.types[base.ty()].kind == TyKind::Bytes)
         {
             return Err(error(
-                line,
-                col,
+                span,
                 "a byte cannot be assigned; build a new value with slices and `Bytes.concat`",
             ));
         }
@@ -1030,18 +942,18 @@ impl Checker {
                 ItemKind::View | ItemKind::Readonly | ItemKind::Pure
             )
         {
-            return Err(self.weaker(line, col, "writes storage"));
+            return Err(self.weaker(span, "writes storage"));
         }
-        self.note_write(place.sym, line, col, path);
+        self.note_write(place.sym, span, path);
         if !self.syms[place.sym].mutable {
-            return Err(error(line, col, "cannot assign to a const"));
+            return Err(error(span, "cannot assign to a const"));
         }
         if self.holds_map(value_ty) {
-            return Err(error(line, col, "only a single field can be assigned"));
+            return Err(error(span, "only a single field can be assigned"));
         }
         self.check_expr_as(expr, Some(value_ty))?;
         if !self.same(expr.ty(), value_ty) {
-            return Err(error(line, col, "assignment type does not match the field"));
+            return Err(error(span, "assignment type does not match the field"));
         }
         let mut found = place_keys(&place_expr).0.into_iter();
         *index = found.next();
@@ -1058,8 +970,7 @@ impl Checker {
     /// may assign it. `inline_keys` puts back those that need not be.
     fn compound_assign(&self, s: &mut Stmt) -> Option<Stmt> {
         let Stmt::Assign {
-            line,
-            col,
+            span,
             path,
             index,
             keys,
@@ -1072,9 +983,9 @@ impl Checker {
             return None;
         };
         let op = op.take()?;
-        let (line, col) = (*line, *col);
+        let span = *span;
         let blocks = runs_blocks(expr) || index.iter_mut().chain(keys.iter_mut()).any(runs_blocks);
-        let mut ty = self.lookup_path(line, col, path).ok().map(|p| p.ty);
+        let mut ty = self.lookup_path(span, path).ok().map(|p| p.ty);
         let mut named = fields.iter().peekable();
         let mut stmts = Vec::new();
         for (i, key) in index.iter_mut().chain(keys.iter_mut()).enumerate() {
@@ -1098,10 +1009,9 @@ impl Checker {
                 continue;
             }
             let temp = format!("#key{i}");
-            let read = path_expr(key.line(), key.col(), std::slice::from_ref(&temp));
+            let read = path_expr(key.span(), std::slice::from_ref(&temp));
             stmts.push(Stmt::Const {
-                line,
-                col,
+                span,
                 name: temp,
                 parts: Vec::new(),
                 ty: key_ty,
@@ -1111,17 +1021,15 @@ impl Checker {
             });
         }
         let all = index.iter().chain(keys.iter()).cloned();
-        let read = place_of(line, col, path, all, fields);
+        let read = place_of(span, path, all, fields);
         let unit = Expr::Lit {
-            line,
-            col,
+            span,
             lit: Lit::Unit,
             ty: 0,
         };
         let value = std::mem::replace(expr, unit);
         *expr = Expr::Binary {
-            line,
-            col,
+            span,
             op,
             left: Box::new(read),
             right: Box::new(value),
@@ -1132,11 +1040,9 @@ impl Checker {
         }
         stmts.push(std::mem::replace(s, Stmt::Skip));
         Some(Stmt::If {
-            line,
-            col,
+            span,
             cond: Expr::Lit {
-                line,
-                col,
+                span,
                 lit: Lit::Bool(true),
                 ty: 0,
             },
@@ -1221,8 +1127,7 @@ impl Checker {
     /// `p[0] := t[0]; ...`, in a block of its own. Past a key, such a value is written whole.
     fn split_assign(&self, s: &Stmt) -> Option<Stmt> {
         let Stmt::Assign {
-            line,
-            col,
+            span,
             path,
             index: None,
             expr,
@@ -1232,8 +1137,8 @@ impl Checker {
         else {
             return None;
         };
-        let (line, col) = (*line, *col);
-        let place = self.lookup_path(line, col, path).ok()?;
+        let span = *span;
+        let place = self.lookup_path(span, path).ok()?;
         if !self.syms[place.sym].storage {
             return None;
         }
@@ -1248,8 +1153,7 @@ impl Checker {
         }
         let temp = format!("#set{}", self.syms.len());
         let mut stmts = vec![Stmt::Const {
-            line,
-            col,
+            span,
             name: temp.clone(),
             parts: Vec::new(),
             ty: TypeRef::Hole { id: ty },
@@ -1258,8 +1162,7 @@ impl Checker {
             part_syms: Vec::new(),
         }];
         let at = |i: u16| Expr::Lit {
-            line,
-            col,
+            span,
             lit: Lit::Uint(Word::from_u64(u64::from(i))),
             ty: 0,
         };
@@ -1267,9 +1170,8 @@ impl Checker {
             (0..t.bits)
                 .map(|i| {
                     let value = Expr::Index {
-                        line,
-                        col,
-                        base: Box::new(path_expr(line, col, std::slice::from_ref(&temp))),
+                        span,
+                        base: Box::new(path_expr(span, std::slice::from_ref(&temp))),
                         index: Box::new(at(i)),
                         root: None,
                         leaf: 0,
@@ -1287,7 +1189,7 @@ impl Checker {
                     (
                         path,
                         None,
-                        path_expr(line, col, &[temp.clone(), field.name.clone()]),
+                        path_expr(span, &[temp.clone(), field.name.clone()]),
                     )
                 })
                 .collect()
@@ -1295,8 +1197,7 @@ impl Checker {
         for (path, index, expr) in parts {
             stmts.push(Stmt::Assign {
                 op: None,
-                line,
-                col,
+                span,
                 path,
                 index,
                 keys: Vec::new(),
@@ -1309,11 +1210,9 @@ impl Checker {
             });
         }
         Some(Stmt::If {
-            line,
-            col,
+            span,
             cond: Expr::Lit {
-                line,
-                col,
+                span,
                 lit: Lit::Bool(true),
                 ty: 0,
             },
@@ -1324,8 +1223,7 @@ impl Checker {
 
     pub(super) fn walk_fields(
         &self,
-        line: u32,
-        col: u32,
+        span: Span,
         mut ty: usize,
         mut leaf: u32,
         names: &[String],
@@ -1333,13 +1231,13 @@ impl Checker {
         for name in names {
             let rec = &self.types[ty];
             if rec.kind == TyKind::List && rec.bits == 0 && name == "length" {
-                return Err(error(line, col, "`List.push` grows a list"));
+                return Err(error(span, "`List.push` grows a list"));
             }
             if rec.kind != TyKind::Record {
-                return Err(error(line, col, format!("`{name}` is not a record field")));
+                return Err(error(span, format!("`{name}` is not a record field")));
             }
             let Some(field) = rec.fields.iter().find(|field| field.name == *name) else {
-                return Err(self.no_field(line, col, ty, name));
+                return Err(self.no_field(span, ty, name));
             };
             leaf += field.slot;
             ty = field.ty;
@@ -1351,18 +1249,16 @@ impl Checker {
 /// The place an assignment writes, as an expression: the path, then each key, each
 /// followed by the fields named after it.
 fn place_of(
-    line: u32,
-    col: u32,
+    span: Span,
     path: &[String],
     keys: impl Iterator<Item = Expr>,
     fields: &[(usize, String)],
 ) -> Expr {
-    let mut place = path_expr(line, col, path);
+    let mut place = path_expr(span, path);
     let mut named = fields.iter().peekable();
     for (i, key) in keys.enumerate() {
         place = Expr::Index {
-            line,
-            col,
+            span,
             base: Box::new(place),
             index: Box::new(key),
             root: None,
@@ -1371,8 +1267,7 @@ fn place_of(
         };
         while let Some((_, name)) = named.next_if(|(at, _)| *at == i + 1) {
             place = Expr::Field {
-                line,
-                col,
+                span,
                 base: Box::new(place),
                 name: name.clone(),
                 root: None,
@@ -1468,8 +1363,7 @@ impl Checker {
     #[allow(clippy::too_many_arguments)]
     fn bind_parts(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         id: usize,
         parts: &[String],
         part_syms: &mut Vec<usize>,
@@ -1477,13 +1371,12 @@ impl Checker {
         derived: bool,
     ) -> Result<(), Error> {
         if self.types[id].kind != TyKind::Tuple {
-            return Err(error(line, col, "destructuring expects a tuple"));
+            return Err(error(span, "destructuring expects a tuple"));
         }
         let elem_tys: Vec<usize> = self.types[id].fields.iter().map(|field| field.ty).collect();
         if elem_tys.len() != parts.len() {
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "tuple pattern has {} names and the type has {} elements",
                     parts.len(),
@@ -1504,7 +1397,7 @@ impl Checker {
                 self.state_syms.insert(sid);
             }
             if name != "_" {
-                self.define(line, col, name, sid)?;
+                self.define(span, name, sid)?;
             }
         }
         Ok(())

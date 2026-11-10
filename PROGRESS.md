@@ -57,7 +57,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 ### Phase 5 — frontend hygiene and caching
 
 - [ ] **5.1** Identifier interner. **Measured and split: not doable in one slice.** Adding `Symbol`/`Names` and flipping `NameAt.name` alone breaks 184 sites in 19 files, 12 of them outside this slice, and the table has to be shared across merged files before any field can move. Split into 5.1a (table + determinism proof, **landed**), 5.1b (AST fields, needs one owner for `check`/`gen`/`prove`/`evm`), 5.1c (the checker's maps, where the win is). See `## 5.1 Interning: scope measured` and `## 5.1a The table`.
-- [ ] **5.2** `FileId` and byte `Span`. Diagnostics keep `line` and `column`.
+- [x] **5.2** `FileId` and byte `Span`. Diagnostics keep `line` and `column`. **Landed (S57, 5.2a):** every AST `line`/`col` pair is a `Span { lo, hi }` and every `origin: String` a `FileId` into one `SourceMap` per load; `Error` resolves at `in_file`/`placed`. Both snapshots unchanged, a 7 342-line diagnostic corpus byte-identical, erc20_full LSP diagnostics 6.28–6.87 → 6.23–6.26 ms (not moved beyond noise). See `## 5.2a`.
 - [ ] **5.3** Remove deep clones. Make `Plan` cheap. **Measured: `Plan` is not where the time is.** A Release `Plan` clone with 640 set members costs **3.0 µs**; `bench/erc20_full.lithe` Release runs 98 emits and 92 finishes totalling 1.66 s. The ~200 plan clones a search does are therefore ~0.6 ms, 0.04 % of the backend. Not taken on its own; the clones that matter are `Program`'s, which 5.1/5.2 already remove. See `## 5.3 Plan clones measured`.
 - [x] **5.4** Fx hasher. Every std `HashMap`/`HashSet` in `check`, `gen`, `route`, `split` and `index` (and `asm.rs`'s last few) is now `asm::FxHashMap`/`FxHashSet`; the two whose order was seen are `BTreeMap`s (no `IndexMap`: no new dependency). Both snapshots unchanged; `check` −1.5–2 %. See `## S27 Fx hashing`.
 - [ ] **5.5** Index-arena AST.
@@ -90,6 +90,7 @@ This section is the single source of truth for what is open and what blocks what
 - **Final comparison table** below is a mid-branch snapshot; regenerate it once the steps above land.
 
 - **5.1 measured, handoff: needs its own slice.** The interner was started and the exact cost measured before writing it. Details and the number that decides the split are in `## 5.1 Interning: scope measured`.
+- **5.2a landed (S57):** byte spans and `FileId`s across the crate, positions resolved from a per-load `SourceMap`; bytecode, diagnostics, warnings, lint and prover text unchanged. The LSP number did not move (6.2 ms), so the ≤ 5 ms target still rests on 5.1b/5.1c and 5.5. See `## 5.2a`.
 - **5.1a landed:** `Symbol`/`Names` and `Program.names`, one process-wide table threaded through `parse`, `parse_specs` and `load_in`, with a determinism test across files and parse orders. No field moved, so bytecode and diagnostics are unchanged. 5.1b and 5.1c remain open. See `## 5.1a The table`.
 - **S43 and S44 landed:** one process-wide `LITHE_THREADS` budget, and per-build timing counters. See `## S43 One thread budget` and `## S44 Per-build counters`.
 - **S37/S45 landed:** build state no longer depends on how much of the thread budget was free. `parallel_map` releases a worker's unit as soon as the queue drains, workers start from the caller's byte weight, certifying and tracking, and the `LITHE_TIME` counters are thread-local, summed back by the pool. A parallel `compile_dir` now prints one `[time]` line per build, each with its own `emits`/`finishes`. See `## S37/S45 build state off the budget`.
@@ -1330,3 +1331,33 @@ Five of those files are this slice's. The rest are `check/*`, `gen/*`, `prove/*`
 - `lint::units` no longer copies the loaded program to keep a fallback for a broken spec file; it loads the file again on that (error-only) path.
 
 **Split proposed:** 5.2a, a `Span`/`FileId` source map in `ast`/`parse` with `line()`/`col()` accessors and one owner for the call-site sweep; 5.1b, the `Symbol` flip of the four AST shapes, also one owner of `check`/`gen`/`prove`/`evm`; and the `Checked.source` and `spec::check(prog.clone())` clones carried into 5.5 (not closed here): both exist because `check` takes `Program` by value and mutates it, and both go once 5.5's arena lets `check` borrow the AST.
+
+## 5.2a
+
+Plan: replace every AST `line`/`col` with a byte `Span` and every `origin: String` with a `FileId`, resolving text positions from one source map. Proof: both bytecode snapshots, the whole suite with an assert that no error reaches `Display` unresolved, and a before/after diff of every diagnostic the CLI prints. Expected: no number moves except, perhaps, the LSP one.
+
+**What changed.**
+- `ast`: `Span { lo, hi }` (the bytes of the token a node starts at; `Span::NONE` is the old line 0), `FileId(u32)` (`FileId::NONE` is the old empty origin), and `SourceMap` (path, content hash, line starts; `add` dedupes on (path, hash)). `Program.files: Arc<SourceMap>`, shared by its siblings and peers. `parse::line_starts` builds the table.
+- One map per compilation: `parse` gives a lone file its own; `modules::load_in` owns the load's, adds each file as it reads it (cached parses included, since their spans are file-relative), and stamps each declaration's `FileId`; `load_specs` adds spec files.
+- `Error` keeps `file`/`line`/`column`/`message` public. Two crate-private fields carry an unresolved span and the `FileId` `in_file` named; `Error::placed(map, own)` writes `line`/`column` (and the path, when `in_file` named one). It runs where errors leave a map's reach: `parse`/`parse_specs`, `load_in`/`load_specs`, `check_in` and `several_contracts`, `compile`'s per-unit build, and the post-check entries `split::build_from`, `gen::entrypoints`, `route::{abi, method_ids, render_errors}`, `spec::{check, instrument}`. A place no `in_file` named is read in the program's own file and gets no path, as before. `in_path` is the old string `in_file` for the call sites that only know a path. External code that built `Error` by literal (`main.rs`, `standard_json.rs`, `lsp.rs`, `playground/`) now clones or calls the new `Error::new(line, column, message)`.
+- Text that is not an `Error` resolves through the map where it is made: `modules::Site::place` (holds the map), `check::Note` (resolved where the checker writes it, so `format_note` and `lint` are unchanged), `split::warning` and `split::Site`, `spec/instrument` (`loop invariant at l:c`, `--check-specs` warnings), and the prover. `prove::exec` tracks the file of the code it runs (set per subject, invariant and clause, swapped on calls), a `Stop` from inside a call carries the callee's file, and `bspec::Reader` does the same for `(at l:c)`.
+- `lint` keeps its `(line, col)` findings, sort and dedupe unchanged; binds hold spans resolved once against the file's own text, and keyword lookups match on byte offset.
+- `split::Site` stays `(path, line, col)` because the facet cache serializes it and `FileId`s are only stable within one load.
+
+**The `index::Span` collision.** `index::Span { file, line, col, len }` (public as `lithe::Span`) keeps its name and meaning: the LSP-facing place, already resolved. The index resolves each AST span to line/column through its own per-file line table (`Builder::lc`, `locate_at`, `offset_at`) when it builds, and refers to the AST type only as `crate::ast::Span`, so the two never meet at the LSP boundary. Storing byte spans in the index would change every LSP path for no measured gain.
+
+**Found on the way.** `gen::calls`' statement-shape key strips positions from the statements' `Debug` text; it matched `line: N, col: M, ` and silently stopped stripping, which changed `bench/safe_erc20.lithe:Payer` and `fuzz/shared_arms.lithe` in both snapshots until it matched `span: Span { .. }, ` instead. `SourceFile`'s `Debug` prints only path and content hash, because facet memo and cache keys hash `Program`'s `Debug`.
+
+**Gates.**
+
+| gate | result |
+|---|---|
+| `evm::snapshot` (Release and Fast, with and without VERIFY) | unchanged |
+| `cargo test --locked`, with a temporary `assert!` in `Error`'s `Display` that the span was resolved | 562 lib + 25 bin + 1 pass, no unresolved error displayed |
+| diagnostic corpus: `compile`, `abi`, `errors`, `specs`, `lint` over `examples/`, `bench/`, `fuzz/`, `std/`, plus 797 variants (lines 3/7/13/21/34/55/89 deleted, junk appended) | 7 342 lines, `cmp` identical between `b1c574a` and this tree (1 937 positioned lines, 866 warnings) |
+| `make check` (fmt, clippy, test, VERIFY test, differential at 2 000 steps, snapshot, bench-gas, wasm playground) | green, exit 0 |
+
+**Number.** `lsp::tests::did_change_coalesces_and_erc20_full_diagnostics_are_fast` (20 ms limit), release, best of 5 per run, three runs each: before (`b1c574a`) 6.87 / 6.54 / 6.28 ms, after 6.23 / 6.24 / 6.26 ms. That is within run-to-run noise: the sweep does not move it. The test now prints the number under `--nocapture`. Spans are the same size as the pairs they replace, and the only frontend allocation removed is one `String` per declaration (`origin`), which is not where `check`'s 5–7 ms goes. The ≤ 5 ms target stays with 5.1b/5.1c (names) and 5.5 (the arena).
+
+**Known edge, not reached by any test or the corpus.** An error raised after `check` from a span inside an imported module's function, with no `in_file` on its way out, used to print that module's line and column under the contract's name. It now reads the contract's own line table, because nothing on that path says which file the span is in. Every such site the corpus and suite reach either names its file or is in the contract's file.
+

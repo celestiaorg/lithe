@@ -1406,7 +1406,7 @@ external function walk(const n : uint) is {
             Box::new(|b| {
                 for c in &mut b.loops {
                     for (key, loc) in &mut c.locals {
-                        if key.2 == "start" {
+                        if key.1 == "start" {
                             *loc = Loc::Memory(0x40);
                         }
                     }

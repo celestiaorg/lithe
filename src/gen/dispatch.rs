@@ -296,7 +296,7 @@ impl<'a> Gen<'a> {
             Guarding::Route(index) => self.checked.routes[index].guards.first().cloned(),
         };
         let call =
-            call.ok_or_else(|| error(1, 1, "internal: a guarded entrypoint calls its guard"))?;
+            call.ok_or_else(|| error_at(1, 1, "internal: a guarded entrypoint calls its guard"))?;
         self.compile_stmts(&[call])?;
         self.finish_body();
         self.push_label(to);
@@ -329,7 +329,7 @@ impl<'a> Gen<'a> {
         if targets.iter().any(|(_, target)| {
             matches!(*target, Target::Entry { index, .. } if self.queues_nested(index))
         }) {
-            crate::route::claim(&mut seen, DRAIN_SIG, 1, 1)?;
+            crate::route::claim(&mut seen, DRAIN_SIG, Span::default())?;
         }
         let views: Vec<usize> = self
             .checked
@@ -344,7 +344,7 @@ impl<'a> Gen<'a> {
             let sig = self.view_sig(fi)?;
             let sel = selector(&sig);
             let f = &self.checked.prog.funcs[fi];
-            crate::route::claim(&mut seen, &sig, f.line, f.col)?;
+            crate::route::claim(&mut seen, &sig, f.span)?;
             let label = self.fresh();
             targets.push((label, Target::View { func: fi, sel }));
         }
@@ -361,7 +361,7 @@ impl<'a> Gen<'a> {
             let sig = self.view_sig(fi)?;
             let sel = selector(&sig);
             let f = &self.checked.prog.funcs[fi];
-            crate::route::claim(&mut seen, &sig, f.line, f.col)?;
+            crate::route::claim(&mut seen, &sig, f.span)?;
             let label = self.fresh();
             targets.push((label, Target::Migrate { func: fi, sel }));
         }
@@ -369,13 +369,13 @@ impl<'a> Gen<'a> {
             let sig = self.view_sig(fi)?;
             let sel = selector(&sig);
             let f = &self.checked.prog.funcs[fi];
-            crate::route::claim(&mut seen, &sig, f.line, f.col)?;
+            crate::route::claim(&mut seen, &sig, f.span)?;
             let label = self.fresh();
             targets.push((label, Target::Deploy { func: fi, sel }));
         }
         if self.checked.prog.upgradeable {
             for sig in ["proxiableUUID()", "upgradeToAndCall(address,bytes)"] {
-                crate::route::claim(&mut seen, sig, 1, 1)?;
+                crate::route::claim(&mut seen, sig, Span::default())?;
             }
             let label = self.fresh();
             targets.push((
@@ -675,7 +675,7 @@ impl<'a> Gen<'a> {
         let route = &self.checked.routes[index];
         let func = route
             .direct
-            .ok_or_else(|| error(1, 1, "internal: a fallback is a function"))?;
+            .ok_or_else(|| error_at(1, 1, "internal: a fallback is a function"))?;
         if !route.payable && short {
             self.jumpdest(label);
             self.op(CALLVALUE);
@@ -710,7 +710,7 @@ impl<'a> Gen<'a> {
         let target = self.checked.prog.funcs[func]
             .tail
             .clone()
-            .ok_or_else(|| error(1, 1, "internal: a forwarding `fallback` needs a target"))?;
+            .ok_or_else(|| error_at(1, 1, "internal: a forwarding `fallback` needs a target"))?;
         self.compile_value(&target)?;
         self.op(DUP1);
         self.op(EXTCODESIZE);
@@ -1612,7 +1612,7 @@ impl<'a> Gen<'a> {
         let tail = self.checked.prog.funcs[func]
             .tail
             .clone()
-            .ok_or_else(|| error(1, 1, "view is missing a value"))?;
+            .ok_or_else(|| error_at(1, 1, "view is missing a value"))?;
         self.compile_seq(&stmts)?;
         let ret = self.checked.prog.funcs[func].ret_ty;
         if self.tree_ret(ret) {
@@ -1985,7 +1985,7 @@ impl<'a> Gen<'a> {
             .prog
             .guard
             .clone()
-            .ok_or_else(|| error(1, 1, "upgradeable contract requires an upgrade guard"))?;
+            .ok_or_else(|| error_at(1, 1, "upgradeable contract requires an upgrade guard"))?;
         self.compile_stmts(&guard.stmts)?;
         self.store_image();
         self.finish_body();

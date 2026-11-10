@@ -51,8 +51,7 @@ pub(super) fn mark_facets(mut prog: crate::ast::Program, every: bool) -> crate::
     for name in names {
         if !prog.facets.iter().any(|m| m.name == name) {
             prog.facets.push(crate::ast::NameAt {
-                line: 0,
-                col: 0,
+                span: crate::ast::Span::NONE,
                 name,
             });
         }

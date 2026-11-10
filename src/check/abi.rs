@@ -133,7 +133,7 @@ pub(crate) fn abi_fields(types: &[RType], ty: usize, name: &str) -> Result<Vec<A
         TyKind::Unit => Ok(Vec::new()),
         TyKind::Nominal => {
             let Some(under) = types[ty].elem else {
-                return Err(error(1, 1, "this type cannot be an ABI value"));
+                return Err(error_at(1, 1, "this type cannot be an ABI value"));
             };
             let mut fields = abi_fields(types, under, name)?;
             // A variant with no payloads is a `uint8` named by its type, like an `enum`.
@@ -184,8 +184,8 @@ pub(crate) fn abi_fields(types: &[RType], ty: usize, name: &str) -> Result<Vec<A
             components: Vec::new(),
             id: ty,
         }]),
-        TyKind::Map => Err(error(1, 1, "a map cannot be an ABI value")),
-        TyKind::Option => Err(error(1, 1, "an option cannot be an ABI value")),
+        TyKind::Map => Err(error_at(1, 1, "a map cannot be an ABI value")),
+        TyKind::Option => Err(error_at(1, 1, "an option cannot be an ABI value")),
         // A `flat` record parameter, result, or case payload is its fields, as Solidity's
         // several parameters or results are. Any other record is one tuple.
         TyKind::Record if types[ty].flat.is_some() => types[ty]
@@ -194,7 +194,7 @@ pub(crate) fn abi_fields(types: &[RType], ty: usize, name: &str) -> Result<Vec<A
             .map(|f| abi_nested(types, f.ty, &f.name))
             .collect(),
         TyKind::List | TyKind::Tuple | TyKind::Record => Ok(vec![abi_nested(types, ty, name)?]),
-        _ => Err(error(1, 1, "this type cannot be an ABI value")),
+        _ => Err(error_at(1, 1, "this type cannot be an ABI value")),
     }
 }
 
@@ -213,7 +213,7 @@ pub(crate) fn abi_nested(types: &[RType], ty: usize, name: &str) -> Result<AbiFi
         for v in &types[id].variants {
             if let Some(p) = v.payload {
                 if has_option(types, p) || !is_value(types, p) {
-                    return Err(error(1, 1, "an option cannot be an ABI value"));
+                    return Err(error_at(1, 1, "an option cannot be an ABI value"));
                 }
             }
         }
@@ -250,7 +250,7 @@ pub(crate) fn abi_nested(types: &[RType], ty: usize, name: &str) -> Result<AbiFi
         }
         TyKind::List => {
             let Some(elem) = t.elem.filter(|&e| types[e].kind != TyKind::Operation) else {
-                return Err(error(1, 1, "this type cannot be an ABI value"));
+                return Err(error_at(1, 1, "this type cannot be an ABI value"));
             };
             let inner = abi_nested(types, elem, "")?;
             let len = if t.bits == 0 {
@@ -268,7 +268,7 @@ pub(crate) fn abi_nested(types: &[RType], ty: usize, name: &str) -> Result<AbiFi
         _ => {
             let mut parts = abi_fields(types, ty, name)?;
             if parts.len() != 1 {
-                return Err(error(1, 1, "this type cannot be an ABI value"));
+                return Err(error_at(1, 1, "this type cannot be an ABI value"));
             }
             Ok(parts.remove(0))
         }

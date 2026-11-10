@@ -243,7 +243,7 @@ impl<'a> Gen<'a> {
             }
         }
         match e {
-            Expr::Lit { lit, ty, line, col } => match lit {
+            Expr::Lit { lit, ty, span } => match lit {
                 Lit::Uint(w) | Lit::Wei(w) | Lit::Duration(w) => {
                     self.push_word(*w);
                     Ok(())
@@ -271,24 +271,22 @@ impl<'a> Gen<'a> {
                     self.push_u64(0);
                     Ok(())
                 }
-                Lit::Nil | Lit::Zero => Err(error(*line, *col, "this value is not a word")),
+                Lit::Nil | Lit::Zero => Err(error(*span, "this value is not a word")),
             },
             Expr::Ident {
                 builtin: Some(b),
                 ty,
-                line,
-                col,
+                span,
                 ..
-            } => self.compile_builtin(*b, &[], *ty, *line, *col),
+            } => self.compile_builtin(*b, &[], *ty, *span),
             Expr::Ident {
                 sym: Some(sid),
-                line,
-                col,
+                span,
                 ..
             } => {
                 let ty = self.checked.syms[*sid].ty;
                 if !self.is_word_ty(ty) && self.flip(ty).is_none() {
-                    return Err(error(*line, *col, "expected a word"));
+                    return Err(error(*span, "expected a word"));
                 }
                 if self.is_dynamic(ty) && self.checked.syms[*sid].storage {
                     self.load_storage_bytes(*sid, 0)?;
@@ -304,12 +302,11 @@ impl<'a> Gen<'a> {
             Expr::Query {
                 expr,
                 gas,
-                line,
-                col,
+                span,
                 ty,
             } => {
                 self.query_gas = gas.as_deref().cloned();
-                let result = self.compile_query(expr, *ty, *line, *col);
+                let result = self.compile_query(expr, *ty, *span);
                 self.query_gas = None;
                 result?;
                 self.align_decoded(*ty);
@@ -352,9 +349,9 @@ impl<'a> Gen<'a> {
                 self.op(POP);
                 Ok(())
             }
-            Expr::Field { line, col, ty, .. } if self.map_place(e).is_some() => {
+            Expr::Field { span, ty, .. } if self.map_place(e).is_some() => {
                 if !self.stack_value(*ty) {
-                    return Err(error(*line, *col, "expected a word"));
+                    return Err(error(*span, "expected a word"));
                 }
                 let (index, value, start) = self.map_place(e).expect("checked");
                 let name = self.named(e).filter(|_| !self.place_transient(e));
@@ -375,13 +372,12 @@ impl<'a> Gen<'a> {
             }
             Expr::Field {
                 root: None,
-                line,
-                col,
+                span,
                 ty,
                 ..
             } => {
                 if !self.stack_value(*ty) {
-                    return Err(error(*line, *col, "expected a word"));
+                    return Err(error(*span, "expected a word"));
                 }
                 if let Some((record, word)) = self.stack_field(e) {
                     // Every word is computed, since any may fail; only the one read stays.
@@ -403,15 +399,14 @@ impl<'a> Gen<'a> {
             Expr::Field {
                 root: Some(sid),
                 leaf,
-                line,
-                col,
+                span,
                 ty,
                 ..
             } => {
                 // A list field of a record in memory is its pointer, one word like any other.
                 let local_list = self.list_value(*ty) && !self.checked.syms[*sid].storage;
                 if !self.is_word_ty(*ty) && self.flip(*ty).is_none() && !local_list {
-                    return Err(error(*line, *col, "expected a word"));
+                    return Err(error(*span, "expected a word"));
                 }
                 if self.is_dynamic(*ty) && self.checked.syms[*sid].storage {
                     self.load_storage_bytes(*sid, *leaf)?;
@@ -447,13 +442,12 @@ impl<'a> Gen<'a> {
                 leaf,
                 base,
                 index,
-                line,
-                col,
+                span,
                 ..
             } => {
                 let proven = self.trusted_index || self.index_proven(base, index);
                 let trusted = std::mem::replace(&mut self.trusted_index, proven);
-                let result = self.compile_index_read(*sid, *leaf, index, *line, *col, false);
+                let result = self.compile_index_read(*sid, *leaf, index, *span, false);
                 self.trusted_index = trusted;
                 result
             }
@@ -511,12 +505,11 @@ impl<'a> Gen<'a> {
                 op,
                 left,
                 right,
-                line,
-                col,
+                span,
                 ..
             } => {
                 if *op == BinOp::Cons {
-                    return Err(error(*line, *col, "`#` is not a word"));
+                    return Err(error(*span, "`#` is not a word"));
                 }
                 if let Some(w) = self.const_word(e) {
                     self.push_word(w);
@@ -751,23 +744,18 @@ impl<'a> Gen<'a> {
                 builtin: Some(b),
                 args,
                 ty,
-                line,
-                col,
+                span,
                 ..
-            } => self.compile_builtin(*b, args, *ty, *line, *col),
+            } => self.compile_builtin(*b, args, *ty, *span),
             Expr::Call {
                 callee: Some(idx),
                 args,
                 ..
             } => self.compile_call(*idx, args),
             Expr::Case {
-                scrut,
-                arms,
-                line,
-                col,
-                ..
-            } => self.compile_case(scrut, arms, *line, *col, Sink::Stack),
-            other => Err(error(other.line(), other.col(), "expected a word")),
+                scrut, arms, span, ..
+            } => self.compile_case(scrut, arms, *span, Sink::Stack),
+            other => Err(error(other.span(), "expected a word")),
         }
     }
 
@@ -776,8 +764,7 @@ impl<'a> Gen<'a> {
         b: Builtin,
         args: &[Expr],
         ty: usize,
-        line: u32,
-        col: u32,
+        span: Span,
     ) -> Result<(), Error> {
         match b {
             Builtin::ImmutableRead => return self.compile_immutable_read(&args[0], ty),
@@ -871,7 +858,7 @@ impl<'a> Gen<'a> {
             Builtin::AbiDecode => return self.compile_abi_decode(&args[0], ty),
             Builtin::Some | Builtin::None => {
                 let Some(flip) = self.flip(ty) else {
-                    return Err(error(line, col, "an option is not a word"));
+                    return Err(error(span, "an option is not a word"));
                 };
                 if b == Builtin::None {
                     self.op(PUSH0);
@@ -881,10 +868,10 @@ impl<'a> Gen<'a> {
                 }
             }
             Builtin::UintDivRem | Builtin::IntDivRem => {
-                return Err(error(line, col, "`divRem` returns a tuple"));
+                return Err(error(span, "`divRem` returns a tuple"));
             }
             Builtin::Ctor(_) => {
-                return Err(error(line, col, "a variant with payloads is not a word"));
+                return Err(error(span, "a variant with payloads is not a word"));
             }
             Builtin::SpecState(_) | Builtin::SpecSum | Builtin::SpecCount | Builtin::SpecForall => {
                 unreachable!("the checker drops spec blocks before codegen")
@@ -929,11 +916,7 @@ impl<'a> Gen<'a> {
             Builtin::FromBits(_) => self.compile_value(&args[0])?,
             Builtin::ListResized => return self.compile_resized(args, ty),
             Builtin::ListPop | Builtin::ListPush => {
-                return Err(error(
-                    line,
-                    col,
-                    "`List.pop` and `List.push` are statements",
-                ));
+                return Err(error(span, "`List.pop` and `List.push` are statements"));
             }
             Builtin::AbiSupportsInterface => {
                 self.compile_value(&args[0])?;
@@ -1170,11 +1153,7 @@ impl<'a> Gen<'a> {
             }
             Builtin::FacetAddress => {
                 let Expr::Ident { name, .. } = &args[0] else {
-                    return Err(error(
-                        line,
-                        col,
-                        "`Evm.facetAddress` takes the name of a module",
-                    ));
+                    return Err(error(span, "`Evm.facetAddress` takes the name of a module"));
                 };
                 // Builds that only measure the contract, before its facets exist, use the
                 // stand-in address calls across do.
@@ -1187,8 +1166,8 @@ impl<'a> Gen<'a> {
                 self.push_word(address);
             }
             Builtin::CreationCode => {
-                let name = self.creation_code_of(&args[0], line, col)?;
-                let (marker, len) = self.peer_code(name, line, col)?;
+                let name = self.creation_code_of(&args[0], span)?;
+                let (marker, len) = self.peer_code(name, span)?;
                 self.push_u64(len);
                 self.alloc_blob()?;
                 self.push_u64(len);
@@ -1322,21 +1301,21 @@ impl<'a> Gen<'a> {
                 self.op(ADD);
             }
             Builtin::Transfer => {
-                return Err(error(line, col, "defer the transfer"));
+                return Err(error(span, "defer the transfer"));
             }
             Builtin::Create | Builtin::RawCreate => {
-                return Err(error(line, col, "defer the creation"));
+                return Err(error(span, "defer the creation"));
             }
             Builtin::RawCall | Builtin::DelegateCall => {
-                return Err(error(line, col, "defer the call"));
+                return Err(error(span, "defer the call"));
             }
             Builtin::Precompile(pre) => return self.compile_precompile(pre, args),
             Builtin::StaticCall => {
-                return Err(error(line, col, "query the call"));
+                return Err(error(span, "query the call"));
             }
             Builtin::Cast => {
                 let Some(arg) = args.first() else {
-                    return Err(error(line, col, "cast needs a value"));
+                    return Err(error(span, "cast needs a value"));
                 };
                 if self.fixed_of_slice(arg, ty)? {
                     return Ok(());
@@ -1424,11 +1403,7 @@ impl<'a> Gen<'a> {
     /// slice of the whole code is.
     fn code_slice(&mut self, args: &[Expr]) -> Result<(), Error> {
         let Expr::Call { args: code, .. } = &args[0] else {
-            return Err(error(
-                args[0].line(),
-                args[0].col(),
-                "internal: not `Evm.code`",
-            ));
+            return Err(error(args[0].span(), "internal: not `Evm.code`"));
         };
         // [a, start, end, size], or [a, start, size]
         self.compile_value(&code[0])?;
@@ -1657,12 +1632,11 @@ impl<'a> Gen<'a> {
                 Expr::Call {
                     builtin: Some(Builtin::CreationCode),
                     args: inner,
-                    line,
-                    col,
+                    span,
                     ..
                 } => {
-                    let name = self.creation_code_of(&inner[0], *line, *col)?;
-                    Some(self.peer_creation(name, *line, *col)?)
+                    let name = self.creation_code_of(&inner[0], *span)?;
+                    Some(self.peer_creation(name, *span)?)
                 }
                 other => self.const_str(other),
             };
@@ -2498,12 +2472,8 @@ impl<'a> Gen<'a> {
                 }
             }
             Expr::Case {
-                scrut,
-                arms,
-                line,
-                col,
-                ..
-            } => self.compile_case(scrut, arms, *line, *col, Sink::Mem(dst, oty))?,
+                scrut, arms, span, ..
+            } => self.compile_case(scrut, arms, *span, Sink::Mem(dst, oty))?,
             other => {
                 let src = self.value_addr(other)?;
                 self.copy_words(src, dst, words);
@@ -2526,15 +2496,11 @@ impl<'a> Gen<'a> {
             return Ok(());
         }
         if let Expr::Case {
-            scrut,
-            arms,
-            line,
-            col,
-            ..
+            scrut, arms, span, ..
         } = expr
         {
             if !self.stack_value(ty) {
-                return self.compile_case(scrut, arms, *line, *col, Sink::Mem(dst, ty));
+                return self.compile_case(scrut, arms, *span, Sink::Mem(dst, ty));
             }
         }
         match self.checked.types[ty].kind {
@@ -2606,8 +2572,7 @@ impl<'a> Gen<'a> {
         &mut self,
         scrut: &Expr,
         arms: &[crate::ast::Arm],
-        line: u32,
-        col: u32,
+        span: Span,
         sink: Sink,
     ) -> Result<(), Error> {
         if let Expr::Query {
@@ -2616,7 +2581,7 @@ impl<'a> Gen<'a> {
         {
             if Expr::is_outcome_case(scrut, arms) {
                 self.query_gas = gas.as_deref().cloned();
-                let result = self.compile_query_case(call, scrut.ty(), arms, line, col, sink);
+                let result = self.compile_query_case(call, scrut.ty(), arms, span, sink);
                 self.query_gas = None;
                 return result;
             }
@@ -2630,7 +2595,7 @@ impl<'a> Gen<'a> {
         }
         let sty = scrut.ty();
         if self.checked.types[sty].kind == TyKind::Option {
-            return self.compile_option_case(scrut, arms, line, col, sink);
+            return self.compile_option_case(scrut, arms, span, sink);
         }
         if self.checked.types[sty].kind == TyKind::Bool {
             return self.compile_if(scrut, arms, sink);
@@ -2640,7 +2605,7 @@ impl<'a> Gen<'a> {
             return self.compile_tag_case(sty, arms, None, sink);
         }
         if !is_sum(&self.checked.types, sty) {
-            return Err(error(line, col, "case is not on a dispatched variant"));
+            return Err(error(span, "case is not on a dispatched variant"));
         }
         // Without a binding only the tag matters, so only the tag is read.
         if arms
@@ -2694,8 +2659,7 @@ impl<'a> Gen<'a> {
             _ => (None, 0),
         };
         Expr::Field {
-            line: value.line(),
-            col: value.col(),
+            span: value.span(),
             base: Box::new(value.clone()),
             name: TAG_FIELD.to_string(),
             root,
@@ -2823,19 +2787,17 @@ impl<'a> Gen<'a> {
 
     /// Writes an unused word of type `ty` at `at`: zero, or an empty string, bytes, or list.
     fn write_empty(&mut self, at: i32, ty: usize) -> Result<(), Error> {
-        let (line, col) = (0, 0);
+        let span = Span::NONE;
         if self.list_value(ty) {
             let empty = Expr::List {
-                line,
-                col,
+                span,
                 elems: Vec::new(),
                 ty,
             };
             self.write_value(&empty, at, ty)
         } else if self.is_dynamic(self.peel_nominal(ty)) {
             let empty = Expr::Lit {
-                line,
-                col,
+                span,
                 lit: Lit::Str(String::new()),
                 ty,
             };
@@ -2881,8 +2843,7 @@ impl<'a> Gen<'a> {
         &mut self,
         scrut: &Expr,
         arms: &[crate::ast::Arm],
-        line: u32,
-        col: u32,
+        span: Span,
         sink: Sink,
     ) -> Result<(), Error> {
         let some = arms
@@ -2892,7 +2853,7 @@ impl<'a> Gen<'a> {
             .iter()
             .find(|arm| arm.ctors.iter().any(|c| c == "None"));
         let (Some(some), Some(none)) = (some, none) else {
-            return Err(error(line, col, "option case needs `Some` and `None`"));
+            return Err(error(span, "option case needs `Some` and `None`"));
         };
         if let Some(flip) = self.flip(scrut.ty()) {
             return self.compile_flip_case(scrut, some, none, flip, sink);

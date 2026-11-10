@@ -89,8 +89,7 @@ impl Checker {
     /// the one whose parameters the arguments' types match. The call is renamed to it.
     pub(super) fn pick_overload(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         base: &Option<Box<Expr>>,
         name: &mut String,
         args: &mut [Expr],
@@ -121,8 +120,7 @@ impl Checker {
                 let n = args.len();
                 let s = if n == 1 { "" } else { "s" };
                 return Err(error(
-                    line,
-                    col,
+                    span,
                     format!("no overload of `{name}` takes {n} argument{s}"),
                 ));
             }
@@ -144,15 +142,13 @@ impl Checker {
                     [one] => one.clone(),
                     [] => {
                         return Err(error(
-                            line,
-                            col,
+                            span,
                             format!("no overload of `{name}` takes these arguments"),
                         ));
                     }
                     _ => {
                         return Err(error(
-                            line,
-                            col,
+                            span,
                             format!("more than one overload of `{name}` takes these arguments"),
                         ));
                     }
@@ -201,9 +197,9 @@ impl Checker {
                 };
                 let mut env = FxHashMap::default();
                 for (param, arg) in func.params.iter().zip(args) {
-                    let (line, col) = (arg.line(), arg.col());
+                    let span = arg.span();
                     if self
-                        .unify(&param.ty, arg.ty(), *module, &params, &mut env, line, col)
+                        .unify(&param.ty, arg.ty(), *module, &params, &mut env, span)
                         .is_err()
                     {
                         return false;
@@ -222,8 +218,7 @@ impl Checker {
 
     pub(super) fn specialize(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         target: GenericCall,
         args: &mut Vec<Expr>,
         callee: &mut Option<usize>,
@@ -238,8 +233,7 @@ impl Checker {
         if args.len() != template.params.len() {
             let n = template.params.len();
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "`{}` expects {n} argument{}",
                     target.qualified,
@@ -275,16 +269,14 @@ impl Checker {
                     target.module,
                     &params,
                     &mut env,
-                    arg.line(),
-                    arg.col(),
+                    arg.span(),
                 )?;
             }
         }
         for param in &params {
             if !env.contains_key(&param.name) {
                 return Err(error(
-                    line,
-                    col,
+                    span,
                     format!("could not infer type parameter `{}`", param.name),
                 ));
             }
@@ -292,8 +284,7 @@ impl Checker {
                 let id = env[&param.name];
                 if !self.map_key_ok(id) {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("type `{}` does not satisfy `MapKey`", self.ty_label(id)),
                     ));
                 }
@@ -308,8 +299,7 @@ impl Checker {
             let concrete = self.build_subst(&param.ty, target.module, &env)?;
             if !param.storage && self.holds_map(concrete) {
                 return Err(error(
-                    arg.line(),
-                    arg.col(),
+                    arg.span(),
                     format!(
                         "`{}` takes `{}` : {}, which lives only in storage: declare it `storage {}`",
                         source_name(&target.qualified),
@@ -323,16 +313,14 @@ impl Checker {
                 let mut keys = Vec::new();
                 let Some(mut path) = storage_path(arg, &param.name, &mut keys) else {
                     return Err(error(
-                        arg.line(),
-                        arg.col(),
+                        arg.span(),
                         format!("pass a storage path to `{}`", param.name),
                     ));
                 };
                 let root = storage_root(arg);
                 if !root.is_some_and(|sym| self.syms.get(sym).is_some_and(|sym| sym.storage)) {
                     return Err(error(
-                        arg.line(),
-                        arg.col(),
+                        arg.span(),
                         format!("pass a storage path to `{}`", param.name),
                     ));
                 }
@@ -390,8 +378,7 @@ impl Checker {
         }
         for (name, arg) in &hidden {
             keep.push(Param {
-                line: arg.line(),
-                col: arg.col(),
+                span: arg.span(),
                 mutable: false,
                 storage: false,
                 name: name.clone(),
@@ -409,8 +396,7 @@ impl Checker {
         } else {
             if self.busy.iter().any(|have| have == &key) {
                 return Err(error(
-                    line,
-                    col,
+                    span,
                     "recursion is not supported: iteration is bounded, write a `for` loop",
                 ));
             }
@@ -433,20 +419,20 @@ impl Checker {
         kept_args.extend(hidden.into_iter().map(|(_, arg)| arg));
         let sig_params = self.sigs[idx].params.clone();
         if kept_args.len() != sig_params.len() {
-            return Err(error(line, col, "argument has the wrong type"));
+            return Err(error(span, "argument has the wrong type"));
         }
         for (arg, (pty, _)) in kept_args.iter_mut().zip(&sig_params) {
             self.check_expr_as(arg, Some(*pty))?;
             if !self.same(arg.ty(), *pty) {
-                return Err(error(arg.line(), arg.col(), "argument has the wrong type"));
+                return Err(error(arg.span(), "argument has the wrong type"));
             }
         }
-        self.callee_effect(line, col, &target.qualified, self.sigs[idx].kind)?;
-        self.check_private(idx, line, col)?;
+        self.callee_effect(span, &target.qualified, self.sigs[idx].kind)?;
+        self.check_private(idx, span)?;
         *args = kept_args;
         *callee = Some(idx);
         *ty = self.sigs[idx].ret;
-        self.note_call(idx, line, col);
+        self.note_call(idx, span);
         Ok(())
     }
 
@@ -486,7 +472,7 @@ impl Checker {
         {
             return Ok(func.clone());
         }
-        Err(error(
+        Err(error_at(
             1,
             1,
             format!("unknown function `{}`", target.qualified),
@@ -545,7 +531,7 @@ impl Checker {
             spec_module: self.spec_module.clone(),
             spec_places: self.spec_places.clone(),
             in_spec: self.in_spec,
-            origin: self.origin.clone(),
+            file: self.file,
             guard_label: self.guard_label.clone(),
             hook_label: self.hook_label.clone(),
         };
@@ -571,7 +557,7 @@ impl Checker {
         self.spec_module = saved.spec_module;
         self.spec_places = saved.spec_places;
         self.in_spec = saved.in_spec;
-        self.origin = saved.origin;
+        self.file = saved.file;
         self.guard_label = saved.guard_label;
         self.hook_label = saved.hook_label;
         checked?;
@@ -586,8 +572,7 @@ impl Checker {
         module: Option<usize>,
         params: &[TypeParam],
         env: &mut FxHashMap<String, usize>,
-        line: u32,
-        col: u32,
+        span: Span,
     ) -> Result<(), Error> {
         let param = self.expand_name(param, module, params, env)?;
         match &param {
@@ -595,8 +580,7 @@ impl Checker {
                 if let Some(have) = env.get(name).copied() {
                     if !self.same(have, arg) {
                         return Err(error(
-                            line,
-                            col,
+                            span,
                             format!(
                                 "type parameter `{name}` is both `{}` and `{}`",
                                 self.ty_label(have),
@@ -611,18 +595,18 @@ impl Checker {
             }
             TypeRef::Hole { id } => {
                 if !self.same(*id, arg) {
-                    return Err(error(line, col, "argument has the wrong type"));
+                    return Err(error(span, "argument has the wrong type"));
                 }
                 Ok(())
             }
             TypeRef::Map { key, val, .. } => {
                 if self.types[arg].kind != TyKind::Map {
-                    return Err(error(line, col, "argument has the wrong type"));
+                    return Err(error(span, "argument has the wrong type"));
                 }
                 let left = self.types[arg].left.unwrap_or(TY_UNIT);
                 let right = self.types[arg].right.unwrap_or(TY_UNIT);
-                self.unify(key, left, module, params, env, line, col)?;
-                self.unify(val, right, module, params, env, line, col)
+                self.unify(key, left, module, params, env, span)?;
+                self.unify(val, right, module, params, env, span)
             }
             TypeRef::List {
                 elem, len, size, ..
@@ -632,23 +616,23 @@ impl Checker {
                     None => len.unwrap_or(0),
                 };
                 if self.types[arg].kind != TyKind::List || u32::from(self.types[arg].bits) != len {
-                    return Err(error(line, col, "argument has the wrong type"));
+                    return Err(error(span, "argument has the wrong type"));
                 }
                 let inner = self.types[arg].elem.unwrap_or(TY_UNIT);
-                self.unify(elem, inner, module, params, env, line, col)
+                self.unify(elem, inner, module, params, env, span)
             }
             TypeRef::Option { elem, .. } => {
                 if self.types[arg].kind != TyKind::Option {
-                    return Err(error(line, col, "argument has the wrong type"));
+                    return Err(error(span, "argument has the wrong type"));
                 }
                 let inner = self.types[arg].elem.unwrap_or(TY_UNIT);
-                self.unify(elem, inner, module, params, env, line, col)
+                self.unify(elem, inner, module, params, env, span)
             }
             TypeRef::Record { fields, .. } => {
                 if self.types[arg].kind != TyKind::Record
                     || self.types[arg].fields.len() != fields.len()
                 {
-                    return Err(error(line, col, "argument has the wrong type"));
+                    return Err(error(span, "argument has the wrong type"));
                 }
                 let concrete: Vec<(String, usize)> = self.types[arg]
                     .fields
@@ -663,9 +647,9 @@ impl Checker {
                 for field in plain.into_iter().chain(applied) {
                     let Some((_, fty)) = concrete.iter().find(|(name, _)| name == &field.name)
                     else {
-                        return Err(error(line, col, "argument has the wrong type"));
+                        return Err(error(span, "argument has the wrong type"));
                     };
-                    self.unify(&field.ty, *fty, module, params, env, line, col)?;
+                    self.unify(&field.ty, *fty, module, params, env, span)?;
                 }
                 Ok(())
             }
@@ -673,7 +657,7 @@ impl Checker {
                 if self.types[arg].kind != TyKind::Tuple
                     || self.types[arg].fields.len() != elems.len()
                 {
-                    return Err(error(line, col, "argument has the wrong type"));
+                    return Err(error(span, "argument has the wrong type"));
                 }
                 let concrete: Vec<usize> = self.types[arg]
                     .fields
@@ -681,7 +665,7 @@ impl Checker {
                     .map(|field| field.ty)
                     .collect();
                 for (elem, fty) in elems.iter().zip(concrete) {
-                    self.unify(elem, fty, module, params, env, line, col)?;
+                    self.unify(elem, fty, module, params, env, span)?;
                 }
                 Ok(())
             }
@@ -692,7 +676,7 @@ impl Checker {
                 }
                 let id = self.build(&bound)?;
                 if !self.same(id, arg) {
-                    return Err(error(line, col, "argument has the wrong type"));
+                    return Err(error(span, "argument has the wrong type"));
                 }
                 Ok(())
             }
@@ -706,7 +690,7 @@ impl Checker {
         params: &[TypeParam],
         _env: &FxHashMap<String, usize>,
     ) -> Result<TypeRef, Error> {
-        let TypeRef::Name { name, line, col } = ty else {
+        let TypeRef::Name { name, span } = ty else {
             return Ok(ty.clone());
         };
         if params.iter().any(|param| param.name == *name) {
@@ -723,7 +707,7 @@ impl Checker {
         else {
             return Ok(ty.clone());
         };
-        let _ = (line, col);
+        let _ = span;
         Ok(decl.ty)
     }
 
@@ -768,78 +752,59 @@ impl Checker {
 
 fn subst_bound(ty: &TypeRef, env: &FxHashMap<String, usize>) -> TypeRef {
     match ty {
-        TypeRef::Name { name, line, col } => {
+        TypeRef::Name { name, span } => {
             if let Some(id) = env.get(name) {
                 TypeRef::Hole { id: *id }
             } else {
                 TypeRef::Name {
-                    line: *line,
-                    col: *col,
+                    span: *span,
                     name: name.clone(),
                 }
             }
         }
         TypeRef::Hole { id } => TypeRef::Hole { id: *id },
         TypeRef::List {
-            line,
-            col,
+            span,
             elem,
             len,
             size,
         } => TypeRef::List {
-            line: *line,
-            col: *col,
+            span: *span,
             elem: Box::new(subst_bound(elem, env)),
             len: *len,
             size: size.clone(),
         },
-        TypeRef::Option { line, col, elem } => TypeRef::Option {
-            line: *line,
-            col: *col,
+        TypeRef::Option { span, elem } => TypeRef::Option {
+            span: *span,
             elem: Box::new(subst_bound(elem, env)),
         },
-        TypeRef::Map {
-            line,
-            col,
-            key,
-            val,
-        } => TypeRef::Map {
-            line: *line,
-            col: *col,
+        TypeRef::Map { span, key, val } => TypeRef::Map {
+            span: *span,
             key: Box::new(subst_bound(key, env)),
             val: Box::new(subst_bound(val, env)),
         },
-        TypeRef::Tuple { line, col, elems } => TypeRef::Tuple {
-            line: *line,
-            col: *col,
+        TypeRef::Tuple { span, elems } => TypeRef::Tuple {
+            span: *span,
             elems: elems.iter().map(|elem| subst_bound(elem, env)).collect(),
         },
-        TypeRef::Record { line, col, fields } => TypeRef::Record {
-            line: *line,
-            col: *col,
+        TypeRef::Record { span, fields } => TypeRef::Record {
+            span: *span,
             fields: fields
                 .iter()
                 .map(|field| FieldRef {
-                    line: field.line,
-                    col: field.col,
+                    span: field.span,
                     name: field.name.clone(),
                     ty: subst_bound(&field.ty, env),
                     indexed: field.indexed,
                 })
                 .collect(),
         },
-        TypeRef::Variant {
-            line,
-            col,
-            variants,
-        } => TypeRef::Variant {
-            line: *line,
-            col: *col,
+        TypeRef::Variant { span, variants } => TypeRef::Variant {
+            span: *span,
             variants: variants
                 .iter()
                 .map(|variant| VariantRef {
-                    line: variant.line,
-                    col: variant.col,
+                    span: variant.span,
                     name: variant.name.clone(),
                     payload: variant
                         .payload
@@ -852,14 +817,12 @@ fn subst_bound(ty: &TypeRef, env: &FxHashMap<String, usize>) -> TypeRef {
                 .collect(),
         },
         TypeRef::Apply {
-            line,
-            col,
+            span,
             name,
             args,
             member,
         } => TypeRef::Apply {
-            line: *line,
-            col: *col,
+            span: *span,
             name: name.clone(),
             args: args.iter().map(|arg| subst_bound(arg, env)).collect(),
             member: member.clone(),
@@ -953,8 +916,7 @@ fn rewrite_stmts(stmts: &mut [Stmt], name: &str, path: &[Seg]) {
         match stmt {
             Stmt::Const { expr, .. } | Stmt::Var { expr, .. } => rewrite_expr(expr, name, path),
             Stmt::Assign {
-                line,
-                col,
+                span,
                 path: dest,
                 index,
                 keys,
@@ -963,7 +925,7 @@ fn rewrite_stmts(stmts: &mut [Stmt], name: &str, path: &[Seg]) {
                 ..
             } => {
                 if dest.first().is_some_and(|head| head == name) {
-                    rewrite_dest(*line, *col, path, dest, index, keys, fields);
+                    rewrite_dest(*span, path, dest, index, keys, fields);
                 }
                 if let Some(index) = index {
                     rewrite_expr(index, name, path);
@@ -1053,12 +1015,9 @@ fn rewrite_raised(reason: &mut Raised, name: &str, path: &[Seg]) {
 fn rewrite_expr(expr: &mut Expr, name: &str, path: &[Seg]) {
     match expr {
         Expr::Ident {
-            name: ident,
-            line,
-            col,
-            ..
+            name: ident, span, ..
         } if ident == name => {
-            *expr = seg_expr(*line, *col, path);
+            *expr = seg_expr(*span, path);
         }
         Expr::Field { base, .. } => rewrite_expr(base, name, path),
         Expr::Index { base, index, .. } => {
@@ -1133,21 +1092,19 @@ fn storage_path(expr: &Expr, param: &str, keys: &mut Vec<(String, Expr)>) -> Opt
     }
 }
 
-fn seg_expr(line: u32, col: u32, path: &[Seg]) -> Expr {
+fn seg_expr(span: Span, path: &[Seg]) -> Expr {
     let mut expr: Option<Expr> = None;
     for seg in path {
         expr = Some(match (seg, expr) {
             (Seg::Field(name), None) => Expr::Ident {
-                line,
-                col,
+                span,
                 name: name.clone(),
                 sym: None,
                 builtin: None,
                 ty: 0,
             },
             (Seg::Field(name), Some(base)) => Expr::Field {
-                line,
-                col,
+                span,
                 base: Box::new(base),
                 name: name.clone(),
                 root: None,
@@ -1155,12 +1112,10 @@ fn seg_expr(line: u32, col: u32, path: &[Seg]) -> Expr {
                 ty: 0,
             },
             (Seg::Key(name), base) => Expr::Index {
-                line,
-                col,
+                span,
                 base: Box::new(base.expect("a path starts with a name")),
                 index: Box::new(Expr::Ident {
-                    line,
-                    col,
+                    span,
                     name: name.clone(),
                     sym: None,
                     builtin: None,
@@ -1178,8 +1133,7 @@ fn seg_expr(line: u32, col: u32, path: &[Seg]) -> Expr {
 /// An assignment through a storage parameter, written onto the path the caller passed:
 /// its fields and keys come first, then the assignment's own.
 fn rewrite_dest(
-    line: u32,
-    col: u32,
+    span: Span,
     path: &[Seg],
     dest: &mut Vec<String>,
     index: &mut Option<Expr>,
@@ -1187,8 +1141,7 @@ fn rewrite_dest(
     fields: &mut Vec<(usize, String)>,
 ) {
     let key = |name: &str| Expr::Ident {
-        line,
-        col,
+        span,
         name: name.to_string(),
         sym: None,
         builtin: None,

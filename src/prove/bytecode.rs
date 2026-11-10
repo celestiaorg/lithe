@@ -64,6 +64,8 @@ pub(crate) struct BuiltFacet {
 }
 
 struct Inv<'a> {
+    /// The file of its spec block.
+    file: FileId,
     label: String,
     expr: &'a Expr,
     text: &'a str,
@@ -165,7 +167,13 @@ impl Hooks for InvHook<'_, '_> {
             terms.push(flag_clear(m, view));
         }
         for inv in &setup.invs {
-            let mut r = Reader::new(setup.checked, setup.layout, &setup.totals, view.clone());
+            let mut r = Reader::new(
+                setup.checked,
+                setup.layout,
+                &setup.totals,
+                view.clone(),
+                inv.file,
+            );
             if let Ok(t) = r.boolean(m, inv.expr) {
                 terms.push(t);
             }
@@ -196,7 +204,7 @@ pub(super) fn prove(
     let layout = &built.layout;
     layout
         .verify()
-        .map_err(|why| crate::error(0, 0, format!("the layout map is wrong: {why}")))?;
+        .map_err(|why| crate::error_at(0, 0, format!("the layout map is wrong: {why}")))?;
     let same = layout.leaves.len() == checked.leaf_keys.len()
         && layout
             .leaves
@@ -204,7 +212,7 @@ pub(super) fn prove(
             .zip(checked.leaf_keys.iter().zip(&checked.leaf_pack))
             .all(|((slot, pack, _), (key, p))| slot == key && pack == p);
     if !same {
-        return Err(crate::error(
+        return Err(crate::error_at(
             0,
             0,
             "the specs read a layout other than the build's",
@@ -216,16 +224,17 @@ pub(super) fn prove(
             Some(m) => format!("{m}.#spec invariant {}", inv.name),
             None => format!("#spec invariant {}", inv.name),
         };
-        let Some(expr) = checked
+        let Some((file, expr)) = checked
             .prog
             .funcs
             .iter()
             .find(|f| f.name == name)
-            .and_then(|f| f.tail.as_ref())
+            .and_then(|f| Some((f.file, f.tail.as_ref()?)))
         else {
             continue;
         };
         invs.push(Inv {
+            file,
             label: match &inv.module {
                 Some(m) => format!("{m}.{}", inv.name),
                 None => inv.name.clone(),
@@ -266,14 +275,14 @@ pub(super) fn prove(
         .filter(|(_, _, space)| *space == Space::Storage)
         .map(|(slot, ..)| *slot)
         .collect();
-    let known = bind_facets(built).map_err(|why| crate::error(0, 0, why))?;
+    let known = bind_facets(built).map_err(|why| crate::error_at(0, 0, why))?;
     let mut types = types_of(checked, layout);
     let mut fixed = fixed;
     if checked.prog.upgradeable {
         // The proxy's implementation slot holds an address.
         let slot = crate::keccak::erc1967_implementation();
         if fixed.contains(&slot) {
-            return Err(crate::error(
+            return Err(crate::error_at(
                 0,
                 0,
                 "the layout places storage at the ERC-1967 implementation slot",
@@ -1917,7 +1926,13 @@ fn invariant(setup: &Setup, run: &mut Run, phase: &Phase, inv: &Inv) -> Outcome 
     let m = &mut run.m;
     let mut pre_reads = Vec::new();
     let pre_term = if run.assumed {
-        let mut r = Reader::new(setup.checked, setup.layout, &setup.totals, run.pre.clone());
+        let mut r = Reader::new(
+            setup.checked,
+            setup.layout,
+            &setup.totals,
+            run.pre.clone(),
+            inv.file,
+        );
         r.reads = Some(Vec::new());
         match r.boolean(m, inv.expr) {
             Ok(t) => {
@@ -1945,7 +1960,7 @@ fn invariant(setup: &Setup, run: &mut Run, phase: &Phase, inv: &Inv) -> Outcome 
     let mut unknown = None;
     let mut changed = false;
     for (cond, view, approx) in points {
-        let mut r = Reader::new(setup.checked, setup.layout, &setup.totals, view);
+        let mut r = Reader::new(setup.checked, setup.layout, &setup.totals, view, inv.file);
         r.reads = Some(Vec::new());
         let post = match r.boolean(m, inv.expr) {
             Ok(t) => t,
@@ -2331,8 +2346,7 @@ fn forwards(checked: &Checked, g: usize, f: usize) -> bool {
             .iter()
             .map(at)
             .eq(f_fn.stmts.iter().map(at))
-        && g.tail.as_ref().map(|t| (t.line(), t.col()))
-            == f_fn.tail.as_ref().map(|t| (t.line(), t.col()))
+        && g.tail.as_ref().map(|t| t.span()) == f_fn.tail.as_ref().map(|t| t.span())
         && (!f_fn.stmts.is_empty() || f_fn.tail.is_some())
     {
         return true;
@@ -2849,7 +2863,13 @@ fn claims(
         let mut out = Vec::new();
         for (b, block) in subject.blocks.iter().enumerate() {
             let spec_fn = &checked.prog.funcs[block.func];
-            let mut r = Reader::new(checked, setup.layout, &setup.totals, run.old.clone());
+            let mut r = Reader::new(
+                checked,
+                setup.layout,
+                &setup.totals,
+                run.old.clone(),
+                spec_fn.file,
+            );
             r.states = Some((run.old.clone(), new.clone()));
             for (i, p) in spec_fn.params.iter().enumerate() {
                 let Some(sym) = p.sym else { continue };

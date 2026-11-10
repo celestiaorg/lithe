@@ -3,8 +3,7 @@ use super::*;
 impl Checker {
     pub(super) fn annotated(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         ty: &TypeRef,
         got: usize,
     ) -> Result<usize, Error> {
@@ -13,8 +12,7 @@ impl Checker {
             Ok(id)
         } else {
             Err(error(
-                line,
-                col,
+                span,
                 "initializer type does not match its annotation",
             ))
         }
@@ -53,17 +51,16 @@ impl Checker {
         match e {
             Expr::Lit {
                 lit: Lit::Zero,
-                line,
-                col,
+                span,
                 ..
             } => {
                 let Some(ty) = self.expect else {
-                    return Err(error(*line, *col, "`delete` needs a place"));
+                    return Err(error(*span, "`delete` needs a place"));
                 };
-                *e = self.zero_value(*line, *col, ty)?;
+                *e = self.zero_value(*span, ty)?;
                 Ok(())
             }
-            Expr::Lit { lit, ty, line, col } => {
+            Expr::Lit { lit, ty, span } => {
                 let bytes = self.named["bytes"];
                 let wants_bytes = self.expect.is_some_and(|t| self.peel(t) == bytes);
                 // A word of hex digits is also a `bytes` too long to pack in a word.
@@ -77,7 +74,7 @@ impl Checker {
                     Lit::Int(..) if is_enum(&self.types, *ty) => *ty,
                     Lit::Int(w, digits) => {
                         if let Some(expect) = self.expect {
-                            self.adopt_literal(*line, *col, *w, *digits, expect)?
+                            self.adopt_literal(*span, *w, *digits, expect)?
                         } else {
                             TY_UINT
                         }
@@ -100,21 +97,19 @@ impl Checker {
                 sym,
                 builtin,
                 ty,
-                line,
-                col,
+                span,
             } => {
                 if let Some(id) = self.lookup(name) {
                     *builtin = None;
                     *sym = Some(id);
                     *ty = self.syms[id].ty;
-                    self.pure_storage(*line, *col, id)?;
-                    self.across_phases(*line, *col, name, id)?;
+                    self.pure_storage(*span, id)?;
+                    self.across_phases(*span, name, id)?;
                     return Ok(());
                 }
                 if let Some(repl) = retired_builtin(name) {
                     return Err(error(
-                        *line,
-                        *col,
+                        *span,
                         format!("`{name}` is not a value; use `{repl}`"),
                     ));
                 }
@@ -123,22 +118,21 @@ impl Checker {
                         .expect
                         .filter(|id| self.types[*id].kind == TyKind::Option)
                     else {
-                        return Err(error(*line, *col, "`None` needs an option type"));
+                        return Err(error(*span, "`None` needs an option type"));
                     };
                     *builtin = Some(Builtin::None);
                     *sym = None;
                     *ty = opt;
                     return Ok(());
                 }
-                Err(self.unbound(*line, *col, name))
+                Err(self.unbound(*span, name))
             }
             // A field of a value no name holds, such as a call's result.
             Expr::Field {
                 base,
                 name,
                 ty,
-                line,
-                col,
+                span,
                 ..
             } if !is_named(base) => {
                 self.check_expr(base)?;
@@ -150,53 +144,41 @@ impl Checker {
                     return Ok(());
                 }
                 if name == "length" && rec.kind == TyKind::List {
-                    return Err(error(
-                        *line,
-                        *col,
-                        "name this fixed list to read its length",
-                    ));
+                    return Err(error(*span, "name this fixed list to read its length"));
                 }
                 if rec.kind != TyKind::Record {
-                    return Err(error(*line, *col, "field access on a non-record"));
+                    return Err(error(*span, "field access on a non-record"));
                 }
                 let Some(f) = rec.fields.iter().find(|f| f.name == *name) else {
                     let record = peel_id(&self.types, base.ty());
-                    return Err(self.no_field(*line, *col, record, name));
+                    return Err(self.no_field(*span, record, name));
                 };
                 *ty = f.ty;
                 Ok(())
             }
             Expr::Index {
-                base,
-                index,
-                line,
-                col,
-                ..
+                base, index, span, ..
             } if !is_named(base) => {
                 self.check_expr(base)?;
                 if self.types[self.peel(base.ty())].kind != TyKind::Bytes {
-                    return Err(error(*line, *col, "this value cannot be indexed"));
+                    return Err(error(*span, "this value cannot be indexed"));
                 }
                 self.check_uint_index(index)?;
                 self.byte_at(e)
             }
             Expr::Field { .. } | Expr::Index { .. } => {
                 let p = self.place(e)?;
-                if let Expr::Field {
-                    base, line, col, ..
-                } = e
-                {
+                if let Expr::Field { base, span, .. } = e {
                     if let Some(n) = self.fixed_length(base.ty()) {
                         *e = Expr::Lit {
-                            line: *line,
-                            col: *col,
+                            span: *span,
                             lit: Lit::Uint(Word::from_u64(n)),
                             ty: TY_UINT,
                         };
                         return Ok(());
                     }
                 }
-                self.pure_storage(e.line(), e.col(), p.sym)?;
+                self.pure_storage(e.span(), p.sym)?;
                 if matches!(e, Expr::Index { base, .. } if self.types[self.peel(base.ty())].kind == TyKind::Bytes)
                 {
                     return self.byte_at(e);
@@ -207,14 +189,13 @@ impl Checker {
                 expr,
                 gas,
                 ty,
-                line,
-                col,
+                span,
             } => {
                 if let Some(once) = self.once {
-                    return Err(error(*line, *col, format!("{once} cannot query")));
+                    return Err(error(*span, format!("{once} cannot query")));
                 }
                 if self.is_pure() {
-                    return Err(self.weaker(*line, *col, "queries another contract"));
+                    return Err(self.weaker(*span, "queries another contract"));
                 }
                 let saved = self.in_query;
                 self.in_query = true;
@@ -227,13 +208,7 @@ impl Checker {
                 *ty = expr.ty();
                 Ok(())
             }
-            Expr::Unary {
-                op,
-                expr,
-                ty,
-                line,
-                col,
-            } => {
+            Expr::Unary { op, expr, ty, span } => {
                 // `-128` is an `int8`, though `128` alone is not.
                 if let (
                     UnOp::Neg,
@@ -261,7 +236,7 @@ impl Checker {
                     UnOp::Not => {
                         self.check_expr(expr)?;
                         if self.types[expr.ty()].kind != TyKind::Bool {
-                            return Err(error(*line, *col, "`not` expects bool"));
+                            return Err(error(*span, "`not` expects bool"));
                         }
                         *ty = TY_BOOL;
                     }
@@ -276,14 +251,14 @@ impl Checker {
                         }
                         self.check_expr(expr)?;
                         if self.types[self.peel(expr.ty())].kind != TyKind::Int {
-                            return Err(error(*line, *col, "unary `-` expects int"));
+                            return Err(error(*span, "unary `-` expects int"));
                         }
                         *ty = expr.ty();
                     }
                     UnOp::BitNot => {
                         self.check_expr(expr)?;
                         if !self.is_integer(expr.ty()) {
-                            return Err(error(*line, *col, "`~` expects an integer"));
+                            return Err(error(*span, "`~` expects an integer"));
                         }
                         *ty = expr.ty();
                     }
@@ -295,8 +270,7 @@ impl Checker {
                 left,
                 right,
                 ty,
-                line,
-                col,
+                span,
             } => {
                 if matches!(op, BinOp::Shl | BinOp::Shr | BinOp::Pow) {
                     let left_expect = self.expect.filter(|id| self.is_integer(*id));
@@ -331,17 +305,12 @@ impl Checker {
                     };
                     self.check_expr_as(second, Some(other))?;
                 }
-                *ty = self.check_bin(*line, *col, *op, left.ty(), right.ty())?;
+                *ty = self.check_bin(*span, *op, left.ty(), right.ty())?;
                 Ok(())
             }
-            Expr::Tuple {
-                elems,
-                ty,
-                line,
-                col,
-            } => {
+            Expr::Tuple { elems, ty, span } => {
                 if elems.len() < 2 {
-                    return Err(error(*line, *col, "a tuple needs at least two elements"));
+                    return Err(error(*span, "a tuple needs at least two elements"));
                 }
                 let expect_elems = self.expect.and_then(|id| {
                     if self.types[id].kind == TyKind::Tuple {
@@ -359,8 +328,7 @@ impl Checker {
                 if let Some(expect_elems) = &expect_elems {
                     if expect_elems.len() != elems.len() {
                         return Err(error(
-                            *line,
-                            *col,
+                            *span,
                             format!(
                                 "tuple has {} elements and the type has {}",
                                 elems.len(),
@@ -375,8 +343,7 @@ impl Checker {
                     self.check_expr_as(elem, want)?;
                     if !self.tuple_elem_ok(elem.ty()) {
                         return Err(error(
-                            elem.line(),
-                            elem.col(),
+                            elem.span(),
                             "tuple elements must be values: words, strings, bytes, lists, records, tuples, or options",
                         ));
                     }
@@ -403,36 +370,24 @@ impl Checker {
                 *ty = self.tuple_of(&ids);
                 Ok(())
             }
-            Expr::List {
-                elems,
-                ty,
-                line,
-                col,
-            } => self.check_list(*line, *col, elems, ty),
+            Expr::List { elems, ty, span } => self.check_list(*span, elems, ty),
             Expr::Convert {
-                line,
-                col,
-                target,
-                expr,
-                ..
+                span, target, expr, ..
             } => {
-                let (line, col) = (*line, *col);
+                let span = *span;
                 let to = self.build(target)?;
-                self.conversions
-                    .push((self.origin.clone(), (**target).clone()));
+                self.conversions.push((self.file, (**target).clone()));
                 let mut args = vec![std::mem::replace(
                     &mut **expr,
                     Expr::Lit {
-                        line,
-                        col,
+                        span,
                         lit: Lit::Unit,
                         ty: TY_UNIT,
                     },
                 )];
-                self.list_cast(line, col, &mut args, to)?;
+                self.list_cast(span, &mut args, to)?;
                 *e = Expr::Call {
-                    line,
-                    col,
+                    span,
                     name: self.ty_label(to),
                     args,
                     base: None,
@@ -448,24 +403,17 @@ impl Checker {
                 builtin: Some(Builtin::Cast),
                 args,
                 ty,
-                line,
-                col,
+                span,
                 ..
-            } if self.types[*ty].kind == TyKind::List => self.list_cast(*line, *col, args, *ty),
-            Expr::Record {
-                fields,
-                ty,
-                line,
-                col,
-            } => self.check_record(*line, *col, fields, ty),
+            } if self.types[*ty].kind == TyKind::List => self.list_cast(*span, args, *ty),
+            Expr::Record { fields, ty, span } => self.check_record(*span, fields, ty),
             Expr::Call {
                 builtin: Some(Builtin::BytesSlice),
                 args,
                 ty,
-                line,
-                col,
+                span,
                 ..
-            } => self.check_slice(*line, *col, args, ty),
+            } => self.check_slice(*span, args, ty),
             Expr::Call {
                 builtin: Some(Builtin::BytesAt),
                 ..
@@ -493,10 +441,9 @@ impl Checker {
                     ),
                 args,
                 ty,
-                line,
-                col,
+                span,
                 ..
-            } => self.check_spec_form(*line, *col, *kind, args, ty),
+            } => self.check_spec_form(*span, *kind, args, ty),
             Expr::Call {
                 name,
                 args,
@@ -506,8 +453,7 @@ impl Checker {
                 iface,
                 method,
                 ty,
-                line,
-                col,
+                span,
             } => {
                 // A constructor takes its record payload in braces, `Case { x = 1; }`, and
                 // only a constructor does.
@@ -519,21 +465,20 @@ impl Checker {
                 if braced || record && builtin.is_none() {
                     let ctor = name == "Some"
                         || !self.fn_names.iter().any(|n| n == name)
-                            && self.ctor(*line, *col, name)?.is_some();
+                            && self.ctor(*span, name)?.is_some();
                     if braced && !ctor {
                         return Err(error(
-                            *line,
-                            *col,
+                            *span,
                             format!("`{name}` is not a variant case; braces after a name give a case its record payload"),
                         ));
                     }
                     if !braced && ctor {
-                        return Err(error(*line, *col, record_in_parens(name, &args[0])));
+                        return Err(error(*span, record_in_parens(name, &args[0])));
                     }
                 }
-                self.pick_overload(*line, *col, base, name, args)?;
+                self.pick_overload(*span, base, name, args)?;
                 if let Some(target) = self.generic_call(base, name) {
-                    return self.specialize(*line, *col, target, args, callee, ty);
+                    return self.specialize(*span, target, args, callee, ty);
                 }
                 if let Some(Expr::Field {
                     base: module,
@@ -547,8 +492,7 @@ impl Checker {
                             .then(|| self.kind_domain(module, kind, name))
                             .flatten()
                         {
-                            if let Some(err) =
-                                self.no_member(*line, *col, module, &domain, "a function")
+                            if let Some(err) = self.no_member(*span, module, &domain, "a function")
                             {
                                 return Err(err);
                             }
@@ -562,8 +506,7 @@ impl Checker {
                         if self.fn_names.iter().any(|n| n == &hook) {
                             if self.module_name.as_deref() != Some(alias.as_str()) {
                                 return Err(error(
-                                    *line,
-                                    *col,
+                                    *span,
                                     format!(
                                         "`{}` is a hook of `{}`: only `{}`'s own code calls it, and the contract implements it in `use {} ... with {{ hook {name} ... }}`",
                                         crate::modules::shown(&qualified),
@@ -586,8 +529,7 @@ impl Checker {
                             .any(|n| n.starts_with(&format!("{qualified}#")))
                         {
                             return Err(error(
-                                *line,
-                                *col,
+                                *span,
                                 format!(
                                     "external function `{qualified}` cannot be called from inside the contract; move the shared logic into an internal function"
                                 ),
@@ -596,9 +538,7 @@ impl Checker {
                             && self.lookup(alias).is_none()
                             && !self.intrinsic_module(alias)
                         {
-                            if let Some(err) =
-                                self.no_member(*line, *col, alias, name, "a function")
-                            {
+                            if let Some(err) = self.no_member(*span, alias, name, "a function") {
                                 return Err(err);
                             }
                         }
@@ -617,7 +557,7 @@ impl Checker {
                         }
                     }
                 }
-                if self.builtin_module(*line, *col, name, args, base, builtin, ty)? {
+                if self.builtin_module(*span, name, args, base, builtin, ty)? {
                     return Ok(());
                 }
                 if let (Some(base), false) = (
@@ -627,18 +567,18 @@ impl Checker {
                     self.check_expr(base)?;
                     let bid = base.ty();
                     if self.types[bid].kind != TyKind::Interface {
-                        return Err(error(*line, *col, "method call on a non-interface"));
+                        return Err(error(*span, "method call on a non-interface"));
                     }
                     let methods = self
                         .ifaces
                         .get(&bid)
                         .cloned()
-                        .ok_or_else(|| error(*line, *col, "unknown interface"))?;
+                        .ok_or_else(|| error(*span, "unknown interface"))?;
                     let named: Vec<usize> = (0..methods.len())
                         .filter(|&i| methods[i].name == *name)
                         .collect();
                     if named.is_empty() {
-                        return Err(error(*line, *col, format!("unknown method `{name}`")));
+                        return Err(error(*span, format!("unknown method `{name}`")));
                     }
                     let fitting: Vec<usize> = named
                         .iter()
@@ -648,8 +588,7 @@ impl Checker {
                     let mi = match fitting.as_slice() {
                         [] => {
                             return Err(error(
-                                *line,
-                                *col,
+                                *span,
                                 format!(
                                     "`{name}` expects {} arguments",
                                     methods[named[0]].params.len()
@@ -661,11 +600,7 @@ impl Checker {
                             for (arg, pty) in args.iter_mut().zip(params) {
                                 self.check_expr_as(arg, Some(pty))?;
                                 if !self.same(arg.ty(), pty) {
-                                    return Err(error(
-                                        arg.line(),
-                                        arg.col(),
-                                        "argument has the wrong type",
-                                    ));
+                                    return Err(error(arg.span(), "argument has the wrong type"));
                                 }
                             }
                             *one
@@ -684,8 +619,7 @@ impl Checker {
                             });
                             let Some(found) = found else {
                                 return Err(error(
-                                    *line,
-                                    *col,
+                                    *span,
                                     format!("no overload of `{name}` takes these arguments"),
                                 ));
                             };
@@ -705,28 +639,24 @@ impl Checker {
                     let answer = optional.unwrap_or(ret);
                     let dynamic_ret = self.is_dyn_ty(answer) || self.abi_list(answer);
                     if optional.is_some() && dynamic_ret {
-                        return Err(error(
-                            *line,
-                            *col,
-                            "an optional result must be a static value",
-                        ));
+                        return Err(error(*span, "an optional result must be a static value"));
                     }
                     // A result is any ABI value, decoded and checked when it arrives.
                     if ret != TY_UNIT && !abi_value(&self.types, answer) {
-                        return Err(error(*line, *col, "a call's result must be an ABI value"));
+                        return Err(error(*span, "a call's result must be an ABI value"));
                     }
                     *iface = Some(bid);
                     *method = Some(mi);
                     if query {
                         if !self.in_query {
-                            return Err(error(*line, *col, "read-only calls use `query`"));
+                            return Err(error(*span, "read-only calls use `query`"));
                         }
                         *ty = ret;
                     } else {
                         if self.in_query {
-                            return Err(error(*line, *col, "query expects a read-only method"));
+                            return Err(error(*span, "query expects a read-only method"));
                         }
-                        self.forbid_effect(*line, *col, "create an operation")?;
+                        self.forbid_effect(*span, "create an operation")?;
                         *ty = TY_OPERATION;
                     }
                     return Ok(());
@@ -739,12 +669,11 @@ impl Checker {
                     }
                     if args.len() != 1 || !self.same(self.peel(args[0].ty()), bytes) {
                         return Err(error(
-                            *line,
-                            *col,
+                            *span,
                             "`create(code)` runs a `bytes` value as creation code",
                         ));
                     }
-                    self.forbid_effect(*line, *col, "create an operation")?;
+                    self.forbid_effect(*span, "create an operation")?;
                     *ty = TY_OPERATION;
                     return Ok(());
                 }
@@ -752,8 +681,7 @@ impl Checker {
                     let Some((_, params)) = self.peers.iter().find(|(n, _)| n == name).cloned()
                     else {
                         return Err(error(
-                            *line,
-                            *col,
+                            *span,
                             format!("`{name}` is not another contract of this file or its imports"),
                         ));
                     };
@@ -764,32 +692,28 @@ impl Checker {
                         } else {
                             format!("`{name}` expects {} arguments", params.len())
                         };
-                        return Err(error(*line, *col, msg));
+                        return Err(error(*span, msg));
                     }
                     for (arg, (param, flat)) in args.iter_mut().zip(&params) {
                         let mut want = self.build(param)?;
                         if *flat {
-                            want = self.flat_ty(param.line(), param.col(), want)?;
+                            want = self.flat_ty(param.span(), want)?;
                         }
                         self.check_expr_as(arg, Some(want))?;
                         if !self.same(arg.ty(), want) {
-                            return Err(error(
-                                arg.line(),
-                                arg.col(),
-                                "argument has the wrong type",
-                            ));
+                            return Err(error(arg.span(), "argument has the wrong type"));
                         }
                         self.take_form(arg, want);
                     }
-                    self.forbid_effect(*line, *col, "create an operation")?;
+                    self.forbid_effect(*span, "create an operation")?;
                     *ty = TY_OPERATION;
                     return Ok(());
                 }
                 if base.is_none() && !self.fn_names.iter().any(|n| n == name) {
-                    if let Some((vty, k)) = self.ctor(*line, *col, name)? {
-                        self.value_variant(*line, *col, vty)?;
+                    if let Some((vty, k)) = self.ctor(*span, name)? {
+                        self.value_variant(*span, vty)?;
                         let Some(payload) = self.types[vty].variants[k].payload else {
-                            return Err(error(*line, *col, format!("`{name}` has no payload")));
+                            return Err(error(*span, format!("`{name}` has no payload")));
                         };
                         let arity = self.types[payload].fields.len();
                         if args.len() > 1
@@ -798,22 +722,17 @@ impl Checker {
                         {
                             let elems = std::mem::take(args);
                             args.push(Expr::Tuple {
-                                line: elems[0].line(),
-                                col: elems[0].col(),
+                                span: elems[0].span(),
                                 elems,
                                 ty: 0,
                             });
                         }
                         if args.len() != 1 {
-                            return Err(error(*line, *col, format!("`{name}` takes one payload")));
+                            return Err(error(*span, format!("`{name}` takes one payload")));
                         }
                         self.check_expr_as(&mut args[0], Some(payload))?;
                         if !self.same(args[0].ty(), payload) {
-                            return Err(error(
-                                args[0].line(),
-                                args[0].col(),
-                                "payload has the wrong type",
-                            ));
+                            return Err(error(args[0].span(), "payload has the wrong type"));
                         }
                         *builtin = Some(Builtin::Ctor(k));
                         *ty = vty;
@@ -825,7 +744,7 @@ impl Checker {
                     && !self.fn_names.iter().any(|n| n == name)
                     && self.named.contains_key(name)
                 {
-                    return self.cast(*line, *col, name, args, builtin, ty);
+                    return self.cast(*span, name, args, builtin, ty);
                 }
                 if name == "Some" && base.is_none() && args.len() == 1 {
                     let opt = match self
@@ -839,8 +758,7 @@ impl Checker {
                             let e = args[0].ty();
                             if !is_value(&self.types, e) {
                                 return Err(error(
-                                    args[0].line(),
-                                    args[0].col(),
+                                    args[0].span(),
                                     "an option holds a value: a word, a string, bytes, a list, a record, a tuple, or an option",
                                 ));
                             }
@@ -854,11 +772,7 @@ impl Checker {
                     let elem = self.types[opt].elem.unwrap_or(TY_UNIT);
                     self.check_expr_as(&mut args[0], Some(elem))?;
                     if !self.same(args[0].ty(), elem) {
-                        return Err(error(
-                            args[0].line(),
-                            args[0].col(),
-                            "argument has the wrong type",
-                        ));
+                        return Err(error(args[0].span(), "argument has the wrong type"));
                     }
                     *builtin = Some(Builtin::Some);
                     *ty = opt;
@@ -872,14 +786,13 @@ impl Checker {
                     let exported = format!("{qualified}#");
                     if self.fn_names.iter().any(|n| n.starts_with(&exported)) {
                         return Err(error(
-                            *line,
-                            *col,
+                            *span,
                             format!(
                                 "external function `{qualified}` cannot be called from inside the contract; move the shared logic into an internal function"
                             ),
                         ));
                     }
-                    return Err(error(*line, *col, format!("unknown function `{name}`")));
+                    return Err(error(*span, format!("unknown function `{name}`")));
                 };
                 // `--check-specs` checks the contract's invariants where a module's phase
                 // ends, in the module's code.
@@ -889,8 +802,7 @@ impl Checker {
                     // depends on the contract that uses it. A constant is only a value.
                     if !name.contains('.') && !self.work.get(idx).is_some_and(|f| f.constant) {
                         return Err(error(
-                            *line,
-                            *col,
+                            *span,
                             format!(
                                 "module `{mine}` cannot call `{}`, which belongs to no module; move it into `{mine}` or a module it requires",
                                 source_name(name)
@@ -903,8 +815,7 @@ impl Checker {
                             && !self.requires.iter().any(|req| req == other)
                         {
                             return Err(error(
-                                *line,
-                                *col,
+                                *span,
                                 format!("module `{mine}` calls `{other}` but does not require it"),
                             ));
                         }
@@ -915,8 +826,7 @@ impl Checker {
                         && !self.used_modules.contains(other)
                     {
                         return Err(error(
-                            *line,
-                            *col,
+                            *span,
                             format!(
                                 "module `{other}` is not used\n\n`{}` isn't pure and `{other}` holds state: `use {other};`",
                                 source_name(name)
@@ -932,40 +842,37 @@ impl Checker {
                     ItemKind::Entry | ItemKind::View | ItemKind::Receive | ItemKind::Fallback
                 ) {
                     return Err(error(
-                        *line,
-                        *col,
+                        *span,
                         format!(
                             "{} cannot be called from inside the contract; move the shared logic into an internal function",
                             describe(sig_kind, name)
                         ),
                     ));
                 }
-                self.callee_effect(*line, *col, name, sig_kind)?;
-                self.check_private(idx, *line, *col)?;
+                self.callee_effect(*span, name, sig_kind)?;
+                self.check_private(idx, *span)?;
                 if args.len() != params.len() {
                     return Err(error(
-                        *line,
-                        *col,
+                        *span,
                         format!("`{name}` expects {} arguments", params.len()),
                     ));
                 }
                 for (arg, (pty, _)) in args.iter_mut().zip(params) {
                     self.check_expr_as(arg, Some(pty))?;
                     if !self.same(arg.ty(), pty) {
-                        return Err(error(arg.line(), arg.col(), "argument has the wrong type"));
+                        return Err(error(arg.span(), "argument has the wrong type"));
                     }
                 }
                 *callee = Some(idx);
                 *ty = sig_ret;
-                self.note_call(idx, *line, *col);
+                self.note_call(idx, *span);
                 Ok(())
             }
             Expr::Case {
                 scrut,
                 arms,
                 ty,
-                line,
-                col,
+                span,
             } => {
                 self.check_expr(scrut)?;
                 let sty = scrut.ty();
@@ -992,9 +899,9 @@ impl Checker {
                         .map(|v| (v.name.clone(), v.payload))
                         .collect()
                 } else if is_if {
-                    return Err(error(*line, *col, "`if` condition must be bool"));
+                    return Err(error(*span, "`if` condition must be bool"));
                 } else {
-                    return Err(error(*line, *col, "`case` expects a variant"));
+                    return Err(error(*span, "`case` expects a variant"));
                 };
                 let mut seen = FxHashSet::default();
                 let mut result = None;
@@ -1007,18 +914,10 @@ impl Checker {
                     let mut payload: &Option<usize> = &None;
                     for (i, ctor) in arm.ctors.iter().enumerate() {
                         if !seen.insert(ctor.clone()) {
-                            return Err(error(
-                                arm.line,
-                                arm.col,
-                                format!("duplicate arm `{ctor}`"),
-                            ));
+                            return Err(error(arm.span, format!("duplicate arm `{ctor}`")));
                         }
                         let Some((_, found)) = variants.iter().find(|(n, _)| n == ctor) else {
-                            return Err(error(
-                                arm.line,
-                                arm.col,
-                                format!("unknown constructor `{ctor}`"),
-                            ));
+                            return Err(error(arm.span, format!("unknown constructor `{ctor}`")));
                         };
                         let same = match (payload, found) {
                             (Some(a), Some(b)) => self.same(*a, *b),
@@ -1026,8 +925,7 @@ impl Checker {
                         };
                         if i > 0 && binds && !same {
                             return Err(error(
-                                arm.line,
-                                arm.col,
+                                arm.span,
                                 format!(
                                     "`{}` and `{ctor}` carry different payloads, so one arm cannot bind both",
                                     arm.ctors[0]
@@ -1043,19 +941,14 @@ impl Checker {
                     self.scope = self.push_scope(parent);
                     if !arm.tuple_names.is_empty() || arm.rest {
                         let Some(pty) = payload else {
-                            return Err(error(
-                                arm.line,
-                                arm.col,
-                                "this constructor has no payload",
-                            ));
+                            return Err(error(arm.span, "this constructor has no payload"));
                         };
                         let brace = !arm.fields.is_empty() || arm.rest;
                         let kind = self.types[*pty].kind;
                         if brace && kind != TyKind::Record {
                             let ctor = &arm.ctors[0];
                             return Err(error(
-                                arm.line,
-                                arm.col,
+                                arm.span,
                                 format!(
                                     "`{ctor}` carries `{}`, not a record; bind it in parentheses: `{ctor}(x)`",
                                     self.type_name(*pty)
@@ -1063,7 +956,7 @@ impl Checker {
                             ));
                         }
                         if !brace && kind != TyKind::Tuple {
-                            return Err(error(arm.line, arm.col, "this payload is not a tuple"));
+                            return Err(error(arm.span, "this payload is not a tuple"));
                         }
                         let layout: Vec<(String, usize)> = self.types[*pty]
                             .fields
@@ -1074,8 +967,7 @@ impl Checker {
                             self.brace_fields(arm, &layout)?
                         } else if layout.len() != arm.tuple_names.len() {
                             return Err(error(
-                                arm.line,
-                                arm.col,
+                                arm.span,
                                 format!(
                                     "tuple pattern has {} names and the payload has {} elements",
                                     arm.tuple_names.len(),
@@ -1111,7 +1003,7 @@ impl Checker {
                                 self.field_of.insert(sym, (whole, i));
                                 arm.tuple_syms.push(sym);
                                 arm.tuple_at.push(i);
-                                self.define(arm.line, arm.col, name, sym)?;
+                                self.define(arm.span, name, sym)?;
                             }
                         }
                     } else {
@@ -1122,18 +1014,10 @@ impl Checker {
                             (None, None) => {}
                             (Some(_), None) if outcome || shared => {}
                             (None, Some(_)) => {
-                                return Err(error(
-                                    arm.line,
-                                    arm.col,
-                                    "this constructor has no payload",
-                                ));
+                                return Err(error(arm.span, "this constructor has no payload"));
                             }
                             (Some(_), None) => {
-                                return Err(error(
-                                    arm.line,
-                                    arm.col,
-                                    "this constructor needs a binding",
-                                ));
+                                return Err(error(arm.span, "this constructor needs a binding"));
                             }
                             (Some(pty), Some(name)) => {
                                 let sym = self.add_sym(Sym {
@@ -1144,7 +1028,7 @@ impl Checker {
                                     span: 0,
                                 });
                                 arm.bind_sym = Some(sym);
-                                self.define(arm.line, arm.col, name, sym)?;
+                                self.define(arm.span, name, sym)?;
                             }
                         }
                     }
@@ -1167,7 +1051,7 @@ impl Checker {
                 }
                 for (name, _) in &variants {
                     if !seen.contains(name) {
-                        return Err(error(*line, *col, format!("missing case arm `{name}`")));
+                        return Err(error(*span, format!("missing case arm `{name}`")));
                     }
                 }
                 *ty = result.unwrap_or(TY_UNIT);
@@ -1184,25 +1068,19 @@ impl Checker {
         for field in &arm.fields {
             let Some(i) = layout.iter().position(|(name, _)| name == field) else {
                 return Err(error(
-                    arm.line,
-                    arm.col,
+                    arm.span,
                     format!("`{ctor}`'s payload has no field `{field}`"),
                 ));
             };
             if at.contains(&i) {
-                return Err(error(
-                    arm.line,
-                    arm.col,
-                    format!("duplicate field `{field}`"),
-                ));
+                return Err(error(arm.span, format!("duplicate field `{field}`")));
             }
             at.push(i);
         }
         if !arm.rest {
             if let Some((name, _)) = layout.iter().find(|(name, _)| !arm.fields.contains(name)) {
                 return Err(error(
-                    arm.line,
-                    arm.col,
+                    arm.span,
                     format!("the pattern is missing `{name}`: bind it, ignore it with `{name} = _`, or end the pattern with `_` to ignore every field it leaves out"),
                 ));
             }
@@ -1224,11 +1102,7 @@ impl Checker {
             if let Some(prev) = *result {
                 if !self.same(prev, at) {
                     let what = if is_if { "`if` branches" } else { "case arms" };
-                    return Err(error(
-                        arm.line,
-                        arm.col,
-                        format!("{what} have different types"),
-                    ));
+                    return Err(error(arm.span, format!("{what} have different types")));
                 }
             } else {
                 *result = Some(at);
@@ -1265,36 +1139,32 @@ impl Checker {
     fn bare_ctor(&self, e: &Expr) -> Result<Option<Expr>, Error> {
         let Expr::Ident {
             name,
-            line,
-            col,
+            span,
             sym: None,
             ..
         } = e
         else {
             return Ok(None);
         };
-        let Some((vty, k)) = self.ctor(*line, *col, name)? else {
+        let Some((vty, k)) = self.ctor(*span, name)? else {
             return Ok(None);
         };
-        self.value_variant(*line, *col, vty)?;
+        self.value_variant(*span, vty)?;
         if self.types[vty].variants[k].payload.is_some() {
             return Err(error(
-                *line,
-                *col,
+                *span,
                 format!("`{name}` carries a payload; write `{name}(...)`"),
             ));
         }
         Ok(Some(if is_enum(&self.types, vty) {
             Expr::Lit {
-                line: *line,
-                col: *col,
+                span: *span,
                 lit: Lit::Int(Word::from_u64(k as u64), None),
                 ty: vty,
             }
         } else {
             Expr::Call {
-                line: *line,
-                col: *col,
+                span: *span,
                 name: name.clone(),
                 args: Vec::new(),
                 base: None,
@@ -1309,13 +1179,12 @@ impl Checker {
 
     /// The value unwritten storage reads as: zero words, empty strings, bytes, and lists,
     /// `None`, and a variant's first case.
-    pub(super) fn zero_value(&self, line: u32, col: u32, ty: usize) -> Result<Expr, Error> {
+    pub(super) fn zero_value(&self, span: Span, ty: usize) -> Result<Expr, Error> {
         let t = &self.types[ty];
-        let zero = |ty| self.zero_value(line, col, ty);
-        let lit = |lit| Expr::Lit { line, col, lit, ty };
+        let zero = |ty| self.zero_value(span, ty);
+        let lit = |lit| Expr::Lit { span, lit, ty };
         let call = |name: String, args, builtin| Expr::Call {
-            line,
-            col,
+            span,
             name,
             args,
             base: None,
@@ -1326,9 +1195,9 @@ impl Checker {
             ty,
         };
         Ok(match t.kind {
-            TyKind::Map => return Err(error(line, col, "a map cannot be assigned or deleted")),
+            TyKind::Map => return Err(error(span, "a map cannot be assigned or deleted")),
             TyKind::Variant => {
-                self.value_variant(line, col, ty)?;
+                self.value_variant(span, ty)?;
                 unreachable!()
             }
             TyKind::Record if is_sum(&self.types, ty) => {
@@ -1337,8 +1206,7 @@ impl Checker {
                 call(case.name.clone(), args, Builtin::Ctor(0))
             }
             TyKind::Record => Expr::Record {
-                line,
-                col,
+                span,
                 fields: t
                     .fields
                     .iter()
@@ -1347,8 +1215,7 @@ impl Checker {
                 ty,
             },
             TyKind::Tuple => Expr::Tuple {
-                line,
-                col,
+                span,
                 elems: t
                     .fields
                     .iter()
@@ -1357,14 +1224,12 @@ impl Checker {
                 ty,
             },
             TyKind::List => Expr::List {
-                line,
-                col,
+                span,
                 elems: vec![zero(t.elem.unwrap_or(ty))?; usize::from(t.bits)],
                 ty,
             },
             TyKind::Option => Expr::Ident {
-                line,
-                col,
+                span,
                 name: "None".into(),
                 sym: None,
                 builtin: Some(Builtin::None),
@@ -1382,11 +1247,10 @@ impl Checker {
     }
 
     /// Rejects building a value of a variant whose payloads are not all fixed-size.
-    fn value_variant(&self, line: u32, col: u32, vty: usize) -> Result<(), Error> {
+    fn value_variant(&self, span: Span, vty: usize) -> Result<(), Error> {
         if self.types[vty].kind == TyKind::Variant {
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "`{}` has a payload of dynamic size, so it only dispatches entrypoints; a variant value needs fixed-size payloads",
                     self.type_name(vty)
@@ -1424,11 +1288,7 @@ impl Checker {
     /// bits without one.
     fn type_constant(&self, e: &Expr) -> Result<Option<Expr>, Error> {
         let Expr::Field {
-            base,
-            name,
-            line,
-            col,
-            ..
+            base, name, span, ..
         } = e
         else {
             return Ok(None);
@@ -1444,8 +1304,7 @@ impl Checker {
             return Ok(Some(Expr::Lit {
                 lit: Lit::Bool(self.evm >= crate::EvmVersion::Osaka),
                 ty: TY_BOOL,
-                line: *line,
-                col: *col,
+                span: *span,
             }));
         }
         let expected = |kind: TyKind, default: usize| {
@@ -1477,32 +1336,27 @@ impl Checker {
             Some(Tag::AddressZero) => (TY_ADDRESS, Word::from_u64(0)),
             _ => {
                 return Err(self
-                    .no_member(*line, *col, module, name, "a value")
-                    .unwrap_or_else(|| {
-                        error(*line, *col, format!("unknown name `{module}.{name}`"))
-                    }));
+                    .no_member(*span, module, name, "a value")
+                    .unwrap_or_else(|| error(*span, format!("unknown name `{module}.{name}`"))));
             }
         };
         Ok(Some(Expr::Lit {
             lit: Lit::Int(word, None),
             ty,
-            line: *line,
-            col: *col,
+            span: *span,
         }))
     }
 
     fn adopt_literal(
         &self,
-        line: u32,
-        col: u32,
+        span: Span,
         word: Word,
         digits: Option<u8>,
         expect: usize,
     ) -> Result<usize, Error> {
         if is_enum(&self.types, expect) {
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "`{}` is a variant; write one of its cases",
                     self.type_name(expect)
@@ -1512,8 +1366,7 @@ impl Checker {
         let peeled = self.peel(expect);
         if self.types[peeled].kind == TyKind::Bytes && digits.is_some_and(|d| d % 2 == 1) {
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "hex literal for `{}` must have an even number of digits",
                     self.type_name(expect)
@@ -1529,8 +1382,7 @@ impl Checker {
         if let Some(width) = width.filter(|w| !word.is_zero() && digits.map(u32::from) != Some(*w))
         {
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "`{}` literal needs {width} hex digits",
                     self.type_name(expect)
@@ -1551,8 +1403,7 @@ impl Checker {
             Ok(expect)
         } else {
             Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "literal {} does not fit type `{}`\nunderlying representation: {}",
                     word_dec(word),
@@ -1572,8 +1423,7 @@ impl Checker {
             left,
             right,
             ty,
-            line,
-            col,
+            span,
         } = e
         else {
             return Ok(());
@@ -1594,14 +1444,14 @@ impl Checker {
         if !numeric || self.peel(left.ty()) == left.ty() {
             return Ok(());
         }
-        let (line, col, outer) = (*line, *col, *ty);
+        let (span, outer) = (*span, *ty);
         for side in [&mut **left, &mut **right] {
             let under = self.peel(side.ty());
             if under != side.ty() {
                 self.retype(side, under);
             }
         }
-        *ty = self.check_bin(line, col, *op, left.ty(), right.ty())?;
+        *ty = self.check_bin(span, *op, left.ty(), right.ty())?;
         if *ty != outer {
             self.retype(e, outer);
         }
@@ -1613,8 +1463,7 @@ impl Checker {
     /// interface and `address`.
     pub(super) fn list_cast(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         args: &mut [Expr],
         to: usize,
     ) -> Result<(), Error> {
@@ -1641,8 +1490,7 @@ impl Checker {
             Ok(())
         } else {
             Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "cannot convert `{}` to `{}`",
                     self.ty_label(args[0].ty()),
@@ -1681,17 +1529,15 @@ impl Checker {
             *ty = to;
             return;
         }
-        let (line, col) = (e.line(), e.col());
+        let span = e.span();
         let unit = Expr::Lit {
-            line,
-            col,
+            span,
             lit: Lit::Unit,
             ty: TY_UNIT,
         };
         let inner = std::mem::replace(e, unit);
         *e = Expr::Call {
-            line,
-            col,
+            span,
             name: String::new(),
             args: vec![inner],
             base: None,
@@ -1703,29 +1549,21 @@ impl Checker {
         };
     }
 
-    fn check_bin(
-        &self,
-        line: u32,
-        col: u32,
-        op: BinOp,
-        l: usize,
-        r: usize,
-    ) -> Result<usize, Error> {
+    fn check_bin(&self, span: Span, op: BinOp, l: usize, r: usize) -> Result<usize, Error> {
         let lk = self.types[l].kind;
         let rk = self.types[r].kind;
         let num = self.types[self.peel(l)].kind;
         match op {
             BinOp::Cons => {
                 if lk != TyKind::Operation || !self.is_op_list_ty(r) {
-                    return Err(error(line, col, "`#` expects operation # list(operation)"));
+                    return Err(error(span, "`#` expects operation # list(operation)"));
                 }
                 Ok(r)
             }
             BinOp::And | BinOp::Or => {
                 if lk != TyKind::Bool || rk != TyKind::Bool {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("`{op}` expects bool", op = bin_name(op)),
                     ));
                 }
@@ -1743,8 +1581,7 @@ impl Checker {
                 }
                 if !self.same(l, r) || !matches!(num, TyKind::Uint | TyKind::Int | TyKind::Wei) {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         "arithmetic expects two values of the same numeric type",
                     ));
                 }
@@ -1752,18 +1589,17 @@ impl Checker {
             }
             BinOp::Pow => {
                 if !matches!(num, TyKind::Uint | TyKind::Int) {
-                    return Err(error(line, col, "`**` expects an integer base"));
+                    return Err(error(span, "`**` expects an integer base"));
                 }
                 if self.types[self.peel(r)].kind != TyKind::Uint {
-                    return Err(error(line, col, "`**` expects an unsigned exponent"));
+                    return Err(error(span, "`**` expects an unsigned exponent"));
                 }
                 Ok(l)
             }
             BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
                 if !self.same(l, r) || !self.is_integer(l) {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("`{}` expects two integers of the same type", bit_name(op)),
                     ));
                 }
@@ -1772,15 +1608,13 @@ impl Checker {
             BinOp::Shl | BinOp::Shr => {
                 if !self.is_integer(l) {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("`{}` expects an integer", bit_name(op)),
                     ));
                 }
                 if self.types[self.peel(r)].kind != TyKind::Uint {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         format!("`{}` expects a `uint` shift", bit_name(op)),
                     ));
                 }
@@ -1788,19 +1622,14 @@ impl Checker {
             }
             BinOp::Eq | BinOp::Neq if lk == TyKind::Option => {
                 if !self.same(l, r) || !is_value(&self.types, l) {
-                    return Err(error(
-                        line,
-                        col,
-                        "options compare when both hold the same type",
-                    ));
+                    return Err(error(span, "options compare when both hold the same type"));
                 }
                 Ok(TY_BOOL)
             }
             BinOp::Eq | BinOp::Neq if is_sum(&self.types, l) => {
                 if !self.same(l, r) {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         "comparison expects two values of the same type",
                     ));
                 }
@@ -1818,8 +1647,7 @@ impl Checker {
             {
                 if !self.same(l, r) || !is_value(&self.types, l) {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         "comparison expects two values of the same type",
                     ));
                 }
@@ -1828,8 +1656,7 @@ impl Checker {
             BinOp::Eq | BinOp::Neq if self.list_value(l) => {
                 if !self.same(l, r) {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         "comparison expects two values of the same type",
                     ));
                 }
@@ -1852,8 +1679,7 @@ impl Checker {
                     )
                 {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         "comparison expects two values of the same type",
                     ));
                 }
@@ -1871,8 +1697,7 @@ impl Checker {
                     )
                 {
                     return Err(error(
-                        line,
-                        col,
+                        span,
                         "ordered comparison expects a number, an address, or a `bytesN`",
                     ));
                 }
@@ -1881,13 +1706,7 @@ impl Checker {
         }
     }
 
-    pub(super) fn list_span(
-        &self,
-        _line: u32,
-        _col: u32,
-        _id: usize,
-        _expr: &Expr,
-    ) -> Result<u32, Error> {
+    pub(super) fn list_span(&self, _span: Span, _id: usize, _expr: &Expr) -> Result<u32, Error> {
         Ok(0)
     }
 
@@ -1916,25 +1735,18 @@ impl Checker {
         is_value(&self.types, ty)
     }
 
-    fn check_list(
-        &mut self,
-        line: u32,
-        col: u32,
-        elems: &mut [Expr],
-        ty: &mut usize,
-    ) -> Result<(), Error> {
+    fn check_list(&mut self, span: Span, elems: &mut [Expr], ty: &mut usize) -> Result<(), Error> {
         let Some(expect) = self
             .expect
             .filter(|id| self.types[*id].kind == TyKind::List)
         else {
-            return Err(error(line, col, "a list literal needs a list type"));
+            return Err(error(span, "a list literal needs a list type"));
         };
         let elem_ty = self.types[expect].elem.unwrap_or(TY_UNIT);
         let len = self.types[expect].bits;
         if len > 0 && elems.len() != usize::from(len) {
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "list has {} {} and the type has {len}",
                     elems.len(),
@@ -1949,11 +1761,7 @@ impl Checker {
         for elem in elems {
             self.check_expr_as(elem, Some(elem_ty))?;
             if !self.same(elem.ty(), elem_ty) {
-                return Err(error(
-                    elem.line(),
-                    elem.col(),
-                    "list element has the wrong type",
-                ));
+                return Err(error(elem.span(), "list element has the wrong type"));
             }
         }
         *ty = expect;
@@ -1962,8 +1770,7 @@ impl Checker {
 
     fn check_record(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         fields: &mut [(String, Expr)],
         ty: &mut usize,
     ) -> Result<(), Error> {
@@ -1971,7 +1778,7 @@ impl Checker {
             .expect
             .filter(|id| self.types[*id].kind == TyKind::Record)
         else {
-            return Err(error(line, col, "a record literal needs a record type"));
+            return Err(error(span, "a record literal needs a record type"));
         };
         let layout: Vec<(String, usize)> = self.types[expect]
             .fields
@@ -1981,39 +1788,29 @@ impl Checker {
         let mut seen = Vec::new();
         for (name, expr) in fields {
             if seen.iter().any(|have: &String| have == name) {
-                return Err(error(
-                    expr.line(),
-                    expr.col(),
-                    format!("duplicate field `{name}`"),
-                ));
+                return Err(error(expr.span(), format!("duplicate field `{name}`")));
             }
             seen.push(name.clone());
             let Some((_, fty)) = layout.iter().find(|(have, _)| have == name) else {
-                return Err(error(
-                    expr.line(),
-                    expr.col(),
-                    format!("record has no field `{name}`"),
-                ));
+                return Err(error(expr.span(), format!("record has no field `{name}`")));
             };
             if !self.record_field_ok(*fty) {
                 return Err(error(
-                    expr.line(),
-                    expr.col(),
+                    expr.span(),
                     format!("record field `{name}` must be a value, not a map"),
                 ));
             }
             self.check_expr_as(expr, Some(*fty))?;
             if !self.same(expr.ty(), *fty) {
                 return Err(error(
-                    expr.line(),
-                    expr.col(),
+                    expr.span(),
                     format!("record field `{name}` has the wrong type"),
                 ));
             }
         }
         for (name, _) in &layout {
             if !seen.iter().any(|have| have == name) {
-                return Err(error(line, col, format!("record is missing `{name}`")));
+                return Err(error(span, format!("record is missing `{name}`")));
             }
         }
         *ty = expect;
@@ -2022,17 +1819,16 @@ impl Checker {
 
     pub(super) fn indexed(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         sym: usize,
         ty: usize,
         index: &mut Expr,
     ) -> Result<usize, Error> {
         if !matches!(self.types[ty].kind, TyKind::Map | TyKind::List) {
-            return Err(error(line, col, "this value cannot be indexed"));
+            return Err(error(span, "this value cannot be indexed"));
         }
         if !self.syms[sym].storage && !self.inline_list(sym, ty) {
-            return Err(error(line, col, "a collection lives in storage"));
+            return Err(error(span, "a collection lives in storage"));
         }
         match self.types[ty].kind {
             TyKind::Map => {
@@ -2040,29 +1836,25 @@ impl Checker {
                 let val = self.types[ty].right.unwrap_or(TY_UNIT);
                 self.check_expr_as(index, Some(key))?;
                 if !self.same(index.ty(), key) {
-                    return Err(error(
-                        index.line(),
-                        index.col(),
-                        "map key has the wrong type",
-                    ));
+                    return Err(error(index.span(), "map key has the wrong type"));
                 }
                 Ok(val)
             }
             TyKind::List => {
                 self.check_expr_as(index, Some(TY_UINT))?;
                 if self.types[index.ty()].kind != TyKind::Uint {
-                    return Err(error(index.line(), index.col(), "an index must be `uint`"));
+                    return Err(error(index.span(), "an index must be `uint`"));
                 }
                 Ok(self.types[ty].elem.unwrap_or(TY_UNIT))
             }
-            _ => Err(error(line, col, "this value cannot be indexed")),
+            _ => Err(error(span, "this value cannot be indexed")),
         }
     }
 
     pub(super) fn check_gas(&mut self, gas: &mut Expr) -> Result<(), Error> {
         self.check_expr_as(gas, Some(TY_UINT))?;
         if self.types[gas.ty()].kind != TyKind::Uint {
-            return Err(error(gas.line(), gas.col(), "`gas` must be uint"));
+            return Err(error(gas.span(), "`gas` must be uint"));
         }
         Ok(())
     }
@@ -2070,7 +1862,7 @@ impl Checker {
     pub(super) fn check_uint_index(&mut self, index: &mut Expr) -> Result<(), Error> {
         self.check_expr_as(index, Some(TY_UINT))?;
         if !self.same(index.ty(), TY_UINT) {
-            return Err(error(index.line(), index.col(), "an index must be `uint`"));
+            return Err(error(index.span(), "an index must be `uint`"));
         }
         Ok(())
     }
@@ -2078,10 +1870,9 @@ impl Checker {
     /// A checked `b[i]` on `bytes` or `bytesN` becomes the built-in that reads one byte.
     fn byte_at(&mut self, e: &mut Expr) -> Result<(), Error> {
         let ty = self.bytes_n(1)?;
-        let (line, col) = (e.line(), e.col());
+        let span = e.span();
         let unit = Expr::Lit {
-            line,
-            col,
+            span,
             lit: Lit::Unit,
             ty: TY_UNIT,
         };
@@ -2089,8 +1880,7 @@ impl Checker {
             unreachable!()
         };
         *e = Expr::Call {
-            line,
-            col,
+            span,
             name: String::new(),
             args: vec![*base, *index],
             base: None,
@@ -2106,8 +1896,7 @@ impl Checker {
     /// `b[start:end]` on `bytes`. A slice checked again keeps its type.
     pub(super) fn check_slice(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         args: &mut [Expr],
         ty: &mut usize,
     ) -> Result<(), Error> {
@@ -2117,7 +1906,7 @@ impl Checker {
         }
         self.check_expr_as(&mut args[0], Some(bytes))?;
         if !self.same(self.peel(args[0].ty()), bytes) {
-            return Err(error(line, col, "only `bytes` can be sliced"));
+            return Err(error(span, "only `bytes` can be sliced"));
         }
         for bound in &mut args[1..] {
             self.check_uint_index(bound)?;

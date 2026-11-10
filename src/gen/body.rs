@@ -160,7 +160,7 @@ impl<'a> Gen<'a> {
             }
         }
         let writes = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Assign { root: Some(sym), .. }) if self.persistent(*sym));
-        let query = |node: Node<'_>| matches!(node, Node::Expr(Expr::Query { line, col, .. }) if !self.skip_queries.contains(&(*line, *col)));
+        let query = |node: Node<'_>| matches!(node, Node::Expr(Expr::Query { span, .. }) if !self.skip_queries.contains(span));
         let queries = self.expr_any(e, &query, &mut Vec::new());
         let writes = self.expr_any(e, &writes, &mut Vec::new());
         if queries && (*written || writes) {
@@ -177,7 +177,7 @@ impl<'a> Gen<'a> {
         &mut self,
         stmts: &[Stmt],
         tail: Option<&Expr>,
-    ) -> (bool, Vec<((u32, u32), Expr)>) {
+    ) -> (bool, Vec<(Span, Expr)>) {
         if self.direct_ok(stmts, tail) {
             return (true, Vec::new());
         }
@@ -204,7 +204,7 @@ impl<'a> Gen<'a> {
     }
 
     /// A query issued early would miss a transient write made before it, so none follows one.
-    fn hoistable(&self, stmts: &[Stmt]) -> Vec<((u32, u32), Expr)> {
+    fn hoistable(&self, stmts: &[Stmt]) -> Vec<(Span, Expr)> {
         let mut picks = Vec::new();
         let mut defined = Vec::new();
         // Constants bound to a settled value, which a query issued early reads in their place.
@@ -242,7 +242,7 @@ impl<'a> Gen<'a> {
             {
                 eager_queries(expr, &mut false, &mut found);
             }
-            for (line, col, call, qty) in found {
+            for (span, call, qty) in found {
                 // An answer or argument in a blob isn't kept for later, nor is an optional
                 // answer, which depends on the return data's size.
                 let dynamic = |ty: usize| self.is_dynamic(ty) || self.list_value(ty);
@@ -267,7 +267,7 @@ impl<'a> Gen<'a> {
                         .chain(args)
                         .all(|e| self.settled(e, &defined, &written, &known))
                     {
-                        picks.push(((line, col), substitute(call, &known)));
+                        picks.push((span, substitute(call, &known)));
                     }
                 }
             }
@@ -371,7 +371,7 @@ impl<'a> Gen<'a> {
     pub(super) fn compile_top(
         &mut self,
         stmts: &[Stmt],
-        pending: &mut Vec<((u32, u32), Expr)>,
+        pending: &mut Vec<(Span, Expr)>,
     ) -> Result<(), Error> {
         let checked = self.checked;
         let writes = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Assign { root: Some(sym), .. }) if checked.syms[*sym].storage && !checked.is_transient(*sym));
@@ -389,7 +389,7 @@ impl<'a> Gen<'a> {
                     {
                         eager_queries(expr, &mut false, &mut here);
                     }
-                    pending.retain(|(at, _)| !here.iter().any(|q| (q.0, q.1) == *at));
+                    pending.retain(|(at, _)| !here.iter().any(|q| q.0 == *at));
                 }
             }
             if tail && self.share_tail(&stmts[i..]) {
@@ -404,7 +404,7 @@ impl<'a> Gen<'a> {
 
     /// Issues queries ahead of the body's writes. A failed call or a short answer still
     /// reverts where the query was written.
-    fn issue_queries(&mut self, picks: &[((u32, u32), Expr)]) -> Result<(), Error> {
+    fn issue_queries(&mut self, picks: &[(Span, Expr)]) -> Result<(), Error> {
         for (at, call) in picks {
             let Expr::Call {
                 base: Some(base),
@@ -781,18 +781,17 @@ fn substitute(e: &Expr, known: &FxHashMap<usize, Expr>) -> Expr {
 
 /// The queries an expression always runs, before any function it calls has run: its
 /// answer, and the arguments of calls and operators that evaluate every operand.
-fn eager_queries<'e>(e: &'e Expr, called: &mut bool, out: &mut Vec<(u32, u32, &'e Expr, usize)>) {
+fn eager_queries<'e>(e: &'e Expr, called: &mut bool, out: &mut Vec<(Span, &'e Expr, usize)>) {
     match e {
         // A gas limit is evaluated where the query is, so a query with one stays there.
         Expr::Query {
             expr,
             gas: None,
-            line,
-            col,
+            span,
             ty,
         } => {
             if !*called {
-                out.push((*line, *col, expr.as_ref(), *ty));
+                out.push((*span, expr.as_ref(), *ty));
             }
         }
         Expr::Call {
@@ -888,9 +887,9 @@ struct Rec {
     /// Error head this body allocated or wrote. The revert helper reads that region.
     revert_head: Option<i32>,
     /// Early queries known when this body was compiled; its queries may load their buffers.
-    hoisted0: FxHashMap<(u32, u32), i32>,
+    hoisted0: FxHashMap<Span, i32>,
     /// Early queries this body issued or reissued.
-    hoisted: Vec<((u32, u32), i32)>,
+    hoisted: Vec<(Span, i32)>,
     /// Data, literals, peers, and tail blobs already embedded when this body was compiled.
     embed: u64,
     revert_or: u64,
@@ -963,7 +962,7 @@ pub(super) struct BodyBefore {
     bytes_rep: Option<(usize, u32)>,
     dyn_key: Option<(u32, i32)>,
     revert_head: Option<i32>,
-    hoisted: FxHashMap<(u32, u32), i32>,
+    hoisted: FxHashMap<Span, i32>,
     embed: u64,
 }
 
@@ -1401,7 +1400,7 @@ impl<'a> Gen<'a> {
             .iter()
             .map(|(addr, word)| Some((map_addr(addr)?, *word)))
             .collect();
-        let hoisted: Option<Vec<((u32, u32), i32)>> = rec
+        let hoisted: Option<Vec<(Span, i32)>> = rec
             .hoisted
             .iter()
             .map(|(at, buf)| Some((*at, map_addr(buf)?)))

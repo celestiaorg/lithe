@@ -29,7 +29,12 @@ const PHASE_END: &str = "#spec phase end";
 /// The storage record that holds the running totals of `sum` and `count`.
 const GHOST: &str = "#ghost";
 
-pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumented, Error> {
+pub(crate) fn instrument(prog: Program, specs: &Specs) -> Result<Instrumented, Error> {
+    let (file, files) = (prog.file, prog.files.clone());
+    instrument_unplaced(prog, specs).map_err(|err| err.placed(&files, file))
+}
+
+fn instrument_unplaced(mut prog: Program, specs: &Specs) -> Result<Instrumented, Error> {
     let mut build = Build {
         prog: &prog,
         checked: &specs.checked,
@@ -51,7 +56,12 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
         let expr = match build.totals(&inv.expr, &scope) {
             Ok(expr) => expr,
             Err(reason) => {
-                build.skip(&inv.expr, &format!("invariant `{label}`"), &reason);
+                build.skip(
+                    inv.file,
+                    &inv.expr,
+                    &format!("invariant `{label}`"),
+                    &reason,
+                );
                 continue;
             }
         };
@@ -72,16 +82,15 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
             }
         });
         let name = format!("{TAG}check {}", inv.name);
-        let func = view_fn(&name, inv.expr.line(), inv.expr.col(), Some(expr));
+        let func = view_fn(&name, inv.expr.span(), Some(expr));
         let call = match &inv.module {
-            Some(m) => call_expr(&name, Some(ident(m, 0, 0)), Vec::new(), 0, 0),
-            None => call_expr(&name, None, Vec::new(), 0, 0),
+            Some(m) => call_expr(&name, Some(ident(m, Span::NONE)), Vec::new(), Span::NONE),
+            None => call_expr(&name, None, Vec::new(), Span::NONE),
         };
         checks.push(assert_stmt(
             call,
             &format!("invariant {label}"),
-            inv.expr.line(),
-            inv.expr.col(),
+            inv.expr.span(),
         ));
         match &inv.module {
             Some(m) => module_fns.entry(m.clone()).or_default().push(func),
@@ -97,6 +106,7 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
     }
     // Each loop invariant, as a check where each iteration starts.
     let mut loop_checks: HashMap<(Option<String>, u32, u32), Vec<Stmt>> = HashMap::new();
+    let files = prog.files.clone();
     let scoped: Vec<(Option<String>, &Func)> = prog
         .funcs
         .iter()
@@ -115,8 +125,9 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
         if let Some(tail) = &f.tail {
             each_loop_in(tail, &mut loops);
         }
-        for (line, col, invariants) in loops {
-            let found = typed_loops.entry((line, col)).or_default();
+        for (span, invariants) in loops {
+            let at = files.line_col(f.file, span);
+            let found = typed_loops.entry(at).or_default();
             found.resize_with(found.len().max(invariants.len()), Signs::new);
             for (inv, out) in invariants.iter().zip(found.iter_mut()) {
                 signs(&specs.checked, inv, out);
@@ -129,7 +140,8 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
         if let Some(tail) = &f.tail {
             each_loop_in(tail, &mut loops);
         }
-        for (line, col, invariants) in loops {
+        for (span, invariants) in loops {
+            let (line, col) = files.line_col(f.file, span);
             let mut checks = Vec::new();
             for (j, inv) in invariants.iter().enumerate() {
                 match build.totals(inv, &scope) {
@@ -142,10 +154,9 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
                             }
                         }),
                         &format!("loop invariant at {line}:{col}"),
-                        inv.line(),
-                        inv.col(),
+                        inv.span(),
                     )),
-                    Err(reason) => build.skip(inv, "this loop invariant", &reason),
+                    Err(reason) => build.skip(f.file, inv, "this loop invariant", &reason),
                 }
             }
             loop_checks.insert((scope.clone(), line, col), checks);
@@ -210,9 +221,8 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
 
     if !checks.is_empty() {
         let phase_end = || Stmt::Call {
-            line: 0,
-            col: 0,
-            expr: call_expr(PHASE_END, None, Vec::new(), 0, 0),
+            span: Span::NONE,
+            expr: call_expr(PHASE_END, None, Vec::new(), Span::NONE),
         };
         let end = |stmts: &mut Vec<Stmt>, tail: &mut Option<Expr>, ret: Option<TypeRef>| {
             wrap_stmts(
@@ -307,20 +317,21 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
                 for_expr_blocks(tail, &mut |block| continuations(block));
             }
         }
-        let mut check_fn = view_fn(PHASE_END, 0, 0, None);
+        let mut check_fn = view_fn(PHASE_END, Span::NONE, None);
         check_fn.stmts = checks;
         contract_fns.push(check_fn);
     }
 
     if !loop_checks.is_empty() {
-        let apply = |scope: Option<String>, stmts: &mut Vec<Stmt>, tail: &mut Option<Expr>| {
+        let apply = |scope: Option<String>,
+                     file: FileId,
+                     stmts: &mut Vec<Stmt>,
+                     tail: &mut Option<Expr>| {
             let mut put = |block: &mut Vec<Stmt>| {
                 for s in block.iter_mut() {
-                    if let Stmt::For {
-                        line, col, body, ..
-                    } = s
-                    {
-                        if let Some(checks) = loop_checks.get(&(scope.clone(), *line, *col)) {
+                    if let Stmt::For { span, body, .. } = s {
+                        let (line, col) = files.line_col(file, *span);
+                        if let Some(checks) = loop_checks.get(&(scope.clone(), line, col)) {
                             let mut with = checks.clone();
                             with.append(body);
                             *body = with;
@@ -334,12 +345,12 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
             }
         };
         for f in &mut prog.funcs {
-            apply(None, &mut f.stmts, &mut f.tail);
+            apply(None, f.file, &mut f.stmts, &mut f.tail);
         }
         for m in &mut prog.modules {
             let scope = Some(m.name.clone());
             for f in &mut m.funcs {
-                apply(scope.clone(), &mut f.stmts, &mut f.tail);
+                apply(scope.clone(), f.file, &mut f.stmts, &mut f.tail);
             }
         }
     }
@@ -350,25 +361,22 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
             .iter()
             .filter(|g| g.owner == owner)
             .map(|g| FieldRef {
-                line: 0,
-                col: 0,
+                span: Span::NONE,
                 name: g.slot.clone(),
                 ty: g.ty.clone(),
                 indexed: false,
             })
             .collect();
         let decl = DomainDecl {
-            line: 0,
-            col: 0,
-            origin: String::new(),
+            span: Span::NONE,
+            file: FileId::NONE,
             name: GHOST.to_string(),
             id: match &owner {
                 Some(m) => format!("lithe.spec.ghost.{m}"),
                 None => "lithe.spec.ghost".to_string(),
             },
             ty: TypeRef::Record {
-                line: 0,
-                col: 0,
+                span: Span::NONE,
                 fields,
             },
             owner: owner.clone(),
@@ -419,14 +427,12 @@ pub(crate) fn instrument(mut prog: Program, specs: &Specs) -> Result<Instrumente
         }
     }
     prog.errors.push(ErrorDecl {
-        line: 0,
-        col: 0,
+        span: Span::NONE,
         private: false,
-        origin: String::new(),
+        file: FileId::NONE,
         name: VIOLATION.to_string(),
         payload: Some(TypeRef::Name {
-            line: 0,
-            col: 0,
+            span: Span::NONE,
             name: "string".to_string(),
         }),
     });
@@ -463,11 +469,10 @@ struct Wrap {
 }
 
 impl Build<'_> {
-    fn skip(&mut self, at: &Expr, what: &str, reason: &str) {
+    fn skip(&mut self, file: FileId, at: &Expr, what: &str, reason: &str) {
+        let (line, col) = self.prog.files.line_col(file, at.span());
         self.warnings.push(format!(
-            "{}:{}: warning: --check-specs cannot check {what} as the contract runs: {reason}\n",
-            at.line(),
-            at.col()
+            "{line}:{col}: warning: --check-specs cannot check {what} as the contract runs: {reason}\n"
         ));
     }
 
@@ -514,8 +519,7 @@ impl Build<'_> {
             Expr::Call {
                 builtin: Some(kind @ (Builtin::SpecSum | Builtin::SpecCount)),
                 args,
-                line,
-                col,
+                span,
                 ..
             } => {
                 let count = *kind == Builtin::SpecCount;
@@ -528,12 +532,11 @@ impl Build<'_> {
                     other => (None, other),
                 };
                 let ghost = self.ghost(path, scope, count)?;
-                let (line, col) = (*line, *col);
-                let read = ghost_read(&self.ghosts[ghost], scope, line, col);
+                let span = *span;
+                let read = ghost_read(&self.ghosts[ghost], scope, span);
                 *e = match state {
                     Some(state) => Expr::Call {
-                        line,
-                        col,
+                        span,
                         name: String::new(),
                         args: vec![read],
                         base: None,
@@ -625,8 +628,7 @@ impl Build<'_> {
         let val = self.map_value(record, field).ok_or_else(unsupported)?;
         let ty = if count {
             TypeRef::Name {
-                line: 0,
-                col: 0,
+                span: Span::NONE,
                 name: "uint".to_string(),
             }
         } else {
@@ -684,6 +686,7 @@ impl Build<'_> {
         if spec.body == Body::Exposed {
             let at = &spec.clauses.first()?.expr;
             self.skip(
+                spec.file,
                 at,
                 &format!("the spec for `{}`", spec.label),
                 "it runs a module's code; write it in the module's spec",
@@ -705,7 +708,7 @@ impl Build<'_> {
             pre.push(const_stmt(
                 &format!("{TAG}param {name}"),
                 inferred_ty(),
-                ident(name, 0, 0),
+                ident(name, Span::NONE),
             ));
         }
         // Constants for spec `const`s, which the clauses after them name.
@@ -734,6 +737,7 @@ impl Build<'_> {
                     match &clause.kind {
                         ClauseKind::Const { name, .. } => skipped.push(name.clone()),
                         _ => self.skip(
+                            spec.file,
                             &clause.expr,
                             &format!("this clause of the spec for `{}`", spec.label),
                             &reason,
@@ -742,7 +746,8 @@ impl Build<'_> {
                     continue;
                 }
             };
-            let at = format!("{}:{}", clause.line, clause.col);
+            let (line, col) = self.prog.files.line_col(spec.file, clause.span);
+            let at = format!("{line}:{col}");
             match &clause.kind {
                 ClauseKind::Const { name, ty } => {
                     let own = format!("{TAG}const {name}");
@@ -773,13 +778,12 @@ impl Build<'_> {
                     let cond = self.exact_with(&strip_states(&expr), &scope, fill, &wide);
                     pre.push(const_stmt(&held, bool_ty(), cond));
                     post.push(assert_stmt(
-                        not(ident(&held, 0, 0)),
+                        not(ident(&held, Span::NONE)),
                         &format!(
                             "{}: `raises {} when` at {at} held, but the call did not revert",
                             spec.label, error.name
                         ),
-                        clause.line,
-                        clause.col,
+                        clause.span,
                     ));
                 }
                 ClauseKind::Panics => {
@@ -787,13 +791,12 @@ impl Build<'_> {
                     let cond = self.exact_with(&strip_states(&expr), &scope, fill, &wide);
                     pre.push(const_stmt(&held, bool_ty(), cond));
                     post.push(assert_stmt(
-                        not(ident(&held, 0, 0)),
+                        not(ident(&held, Span::NONE)),
                         &format!(
                             "{}: `panics when` at {at} held, but the call did not panic",
                             spec.label
                         ),
-                        clause.line,
-                        clause.col,
+                        clause.span,
                     ));
                 }
                 ClauseKind::Ensures => {
@@ -802,8 +805,7 @@ impl Build<'_> {
                     post.push(assert_stmt(
                         value,
                         &format!("{}: `ensures` at {at} does not hold", spec.label),
-                        clause.line,
-                        clause.col,
+                        clause.span,
                     ));
                 }
                 ClauseKind::Invariant(_) => {}
@@ -812,6 +814,7 @@ impl Build<'_> {
         if let (Body::Arm { .. }, false) = (&spec.body, self.one_case(spec)) {
             let at = &spec.clauses.first()?.expr;
             self.skip(
+                spec.file,
                 at,
                 &format!("the spec for `{}`", spec.label),
                 "its arm serves more than one case",
@@ -847,16 +850,16 @@ impl Build<'_> {
             } => {
                 let kept = self.fresh("old");
                 pre.push(const_stmt(&kept, inferred_ty(), strip_states(&args[0])));
-                ident(&kept, e.line(), e.col())
+                ident(&kept, e.span())
             }
             Expr::Call {
                 builtin: Some(Builtin::SpecState(State::New)),
                 args,
                 ..
             } => self.after(&args[0], pre, rename),
-            Expr::Ident {
-                name, line, col, ..
-            } if rename.contains_key(name) => ident(&rename[name], *line, *col),
+            Expr::Ident { name, span, .. } if rename.contains_key(name) => {
+                ident(&rename[name], *span)
+            }
             _ => {
                 let mut out = e.clone();
                 each_child(&mut out, &mut |child| {
@@ -930,11 +933,11 @@ fn owners(ghosts: &[Ghost]) -> Vec<Option<String>> {
 }
 
 /// A running total, read from `scope`: the contract or a module.
-fn ghost_read(g: &Ghost, scope: &Option<String>, line: u32, col: u32) -> Expr {
+fn ghost_read(g: &Ghost, scope: &Option<String>, span: Span) -> Expr {
     let record = match (&g.owner, scope) {
-        (Some(owner), Some(scope)) if owner == scope => ident(GHOST, line, col),
-        (Some(owner), _) => field(ident(owner, line, col), GHOST),
-        (None, _) => ident(GHOST, line, col),
+        (Some(owner), Some(scope)) if owner == scope => ident(GHOST, span),
+        (Some(owner), _) => field(ident(owner, span), GHOST),
+        (None, _) => ident(GHOST, span),
     };
     field(record, &g.slot)
 }
@@ -965,15 +968,14 @@ fn keep_totals(
                 fields,
                 expr,
                 op,
-                line,
-                col,
+                span,
                 push: false,
                 ..
             } = &stmt
             {
                 if keys.is_empty() && fields.is_empty() {
                     for g in ghosts.iter().filter(|g| written_as(g, scope) == *path) {
-                        out.push(total_update(g, scope, path, key, expr, *op, *line, *col));
+                        out.push(total_update(g, scope, path, key, expr, *op, *span));
                     }
                 }
             }
@@ -997,24 +999,22 @@ fn total_update(
     key: &Expr,
     value: &Expr,
     op: Option<BinOp>,
-    line: u32,
-    col: u32,
+    span: Span,
 ) -> Stmt {
-    let mut map = ident(&path[0], line, col);
+    let mut map = ident(&path[0], span);
     for name in &path[1..] {
         map = field(map, name);
     }
     let current = Expr::Index {
-        line,
-        col,
+        span,
         base: Box::new(map),
         index: Box::new(key.clone()),
         root: None,
         leaf: 0,
         ty: 0,
     };
-    let zero = int_lit(0, line, col);
-    let compound = op.map(|op| binary(op, current.clone(), value.clone(), line, col));
+    let zero = int_lit(0, span);
+    let compound = op.map(|op| binary(op, current.clone(), value.clone(), span));
     let value = match (value, &compound) {
         (_, Some(compound)) => compound,
         (Expr::Lit { lit: Lit::Zero, .. }, _) => &zero,
@@ -1025,23 +1025,16 @@ fn total_update(
             call_expr(
                 "uint",
                 None,
-                vec![binary(BinOp::Neq, e, int_lit(0, line, col), line, col)],
-                line,
-                col,
+                vec![binary(BinOp::Neq, e, int_lit(0, span), span)],
+                span,
             )
         };
         (nonzero(current), nonzero(value.clone()))
     } else {
         (current, value.clone())
     };
-    let total = ghost_read(g, scope, line, col);
-    let updated = binary(
-        BinOp::Add,
-        binary(BinOp::Sub, total, old, line, col),
-        new,
-        line,
-        col,
-    );
+    let total = ghost_read(g, scope, span);
+    let updated = binary(BinOp::Add, binary(BinOp::Sub, total, old, span), new, span);
     let mut target = match (&g.owner, scope) {
         (Some(owner), Some(scope)) if owner == scope => vec![GHOST.to_string()],
         (Some(owner), _) => vec![owner.clone(), GHOST.to_string()],
@@ -1049,8 +1042,7 @@ fn total_update(
     };
     target.push(g.slot.clone());
     Stmt::Assign {
-        line,
-        col,
+        span,
         path: target,
         index: None,
         keys: Vec::new(),
@@ -1105,11 +1097,10 @@ fn wrap_stmts(stmts: &mut Vec<Stmt>, tail: &mut Option<Expr>, ret: Option<TypeRe
         (Some(value), Some(ty)) => {
             let kept = format!("{TAG}result {}", out.len());
             out.push(const_stmt(&kept, ty, value));
-            *tail = Some(ident(&kept, 0, 0));
+            *tail = Some(ident(&kept, Span::NONE));
         }
         (Some(call @ Expr::Call { .. }), None) => out.push(Stmt::Call {
-            line: call.line(),
-            col: call.col(),
+            span: call.span(),
             expr: call,
         }),
         (Some(other), None) => *tail = Some(other),
@@ -1220,9 +1211,7 @@ fn strip_states(e: &Expr) -> Expr {
 
 fn rename_idents(e: &Expr, names: &HashMap<String, String>) -> Expr {
     match e {
-        Expr::Ident {
-            name, line, col, ..
-        } if names.contains_key(name) => ident(&names[name], *line, *col),
+        Expr::Ident { name, span, .. } if names.contains_key(name) => ident(&names[name], *span),
         _ => {
             let mut out = e.clone();
             each_child(&mut out, &mut |child| *child = rename_idents(child, names));
@@ -1244,14 +1233,13 @@ fn mentions(e: &Expr, names: &[String]) -> bool {
     found
 }
 
-fn view_fn(name: &str, line: u32, col: u32, tail: Option<Expr>) -> Func {
-    super::spec_func(name, line, col, Vec::new(), Vec::new(), tail)
+fn view_fn(name: &str, span: Span, tail: Option<Expr>) -> Func {
+    super::spec_func(name, span, Vec::new(), Vec::new(), tail)
 }
 
-fn ident(name: &str, line: u32, col: u32) -> Expr {
+fn ident(name: &str, span: Span) -> Expr {
     Expr::Ident {
-        line,
-        col,
+        span,
         name: name.to_string(),
         sym: None,
         builtin: None,
@@ -1261,8 +1249,7 @@ fn ident(name: &str, line: u32, col: u32) -> Expr {
 
 fn field(base: Expr, name: &str) -> Expr {
     Expr::Field {
-        line: base.line(),
-        col: base.col(),
+        span: base.span(),
         base: Box::new(base),
         name: name.to_string(),
         root: None,
@@ -1271,10 +1258,9 @@ fn field(base: Expr, name: &str) -> Expr {
     }
 }
 
-fn call_expr(name: &str, base: Option<Expr>, args: Vec<Expr>, line: u32, col: u32) -> Expr {
+fn call_expr(name: &str, base: Option<Expr>, args: Vec<Expr>, span: Span) -> Expr {
     Expr::Call {
-        line,
-        col,
+        span,
         name: name.to_string(),
         args,
         base: base.map(Box::new),
@@ -1286,10 +1272,9 @@ fn call_expr(name: &str, base: Option<Expr>, args: Vec<Expr>, line: u32, col: u3
     }
 }
 
-fn binary(op: BinOp, left: Expr, right: Expr, line: u32, col: u32) -> Expr {
+fn binary(op: BinOp, left: Expr, right: Expr, span: Span) -> Expr {
     Expr::Binary {
-        line,
-        col,
+        span,
         op,
         left: Box::new(left),
         right: Box::new(right),
@@ -1299,18 +1284,16 @@ fn binary(op: BinOp, left: Expr, right: Expr, line: u32, col: u32) -> Expr {
 
 fn not(e: Expr) -> Expr {
     Expr::Unary {
-        line: e.line(),
-        col: e.col(),
+        span: e.span(),
         op: UnOp::Not,
         expr: Box::new(e),
         ty: 0,
     }
 }
 
-fn int_lit(n: u64, line: u32, col: u32) -> Expr {
+fn int_lit(n: u64, span: Span) -> Expr {
     Expr::Lit {
-        line,
-        col,
+        span,
         lit: Lit::Int(crate::word::Word::from_u64(n), None),
         ty: 0,
     }
@@ -1318,8 +1301,7 @@ fn int_lit(n: u64, line: u32, col: u32) -> Expr {
 
 fn unit() -> Expr {
     Expr::Lit {
-        line: 0,
-        col: 0,
+        span: Span::NONE,
         lit: Lit::Unit,
         ty: 0,
     }
@@ -1327,16 +1309,14 @@ fn unit() -> Expr {
 
 fn bool_ty() -> TypeRef {
     TypeRef::Name {
-        line: 0,
-        col: 0,
+        span: Span::NONE,
         name: "bool".to_string(),
     }
 }
 
 fn const_stmt(name: &str, ty: TypeRef, expr: Expr) -> Stmt {
     Stmt::Const {
-        line: expr.line(),
-        col: expr.col(),
+        span: expr.span(),
         name: name.to_string(),
         parts: Vec::new(),
         ty,
@@ -1346,18 +1326,15 @@ fn const_stmt(name: &str, ty: TypeRef, expr: Expr) -> Stmt {
     }
 }
 
-fn assert_stmt(cond: Expr, message: &str, line: u32, col: u32) -> Stmt {
+fn assert_stmt(cond: Expr, message: &str, span: Span) -> Stmt {
     Stmt::Assert {
-        line,
-        col,
+        span,
         cond,
         reason: Raised {
-            line,
-            col,
+            span,
             name: VIOLATION.to_string(),
             form: RaisedForm::Positional(Expr::Lit {
-                line,
-                col,
+                span,
                 lit: Lit::Str(message.to_string()),
                 ty: 0,
             }),
@@ -1368,18 +1345,17 @@ fn assert_stmt(cond: Expr, message: &str, line: u32, col: u32) -> Stmt {
 }
 
 /// Each loop with invariants in `stmts`: where it is, and what it claims.
-fn each_loop<'a>(stmts: &'a [Stmt], out: &mut Vec<(u32, u32, &'a [Expr])>) {
+fn each_loop<'a>(stmts: &'a [Stmt], out: &mut Vec<(Span, &'a [Expr])>) {
     for s in stmts {
         match s {
             Stmt::For {
-                line,
-                col,
+                span,
                 body,
                 invariants,
                 ..
             } => {
                 if !invariants.is_empty() {
-                    out.push((*line, *col, invariants));
+                    out.push((*span, invariants));
                 }
                 each_loop(body, out);
             }
@@ -1408,7 +1384,7 @@ fn each_loop<'a>(stmts: &'a [Stmt], out: &mut Vec<(u32, u32, &'a [Expr])>) {
     }
 }
 
-fn each_loop_in<'a>(e: &'a Expr, out: &mut Vec<(u32, u32, &'a [Expr])>) {
+fn each_loop_in<'a>(e: &'a Expr, out: &mut Vec<(Span, &'a [Expr])>) {
     if let Expr::Case { arms, .. } = e {
         for arm in arms {
             each_loop(&arm.stmts, out);
@@ -1556,7 +1532,7 @@ fn exact_helpers(module: Option<(&str, &[String])>) -> Vec<Func> {
     let mut funcs = prog.funcs;
     for f in &mut funcs {
         f.name = exact_name(&f.name);
-        f.origin = String::new();
+        f.file = FileId::NONE;
         if let Some((m, requires)) = module {
             f.module = Some(m.to_string());
             f.requires = requires.to_vec();
@@ -1606,7 +1582,7 @@ fn exact_names(e: &mut Expr) {
 
 /// Whether each number a typed expression has at a place in the source is signed; `None`
 /// where two disagree.
-type Signs = HashMap<(u32, u32), Option<bool>>;
+type Signs = HashMap<Span, Option<bool>>;
 
 fn signs(checked: &crate::check::Checked, e: &Expr, out: &mut Signs) {
     let mut ty = e.ty();
@@ -1623,7 +1599,7 @@ fn signs(checked: &crate::check::Checked, e: &Expr, out: &mut Signs) {
         _ => None,
     };
     if let Some(signed) = signed {
-        let at = out.entry((e.line(), e.col())).or_insert(Some(signed));
+        let at = out.entry(e.span()).or_insert(Some(signed));
         if *at != Some(signed) {
             *at = None;
         }
@@ -1646,8 +1622,8 @@ fn is_arith(e: &Expr, wide: &HashMap<String, String>) -> bool {
 
 /// `e`'s exact value, as the helpers take it, or `None` when a part's type is unknown.
 fn exact_value(e: &Expr, signs: &Signs, wide: &HashMap<String, String>) -> Option<Expr> {
-    let (line, col) = (e.line(), e.col());
-    let helper = |name: &str, args: Vec<Expr>| call_expr(&exact_name(name), None, args, line, col);
+    let span = e.span();
+    let helper = |name: &str, args: Vec<Expr>| call_expr(&exact_name(name), None, args, span);
     match e {
         Expr::Binary {
             op, left, right, ..
@@ -1670,23 +1646,22 @@ fn exact_value(e: &Expr, signs: &Signs, wide: &HashMap<String, String>) -> Optio
             expr,
             ..
         } => {
-            let zero = exact_tuple(false, int_lit(0, line, col), line, col);
+            let zero = exact_tuple(false, int_lit(0, span), span);
             Some(helper(
                 "exactSub",
                 vec![zero, exact_value(expr, signs, wide)?],
             ))
         }
-        Expr::Ident { name, .. } if wide.contains_key(name) => Some(ident(&wide[name], line, col)),
-        _ => match signs.get(&(line, col)).copied().flatten()? {
+        Expr::Ident { name, .. } if wide.contains_key(name) => Some(ident(&wide[name], span)),
+        _ => match signs.get(&span).copied().flatten()? {
             true => Some(helper(
                 "exactInt",
-                vec![call_expr("int", None, vec![e.clone()], line, col)],
+                vec![call_expr("int", None, vec![e.clone()], span)],
             )),
             false => Some(exact_tuple(
                 false,
-                call_expr("uint", None, vec![e.clone()], line, col),
-                line,
-                col,
+                call_expr("uint", None, vec![e.clone()], span),
+                span,
             )),
         },
     }
@@ -1704,18 +1679,16 @@ fn calls_exact(e: &Expr) -> bool {
     found
 }
 
-fn exact_tuple(neg: bool, low: Expr, line: u32, col: u32) -> Expr {
+fn exact_tuple(neg: bool, low: Expr, span: Span) -> Expr {
     Expr::Tuple {
-        line,
-        col,
+        span,
         elems: vec![
             Expr::Lit {
-                line,
-                col,
+                span,
                 lit: Lit::Bool(neg),
                 ty: 0,
             },
-            int_lit(0, line, col),
+            int_lit(0, span),
             low,
         ],
         ty: 0,
@@ -1728,8 +1701,7 @@ fn exact(e: &Expr, signs: &Signs, wide: &HashMap<String, String>) -> Expr {
         op: op @ (BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge),
         left,
         right,
-        line,
-        col,
+        span,
         ..
     } = e
     {
@@ -1739,7 +1711,7 @@ fn exact(e: &Expr, signs: &Signs, wide: &HashMap<String, String>) -> Expr {
                 exact_value(right, signs, wide),
             ) {
                 let call = |name: &str, a: Expr, b: Expr| {
-                    call_expr(&exact_name(name), None, vec![a, b], *line, *col)
+                    call_expr(&exact_name(name), None, vec![a, b], *span)
                 };
                 return match op {
                     BinOp::Eq => call("exactEq", l, r),

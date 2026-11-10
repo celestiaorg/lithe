@@ -4,6 +4,7 @@ use crate::asm::FxHashMap;
 use crate::ast::*;
 use crate::check::{abi_fields, abi_parts, AbiField, Checked, Note, RType, RVariant, TyKind};
 use crate::error;
+use crate::error_at;
 use crate::keccak::selector;
 use crate::Error;
 
@@ -72,7 +73,7 @@ pub(crate) fn discover(checked: &Checked, require_entries: bool) -> Result<Vec<R
     let mut seen = Vec::new();
     for (i, f) in checked.prog.funcs.iter().enumerate() {
         if matches!(f.kind, ItemKind::Receive | ItemKind::Fallback) {
-            routes.push(special(checked, i, f).map_err(|err| err.in_file(&f.origin))?);
+            routes.push(special(checked, i, f).map_err(|err| err.in_file(f.file))?);
             continue;
         }
         if f.kind != ItemKind::Entry {
@@ -81,21 +82,19 @@ pub(crate) fn discover(checked: &Checked, require_entries: bool) -> Result<Vec<R
         if let Some(case) = dispatcher(&checked.types, f) {
             if let Some(arg) = f.guarded.as_ref().and_then(|g| g.args.first()) {
                 return Err(error(
-                    arg.line,
-                    arg.col,
+                    arg.span,
                     format!(
                         "`{}` is dispatched as one entrypoint per case, so its guard cannot take it",
                         arg.name
                     ),
-                ).in_file(&f.origin));
+                ).in_file(f.file));
             }
             if f.ret.is_some() {
                 return Err(error(
-                    f.line,
-                    f.col,
+                    f.span,
                     "an entry that dispatches on its argument cannot return a value",
                 )
-                .in_file(&f.origin));
+                .in_file(f.file));
             }
             let path = vec![f.name.clone()];
             walk(
@@ -109,27 +108,23 @@ pub(crate) fn discover(checked: &Checked, require_entries: bool) -> Result<Vec<R
                 &mut routes,
                 &mut seen,
             )
-            .map_err(|err| err.in_file(&f.origin))?;
+            .map_err(|err| err.in_file(f.file))?;
         } else if contains_case(&checked.types, f) {
             return Err(error(
-                f.line,
-                f.col,
+                f.span,
                 "ABI routing must be a static case on the entry parameter",
             )
-            .in_file(&f.origin));
+            .in_file(f.file));
         } else if f
             .params
             .first()
             .is_some_and(|p| checked.types[p.ty_id].kind == TyKind::Variant)
         {
-            return Err(error(
-                f.line,
-                f.col,
-                "a variant entry must dispatch with a static case",
-            )
-            .in_file(&f.origin));
+            return Err(
+                error(f.span, "a variant entry must dispatch with a static case").in_file(f.file),
+            );
         } else {
-            routes.push(direct(checked, i, f, &mut seen).map_err(|err| err.in_file(&f.origin))?);
+            routes.push(direct(checked, i, f, &mut seen).map_err(|err| err.in_file(f.file))?);
         }
     }
     if require_entries
@@ -137,7 +132,7 @@ pub(crate) fn discover(checked: &Checked, require_entries: bool) -> Result<Vec<R
         && !checked.prog.funcs.iter().any(|f| f.kind == ItemKind::View)
         && !checked.prog.upgradeable
     {
-        return Err(error(1, 1, NO_ENTRIES));
+        return Err(error_at(1, 1, NO_ENTRIES));
     }
     Ok(routes)
 }
@@ -313,13 +308,13 @@ fn walk(
     seen: &mut Vec<String>,
 ) -> Result<(), Error> {
     let Expr::Case { scrut, arms, .. } = case else {
-        return Err(error(case.line(), case.col(), "expected a case"));
+        return Err(error(case.span(), "expected a case"));
     };
     for arm in arms {
         if let Some(idx) = dispatch_call(checked, arm) {
             let callee = &checked.prog.funcs[idx];
             let Some(inner) = dispatcher(&checked.types, callee) else {
-                return Err(error(arm.line, arm.col, "callee is not a dispatcher"));
+                return Err(error(arm.span, "callee is not a dispatcher"));
             };
             let mut next_guards = guards.to_vec();
             next_guards.extend(callee.stmts.iter().cloned());
@@ -361,7 +356,7 @@ fn walk(
                     .collect::<Vec<_>>()
                     .join(",")
             );
-            claim(seen, &sig, arm.line, arm.col)?;
+            claim(seen, &sig, arm.span)?;
             let mut leaf_path = path.clone();
             leaf_path.push(name.clone());
             let tail = match &arm.expr {
@@ -424,7 +419,7 @@ fn walk(
 }
 
 /// Takes `sig`'s selector for one entrypoint, refused when an earlier one in `seen` has it.
-pub(crate) fn claim(seen: &mut Vec<String>, sig: &str, line: u32, col: u32) -> Result<(), Error> {
+pub(crate) fn claim(seen: &mut Vec<String>, sig: &str, span: Span) -> Result<(), Error> {
     let sel = selector(sig);
     if let Some(prev) = seen.iter().find(|prev| selector(prev) == sel) {
         let message = if prev == sig {
@@ -432,7 +427,7 @@ pub(crate) fn claim(seen: &mut Vec<String>, sig: &str, line: u32, col: u32) -> R
         } else {
             format!("entrypoint selector `{sig}` collides with `{prev}`")
         };
-        return Err(error(line, col, message));
+        return Err(error(span, message));
     }
     seen.push(sig.to_string());
     Ok(())
@@ -452,7 +447,7 @@ fn direct(checked: &Checked, idx: usize, f: &Func, seen: &mut Vec<String>) -> Re
             .collect::<Vec<_>>()
             .join(",")
     );
-    claim(seen, &sig, f.line, f.col)?;
+    claim(seen, &sig, f.span)?;
     let mut calls = Vec::new();
     let mut reads = Vec::new();
     let mut writes = Vec::new();
@@ -575,7 +570,11 @@ fn warning_site(checked: &Checked, route: &Route) -> (u32, u32, String) {
     route
         .root()
         .map(|f| &checked.prog.funcs[f])
-        .map(|func| (func.line, func.col, func.origin.clone()))
+        .map(|func| {
+            let files = &checked.prog.files;
+            let (line, col) = files.line_col(func.file, func.span);
+            (line, col, files.path(func.file).to_string())
+        })
         .unwrap_or((1, 1, String::new()))
 }
 
@@ -1878,7 +1877,8 @@ struct InternalNames<'a> {
 impl<'a> InternalNames<'a> {
     fn new(checked: &'a Checked) -> Self {
         let prog = &checked.prog;
-        let contract = crate::artifact_contract_name(prog, std::path::Path::new(&prog.origin));
+        let contract =
+            crate::artifact_contract_name(prog, std::path::Path::new(prog.files.path(prog.file)));
         let mut named: Vec<(&String, &usize)> = checked.named.iter().collect();
         named.sort();
         let mut names = FxHashMap::default();
@@ -1895,11 +1895,9 @@ impl<'a> InternalNames<'a> {
                 _ => continue,
             };
             let module = prog.types.iter().find(|d| d.name == *name).and_then(|d| {
-                prog.modules.iter().find(|m| {
-                    m.types
-                        .iter()
-                        .any(|t| t.name == d.name && t.origin == d.origin)
-                })
+                prog.modules
+                    .iter()
+                    .find(|m| m.types.iter().any(|t| t.name == d.name && t.file == d.file))
             });
             let scope = match module {
                 Some(module) => crate::modules::shown(&module.name).to_string(),
@@ -1940,6 +1938,10 @@ impl<'a> InternalNames<'a> {
 /// An external function is payable only when it is declared `payable`. Views are `view`
 /// because they revert when value is attached.
 pub(crate) fn abi(checked: &Checked) -> Result<Abi, Error> {
+    abi_unplaced(checked).map_err(|err| checked.place(err))
+}
+
+fn abi_unplaced(checked: &Checked) -> Result<Abi, Error> {
     let names = InternalNames::new(checked);
     let mut items = Vec::new();
     for route in shown_routes(checked) {
@@ -2240,6 +2242,10 @@ fn json_str(text: &str) -> String {
 }
 
 pub(crate) fn method_ids(checked: &Checked) -> Result<Vec<(String, [u8; 4])>, Error> {
+    method_ids_unplaced(checked).map_err(|err| checked.place(err))
+}
+
+fn method_ids_unplaced(checked: &Checked) -> Result<Vec<(String, [u8; 4])>, Error> {
     let mut ids = Vec::new();
     for route in shown_routes(checked).filter(|route| route.by_selector()) {
         ids.push((route.sig.clone(), route.sel));
@@ -2262,13 +2268,10 @@ pub(crate) fn method_ids(checked: &Checked) -> Result<Vec<(String, [u8; 4])>, Er
 
 /// The signature of the contract's entrypoint a facet calls the hook `func` back through.
 pub(crate) fn callback_sig(checked: &Checked, func: &Func) -> Result<String, Error> {
-    let of = func.hook_of.as_ref().ok_or_else(|| {
-        error(
-            func.line,
-            func.col,
-            "internal: a hook call back names a hook",
-        )
-    })?;
+    let of = func
+        .hook_of
+        .as_ref()
+        .ok_or_else(|| error(func.span, "internal: a hook call back names a hook"))?;
     let mut parts = Vec::new();
     for p in &func.params {
         for field in abi_fields(&checked.types, p.ty_id, &p.name)? {
@@ -2297,6 +2300,10 @@ pub(crate) fn view_sig(checked: &Checked, func: &Func) -> Result<String, Error> 
 }
 
 pub(crate) fn render_errors(checked: &Checked) -> Result<String, Error> {
+    render_errors_unplaced(checked).map_err(|err| checked.place(err))
+}
+
+fn render_errors_unplaced(checked: &Checked) -> Result<String, Error> {
     let mut blocks: Vec<(String, Vec<String>)> = Vec::new();
     let mut hooks: Vec<(String, Vec<String>)> = Vec::new();
     for route in shown_routes(checked) {

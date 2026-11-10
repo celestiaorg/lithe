@@ -607,12 +607,7 @@ fn in_document(path: &std::path::Path, text: &str, err: lithe::Error) -> lithe::
         }
     }
     let (line, column) = direct.or(first).unwrap_or((1, 1));
-    lithe::Error {
-        file: None,
-        line,
-        column,
-        message: err.to_string(),
-    }
+    lithe::Error::new(line, column, err.to_string())
 }
 
 /// The whole document as `lithe fmt` writes it, with the width `lithe.toml` sets.
@@ -2266,6 +2261,7 @@ external function bump(const x : uint) is { storage.n := inc(x); }\n";
             best = best.min(ns);
         }
         let ms = best as f64 / 1e6;
+        eprintln!("erc20_full diagnostics: {ms:.2} ms (best of 5)");
         let limit = if cfg!(debug_assertions) { 60.0 } else { 20.0 };
         assert!(
             ms <= limit,

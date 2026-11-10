@@ -4,7 +4,7 @@ impl Checker {
     pub(super) fn resolve_decl(&mut self, name: &str) -> Result<usize, Error> {
         self.resolve_named(name)
             .map_err(|err| match self.decl_origin.get(name) {
-                Some(origin) => err.in_file(origin),
+                Some(&file) => err.in_file(file),
                 None => err,
             })
     }
@@ -12,19 +12,19 @@ impl Checker {
     fn resolve_named(&mut self, name: &str) -> Result<usize, Error> {
         if let Some(&id) = self.named.get(name) {
             if self.visiting.contains(name) {
-                let (line, col) = self.decl_at.get(name).copied().unwrap_or((1, 1));
-                return Err(error(line, col, format!("recursive type `{name}`")));
+                let span = self.decl_at.get(name).copied().unwrap_or_default();
+                return Err(error(span, format!("recursive type `{name}`")));
             }
             return Ok(id);
         }
         if !self.visiting.insert(name.to_string()) {
-            let (line, col) = self.decl_at.get(name).copied().unwrap_or((1, 1));
-            return Err(error(line, col, format!("recursive type `{name}`")));
+            let span = self.decl_at.get(name).copied().unwrap_or_default();
+            return Err(error(span, format!("recursive type `{name}`")));
         }
         let Some(ty) = self.decls.get(name).cloned() else {
             self.visiting.remove(name);
-            let (line, col) = self.decl_at.get(name).copied().unwrap_or((1, 1));
-            return Err(error(line, col, format!("unknown type `{name}`")));
+            let span = self.decl_at.get(name).copied().unwrap_or_default();
+            return Err(error(span, format!("unknown type `{name}`")));
         };
         let id = match &ty {
             TypeRef::Record { .. } | TypeRef::Variant { .. } => {
@@ -90,12 +90,10 @@ impl Checker {
         let mut ids = Vec::new();
         for iface in &prog.interfaces {
             if self.named.contains_key(&iface.name) || self.decls.contains_key(&iface.name) {
-                return Err(error(
-                    iface.line,
-                    iface.col,
-                    format!("duplicate name `{}`", iface.name),
-                )
-                .in_file(&iface.origin));
+                return Err(
+                    error(iface.span, format!("duplicate name `{}`", iface.name))
+                        .in_file(iface.file),
+                );
             }
             let id = self.types.len();
             self.types.push(RType {
@@ -121,42 +119,39 @@ impl Checker {
                 let mut abi = Vec::new();
                 for p in &m.params {
                     let ty = &p.ty;
-                    let mut pid = self.build(ty).map_err(|err| err.in_file(&iface.origin))?;
+                    let mut pid = self.build(ty).map_err(|err| err.in_file(iface.file))?;
                     if p.flat {
                         pid = self
-                            .flat_ty(ty.line(), ty.col(), pid)
-                            .map_err(|err| err.in_file(&iface.origin))?;
+                            .flat_ty(ty.span(), pid)
+                            .map_err(|err| err.in_file(iface.file))?;
                     }
                     let parts = abi_value(&self.types, pid)
                         .then(|| abi_parts(&self.types, pid).ok())
                         .flatten();
                     let Some(parts) = parts else {
-                        return Err(error(
-                            ty.line(),
-                            ty.col(),
-                            "interface arguments must be ABI values",
-                        )
-                        .in_file(&iface.origin));
+                        return Err(error(ty.span(), "interface arguments must be ABI values")
+                            .in_file(iface.file));
                     };
                     abi.extend(parts);
                     params.push(pid);
                 }
                 let sig = format!("{}({})", m.name, abi.join(","));
                 if !seen.insert(sig.clone()) {
-                    return Err(error(m.line, m.col, format!("duplicate method `{sig}`"))
-                        .in_file(&iface.origin));
+                    return Err(
+                        error(m.span, format!("duplicate method `{sig}`")).in_file(iface.file)
+                    );
                 }
                 let ret = match &m.ret {
                     Some(ty) if m.ret_flat => {
-                        let id = self.build(ty).map_err(|err| err.in_file(&iface.origin))?;
-                        self.flat_ty(ty.line(), ty.col(), id)
-                            .map_err(|err| err.in_file(&iface.origin))?
+                        let id = self.build(ty).map_err(|err| err.in_file(iface.file))?;
+                        self.flat_ty(ty.span(), id)
+                            .map_err(|err| err.in_file(iface.file))?
                     }
-                    Some(ty) => self.build(ty).map_err(|err| err.in_file(&iface.origin))?,
+                    Some(ty) => self.build(ty).map_err(|err| err.in_file(iface.file))?,
                     None => TY_UNIT,
                 };
                 if m.kind == ItemKind::View && ret == TY_UNIT {
-                    return Err(error(m.line, m.col, "a view method must return a value: return a `bool` the caller can check, and let the caller fail").in_file(&iface.origin));
+                    return Err(error(m.span, "a view method must return a value: return a `bool` the caller can check, and let the caller fail").in_file(iface.file));
                 }
                 methods.push(IfaceMethod {
                     query: m.kind == ItemKind::View,
@@ -177,8 +172,7 @@ impl Checker {
         for ev in &prog.events {
             if !seen.insert(ev.name.clone()) || self.named.contains_key(&ev.name) {
                 return Err(
-                    error(ev.line, ev.col, format!("duplicate name `{}`", ev.name))
-                        .in_file(&ev.origin),
+                    error(ev.span, format!("duplicate name `{}`", ev.name)).in_file(ev.file)
                 );
             }
             let indexed: Vec<_> = ev.fields.iter().filter(|field| field.indexed).collect();
@@ -186,42 +180,34 @@ impl Checker {
             if indexed.len() > limit {
                 let extra = indexed[limit];
                 return Err(error(
-                    extra.line,
-                    extra.col,
+                    extra.span,
                     format!(
                         "event `{}` declares {} indexed fields\n{} EVM events support at most {limit} indexed fields",
                         ev.name,
                         indexed.len(),
                         if ev.anonymous { "anonymous" } else { "non-anonymous" },
                     ),
-                ).in_file(&ev.origin));
+                ).in_file(ev.file));
             }
             let data_fields = ev.fields.len() - indexed.len();
             if data_fields > 4 {
-                return Err(error(
-                    ev.line,
-                    ev.col,
-                    "events can have at most 4 non-indexed fields",
-                )
-                .in_file(&ev.origin));
+                return Err(
+                    error(ev.span, "events can have at most 4 non-indexed fields").in_file(ev.file),
+                );
             }
             let mut fields = Vec::new();
             let mut abi = Vec::new();
             let mut names = FxHashSet::default();
             for f in &ev.fields {
                 if !names.insert(f.name.clone()) {
-                    return Err(error(
-                        f.line,
-                        f.col,
-                        format!("duplicate event field `{}`", f.name),
-                    )
-                    .in_file(&ev.origin));
+                    return Err(error(f.span, format!("duplicate event field `{}`", f.name))
+                        .in_file(ev.file));
                 }
-                let id = self.build(&f.ty).map_err(|err| err.in_file(&ev.origin))?;
+                let id = self.build(&f.ty).map_err(|err| err.in_file(ev.file))?;
                 let hashed = self
-                    .event_hashed(f.line, f.col, &f.name, id, f.indexed)
-                    .map_err(|err| err.in_file(&ev.origin))?;
-                abi.push(event_sig_type(&self.types, id).map_err(|err| err.in_file(&ev.origin))?);
+                    .event_hashed(f.span, &f.name, id, f.indexed)
+                    .map_err(|err| err.in_file(ev.file))?;
+                abi.push(event_sig_type(&self.types, id).map_err(|err| err.in_file(ev.file))?);
                 fields.push(EventField {
                     name: f.name.clone(),
                     ty: id,
@@ -243,25 +229,22 @@ impl Checker {
         let mut seen = FxHashSet::default();
         for err in &prog.errors {
             if err.name == "none" || err.name == "forwarded" {
-                return Err(error(
-                    err.line,
-                    err.col,
-                    format!("`{}` is not an error name", err.name),
-                )
-                .in_file(&err.origin));
+                return Err(
+                    error(err.span, format!("`{}` is not an error name", err.name))
+                        .in_file(err.file),
+                );
             }
             if !seen.insert(err.name.clone()) {
                 return Err(
-                    error(err.line, err.col, format!("duplicate error `{}`", err.name))
-                        .in_file(&err.origin),
+                    error(err.span, format!("duplicate error `{}`", err.name)).in_file(err.file)
                 );
             }
             let (payload, field_tys, fields) = match &err.payload {
                 None => (None, Vec::new(), Vec::new()),
                 Some(ty) => {
-                    let id = self.build(ty).map_err(|e| e.in_file(&err.origin))?;
-                    self.error_payload(err.line, err.col, id)
-                        .map_err(|e| e.in_file(&err.origin))?
+                    let id = self.build(ty).map_err(|e| e.in_file(err.file))?;
+                    self.error_payload(err.span, id)
+                        .map_err(|e| e.in_file(err.file))?
                 }
             };
             let abi_name = if err.name == crate::spec::VIOLATION {
@@ -274,14 +257,13 @@ impl Checker {
             let selector = crate::keccak::selector(&abi_sig);
             if let Some(prev) = self.errors.iter().find(|e| e.selector == selector) {
                 return Err(error(
-                    err.line,
-                    err.col,
+                    err.span,
                     format!(
                         "error selector `{abi_sig}` collides with `{}`",
                         prev.abi_sig
                     ),
                 )
-                .in_file(&err.origin));
+                .in_file(err.file));
             }
             self.errors.push(ErrInfo {
                 name: err.name.clone(),
@@ -296,30 +278,26 @@ impl Checker {
         for set in &prog.error_sets {
             if set.name == "forwarded" {
                 return Err(
-                    error(set.line, set.col, "`forwarded` is not an error set name")
-                        .in_file(&set.origin),
+                    error(set.span, "`forwarded` is not an error set name").in_file(set.file)
                 );
             }
             if !set_names.insert(set.name.clone()) || seen.contains(&set.name) {
                 return Err(
-                    error(set.line, set.col, format!("duplicate name `{}`", set.name))
-                        .in_file(&set.origin),
+                    error(set.span, format!("duplicate name `{}`", set.name)).in_file(set.file)
                 );
             }
             let mut members = Vec::new();
             for member in &set.members {
                 let Some(idx) = self.errors.iter().position(|e| e.name == member.name) else {
                     return Err(self
-                        .unknown(member.line, member.col, "error", &member.name)
-                        .in_file(&set.origin));
+                        .unknown(member.span, "error", &member.name)
+                        .in_file(set.file));
                 };
                 if members.contains(&idx) {
-                    return Err(error(
-                        member.line,
-                        member.col,
-                        format!("duplicate error `{}`", member.name),
-                    )
-                    .in_file(&set.origin));
+                    return Err(
+                        error(member.span, format!("duplicate error `{}`", member.name))
+                            .in_file(set.file),
+                    );
                 }
                 members.push(idx);
             }
@@ -330,8 +308,7 @@ impl Checker {
 
     fn event_hashed(
         &self,
-        line: u32,
-        col: u32,
+        span: Span,
         name: &str,
         ty: usize,
         indexed: bool,
@@ -341,8 +318,7 @@ impl Checker {
             // The data fields are ABI-encoded, as a function's arguments are.
             if !abi_value(&self.types, ty) {
                 return Err(error(
-                    line,
-                    col,
+                    span,
                     format!("event field `{name}` must be an ABI value"),
                 ));
             }
@@ -351,8 +327,7 @@ impl Checker {
         if !hashed {
             if !value_topic(&self.types, ty) {
                 return Err(error(
-                    line,
-                    col,
+                    span,
                     format!("event field `{name}` cannot be a topic"),
                 ));
             }
@@ -360,8 +335,7 @@ impl Checker {
         }
         if !hashable_topic(&self.types, ty) {
             return Err(error(
-                line,
-                col,
+                span,
                 format!("indexed field `{name}` must be an ABI value"),
             ));
         }
@@ -379,8 +353,7 @@ impl Checker {
 
     fn error_payload(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         id: usize,
     ) -> Result<
         (
@@ -423,22 +396,22 @@ impl Checker {
                 let mut fields = Vec::new();
                 for f in &self.types[id].fields {
                     if !abi_value(&self.types, f.ty) {
-                        return Err(error(line, col, "error fields must be ABI values"));
+                        return Err(error(span, "error fields must be ABI values"));
                     }
                     let abi = abi_nested(&self.types, f.ty, "")?.ty;
                     field_tys.push((f.name.clone(), f.ty));
                     fields.push((Some(f.name.clone()), abi.to_string()));
                 }
                 // A record payload is the error's parameters, as a `flat` one is.
-                Ok((Some(self.flat_ty(line, col, id)?), field_tys, fields))
+                Ok((Some(self.flat_ty(span, id)?), field_tys, fields))
             }
-            _ => Err(error(line, col, "an error's payload must be an ABI value")),
+            _ => Err(error(span, "an error's payload must be an ABI value")),
         }
     }
 
     pub(super) fn prepare_sig(&mut self, f: &Func) -> Result<(), Error> {
         let mut params = Vec::with_capacity(f.params.len());
-        let at = |err: Error| err.in_file(&f.origin);
+        let at = |err: Error| err.in_file(f.file);
         for p in &f.params {
             let id = self.build(&p.ty).map_err(at)?;
             params.push((id, id == self.storage));
@@ -464,11 +437,7 @@ impl Checker {
                 let mut names = FxHashSet::default();
                 for f in fields {
                     if !names.insert(f.name.clone()) {
-                        return Err(error(
-                            f.line,
-                            f.col,
-                            format!("duplicate field `{}`", f.name),
-                        ));
+                        return Err(error(f.span, format!("duplicate field `{}`", f.name)));
                     }
                     let fty = self.build(&f.ty)?;
                     built.push(RField {
@@ -489,8 +458,7 @@ impl Checker {
                 for v in variants {
                     if matches!(v.name.as_str(), "Some" | "None") {
                         return Err(error(
-                            v.line,
-                            v.col,
+                            v.span,
                             format!(
                                 "`{}` is a case of every option; name this case differently",
                                 v.name
@@ -498,18 +466,14 @@ impl Checker {
                         ));
                     }
                     if !names.insert(v.name.clone()) {
-                        return Err(error(
-                            v.line,
-                            v.col,
-                            format!("duplicate constructor `{}`", v.name),
-                        ));
+                        return Err(error(v.span, format!("duplicate constructor `{}`", v.name)));
                     }
                     let payload = match &v.payload {
                         None => None,
                         Some(p) => {
                             let mut id = self.build(p)?;
                             if v.flat {
-                                id = self.flat_ty(p.line(), p.col(), id)?;
+                                id = self.flat_ty(p.span(), id)?;
                             }
                             if self.types[id].kind == TyKind::Unit {
                                 None
@@ -527,11 +491,7 @@ impl Checker {
                     });
                 }
                 if built.len() > 256 {
-                    return Err(error(
-                        ty.line(),
-                        ty.col(),
-                        "a variant has at most 256 cases",
-                    ));
+                    return Err(error(ty.span(), "a variant has at most 256 cases"));
                 }
                 self.lower_variant(id, built);
                 Ok(())
@@ -691,12 +651,7 @@ impl Checker {
 
     /// The variant type and case index a constructor name refers to: a case of the type
     /// the context expects, or else of the one declared variant that has it.
-    pub(super) fn ctor(
-        &self,
-        line: u32,
-        col: u32,
-        name: &str,
-    ) -> Result<Option<(usize, usize)>, Error> {
+    pub(super) fn ctor(&self, span: Span, name: &str) -> Result<Option<(usize, usize)>, Error> {
         if self.lookup(name).is_some() {
             return Ok(None);
         }
@@ -716,8 +671,7 @@ impl Checker {
             [] => Ok(None),
             [(_, ty)] => Ok(Some((*ty, case_of(*ty).unwrap_or(0)))),
             _ => Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "`{name}` is a case of {}; annotate which type is meant",
                     owners
@@ -760,12 +714,12 @@ impl Checker {
 
     pub(super) fn build(&mut self, ty: &TypeRef) -> Result<usize, Error> {
         match ty {
-            TypeRef::Name { name, line, col } => {
+            TypeRef::Name { name, span } => {
                 self.named.get(name).copied().map(Ok).unwrap_or_else(|| {
                     if self.decls.contains_key(name) {
                         self.resolve_decl(name)
                     } else {
-                        Err(self.unknown(*line, *col, "type", name))
+                        Err(self.unknown(*span, "type", name))
                     }
                 })
             }
@@ -773,8 +727,7 @@ impl Checker {
                 elem,
                 len,
                 size,
-                line,
-                col,
+                span,
             } => {
                 let e = self.build(elem)?;
                 let bits = match size {
@@ -784,8 +737,7 @@ impl Checker {
                 let operations = self.types[e].kind == TyKind::Operation && bits == 0;
                 if !(operations || is_value(&self.types, e)) {
                     return Err(error(
-                        *line,
-                        *col,
+                        *span,
                         "list elements must be values: words, strings, bytes, lists, records, tuples, or options",
                     ));
                 }
@@ -793,12 +745,11 @@ impl Checker {
                 layout(&mut self.types, id);
                 Ok(id)
             }
-            TypeRef::Option { elem, line, col } => {
+            TypeRef::Option { elem, span } => {
                 let e = self.build(elem)?;
                 if !is_value(&self.types, e) {
                     return Err(error(
-                        *line,
-                        *col,
+                        *span,
                         "an option holds a value: a word, a string, bytes, a list, a record, a tuple, or an option",
                     ));
                 }
@@ -806,12 +757,7 @@ impl Checker {
                 layout(&mut self.types, id);
                 Ok(id)
             }
-            TypeRef::Map {
-                key,
-                val,
-                line,
-                col,
-            } => {
+            TypeRef::Map { key, val, span } => {
                 let k = self.build(key)?;
                 let v = self.build(val)?;
                 // A map may hold maps and lists: each level is a slot hashed from the one
@@ -824,8 +770,7 @@ impl Checker {
                     && is_value(&self.types, v));
                 if !self.single_word(k) || !(self.single_word(v) || nested || record) {
                     return Err(error(
-                        *line,
-                        *col,
+                        *span,
                         "map keys must be a word, a string, or bytes; values a word, a map, a list, a record, a tuple, or an option",
                     ));
                 }
@@ -833,17 +778,16 @@ impl Checker {
                 layout(&mut self.types, id);
                 Ok(id)
             }
-            TypeRef::Tuple { elems, line, col } => {
+            TypeRef::Tuple { elems, span } => {
                 if elems.len() < 2 {
-                    return Err(error(*line, *col, "a tuple needs at least two elements"));
+                    return Err(error(*span, "a tuple needs at least two elements"));
                 }
                 let mut fields = Vec::new();
                 for elem in elems {
                     let id = self.build(elem)?;
                     if !self.tuple_elem_ok(id) {
                         return Err(error(
-                            elem.line(),
-                            elem.col(),
+                            elem.span(),
                             "tuple elements must be values: words, strings, bytes, lists, records, tuples, or options",
                         ));
                     }
@@ -937,8 +881,7 @@ impl Checker {
 
     pub(super) fn cast(
         &mut self,
-        line: u32,
-        col: u32,
+        span: Span,
         name: &str,
         args: &mut [Expr],
         builtin: &mut Option<Builtin>,
@@ -946,12 +889,11 @@ impl Checker {
     ) -> Result<(), Error> {
         let target = self.named[name];
         if self.types[target].kind == TyKind::List {
-            self.list_cast(line, col, args, target)?;
+            self.list_cast(span, args, target)?;
             self.conversions.push((
-                self.origin.clone(),
+                self.file,
                 TypeRef::Name {
-                    line,
-                    col,
+                    span,
                     name: name.to_string(),
                 },
             ));
@@ -991,7 +933,7 @@ impl Checker {
             *ty = target;
             Ok(())
         } else {
-            Err(error(line, col, format!("cannot convert to `{name}`")))
+            Err(error(span, format!("cannot convert to `{name}`")))
         }
     }
 
@@ -1067,11 +1009,10 @@ impl Checker {
 
     /// `flat R` in a signature: the one copy of the record `R` whose fields the ABI spreads.
     /// It is `R` everywhere else.
-    pub(super) fn flat_ty(&mut self, line: u32, col: u32, id: usize) -> Result<usize, Error> {
+    pub(super) fn flat_ty(&mut self, span: Span, id: usize) -> Result<usize, Error> {
         if !self.spreads(id) {
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "`flat` spreads a record's fields, and `{}` is not a record",
                     self.type_name(id)
@@ -1186,54 +1127,42 @@ impl Checker {
         }
     }
 
-    pub(super) fn expect_addr(&self, line: u32, col: u32, ty: usize) -> Result<(), Error> {
+    pub(super) fn expect_addr(&self, span: Span, ty: usize) -> Result<(), Error> {
         if matches!(self.types[ty].kind, TyKind::Address | TyKind::Interface) {
             Ok(())
         } else {
-            Err(error(line, col, "expected an address"))
+            Err(error(span, "expected an address"))
         }
     }
 
-    pub(super) fn expect_kind(
-        &self,
-        line: u32,
-        col: u32,
-        ty: usize,
-        k: TyKind,
-    ) -> Result<(), Error> {
+    pub(super) fn expect_kind(&self, span: Span, ty: usize, k: TyKind) -> Result<(), Error> {
         if self.types[ty].kind == k {
             Ok(())
         } else {
-            Err(error(line, col, "argument has the wrong type"))
+            Err(error(span, "argument has the wrong type"))
         }
     }
 
     fn instantiate_type(&mut self, ty: &TypeRef) -> Result<usize, Error> {
         let TypeRef::Apply {
-            line,
-            col,
+            span,
             name,
             args,
             member,
         } = ty
         else {
-            return Err(error(1, 1, "expected a generic type"));
+            return Err(error_at(1, 1, "expected a generic type"));
         };
         let Some(index) = self.modules.iter().position(|module| module.name == *name) else {
-            return Err(error(*line, *col, format!("unknown type `{name}`")));
+            return Err(error(*span, format!("unknown type `{name}`")));
         };
         if self.modules[index].params.is_empty() {
-            return Err(error(
-                *line,
-                *col,
-                format!("module `{name}` is not generic"),
-            ));
+            return Err(error(*span, format!("module `{name}` is not generic")));
         }
         let expect = self.modules[index].params.len();
         if args.len() != expect {
             return Err(error(
-                *line,
-                *col,
+                *span,
                 format!(
                     "module `{name}` expects {expect} type argument{}",
                     if expect == 1 { "" } else { "s" }
@@ -1245,8 +1174,7 @@ impl Checker {
             let id = self.build(arg)?;
             if param.constraint.as_deref() == Some("MapKey") && !self.map_key_ok(id) {
                 return Err(error(
-                    arg.line(),
-                    arg.col(),
+                    arg.span(),
                     format!("type `{}` does not satisfy `MapKey`", self.ty_label(id)),
                 ));
             }
@@ -1264,8 +1192,7 @@ impl Checker {
             .cloned();
         let Some(decl) = decl else {
             return Err(error(
-                *line,
-                *col,
+                *span,
                 if member.is_none() {
                     format!("module `{name}` has no default type")
                 } else {

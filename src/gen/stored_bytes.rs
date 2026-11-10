@@ -445,14 +445,13 @@ impl<'a> Gen<'a> {
                 root: Some(sid),
                 leaf,
                 index,
-                line,
-                col,
+                span,
                 ..
             } if self.checked.syms[*sid].storage
                 && self.checked.types[self.type_at(self.checked.syms[*sid].ty, *leaf)].bits
                     == 0 =>
             {
-                self.compile_index_read(*sid, *leaf, index, *line, *col, true)?;
+                self.compile_index_read(*sid, *leaf, index, *span, true)?;
             }
             _ => return Ok(false),
         }

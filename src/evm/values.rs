@@ -4309,7 +4309,8 @@ fn intrinsics_state_what_the_checker_enforces() {
             let Some(sig) = &intrinsic.sig else {
                 // A member without a signature gives its call's shape on the first line of
                 // its comment, which the comment above it opens.
-                let first = (0..intrinsic.line as usize - 1)
+                let line = text[..intrinsic.span.lo as usize].matches('\n').count() + 1;
+                let first = (0..line - 1)
                     .rev()
                     .map(|i| lines[i].trim())
                     .find(|line| line.starts_with("(*"))

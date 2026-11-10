@@ -7,12 +7,9 @@ fn publish_generic(prog: &mut Program) -> Result<(), Error> {
             continue;
         }
         if !module.domains.is_empty() {
-            return Err(error(
-                module.line,
-                module.col,
-                "a generic module cannot declare storage",
-            )
-            .in_file(&module.origin));
+            return Err(
+                error(module.span, "a generic module cannot declare storage").in_file(module.file),
+            );
         }
         if module
             .types
@@ -22,21 +19,19 @@ fn publish_generic(prog: &mut Program) -> Result<(), Error> {
             > 1
         {
             return Err(error(
-                module.line,
-                module.col,
+                module.span,
                 format!("module `{}` declares `Self` more than once", module.name),
             )
-            .in_file(&module.origin));
+            .in_file(module.file));
         }
         for param in &module.params {
             if let Some(constraint) = &param.constraint {
                 if constraint != "MapKey" {
                     return Err(error(
-                        param.line,
-                        param.col,
+                        param.span,
                         format!("unknown type constraint `{constraint}`"),
                     )
-                    .in_file(&module.origin));
+                    .in_file(module.file));
                 }
             }
         }
@@ -46,20 +41,19 @@ fn publish_generic(prog: &mut Program) -> Result<(), Error> {
                 .as_ref()
                 .is_some_and(|ty| mentions_params(ty, &module.params))
             {
-                return Err(error(
-                    decl.line,
-                    decl.col,
-                    "a generic error cannot use a type parameter",
-                )
-                .in_file(&decl.origin));
+                return Err(
+                    error(decl.span, "a generic error cannot use a type parameter")
+                        .in_file(decl.file),
+                );
             }
             if let Some(have) = prog.errors.iter().find(|have| have.name == decl.name) {
                 return Err(exported_twice(
+                    &prog.files,
                     &module.name,
                     "error",
                     &decl.name,
-                    (&decl.origin, decl.line, decl.col),
-                    (&have.origin, have.line, have.col),
+                    (decl.file, decl.span),
+                    (have.file, have.span),
                 ));
             }
             prog.errors.push(decl.clone());
@@ -70,20 +64,19 @@ fn publish_generic(prog: &mut Program) -> Result<(), Error> {
                 .iter()
                 .any(|field| mentions_params(&field.ty, &module.params))
             {
-                return Err(error(
-                    decl.line,
-                    decl.col,
-                    "a generic event cannot use a type parameter",
-                )
-                .in_file(&decl.origin));
+                return Err(
+                    error(decl.span, "a generic event cannot use a type parameter")
+                        .in_file(decl.file),
+                );
             }
             if let Some(have) = prog.events.iter().find(|have| have.name == decl.name) {
                 return Err(exported_twice(
+                    &prog.files,
                     &module.name,
                     "event",
                     &decl.name,
-                    (&decl.origin, decl.line, decl.col),
-                    (&have.origin, have.line, have.col),
+                    (decl.file, decl.span),
+                    (have.file, have.span),
                 ));
             }
             prog.events.push(decl.clone());
@@ -91,11 +84,12 @@ fn publish_generic(prog: &mut Program) -> Result<(), Error> {
         for decl in &module.error_sets {
             if let Some(have) = prog.error_sets.iter().find(|have| have.name == decl.name) {
                 return Err(exported_twice(
+                    &prog.files,
                     &module.name,
                     "error set",
                     &decl.name,
-                    (&decl.origin, decl.line, decl.col),
-                    (&have.origin, have.line, have.col),
+                    (decl.file, decl.span),
+                    (have.file, have.span),
                 ));
             }
             prog.error_sets.push(decl.clone());
@@ -106,17 +100,18 @@ fn publish_generic(prog: &mut Program) -> Result<(), Error> {
 
 /// A module exports a declaration whose name is taken, by one of its own or another's.
 fn exported_twice(
+    files: &SourceMap,
     module: &str,
     what: &str,
     name: &str,
-    (origin, line, col): (&str, u32, u32),
-    (have_origin, have_line, have_col): (&str, u32, u32),
+    (file, span): (FileId, Span),
+    (have_file, have_span): (FileId, Span),
 ) -> Error {
     crate::modules::clash(
         format!("module `{module}` exports {what} `{name}`, which is already declared"),
         name,
-        &crate::modules::Site::of(have_origin, have_line, have_col, ""),
-        &crate::modules::Site::of(origin, line, col, ""),
+        &crate::modules::Site::of(files, have_file, have_span, ""),
+        &crate::modules::Site::of(files, file, span, ""),
         None,
         "rename one of them",
     )
@@ -148,12 +143,10 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
     let mut by_name = FxHashMap::default();
     for (i, module) in prog.modules.iter().enumerate() {
         if by_name.insert(module.name.clone(), i).is_some() {
-            return Err(error(
-                module.line,
-                module.col,
-                format!("duplicate module `{}`", module.name),
-            )
-            .in_file(&module.origin));
+            return Err(
+                error(module.span, format!("duplicate module `{}`", module.name))
+                    .in_file(module.file),
+            );
         }
     }
     for module in prog
@@ -167,32 +160,26 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
             .find(|func| matches!(func.kind, ItemKind::Entry | ItemKind::View))
         {
             return Err(error(
-                func.line,
-                func.col,
+                func.span,
                 format!(
                     "generic module `{}` cannot declare external functions",
                     module.name
                 ),
             )
-            .in_file(&func.origin));
+            .in_file(func.file));
         }
     }
     publish_generic(prog)?;
     let mut used = std::collections::BTreeMap::new();
     for use_ in &prog.compose {
         if !by_name.contains_key(&use_.name) {
-            return Err(error(
-                use_.line,
-                use_.col,
-                format!("unknown module `{}`", use_.name),
-            ));
+            return Err(error(use_.span, format!("unknown module `{}`", use_.name)));
         }
-        if let Some(first) = used.insert(use_.name.clone(), (use_.line, use_.col)) {
+        if let Some(first) = used.insert(use_.name.clone(), use_.span) {
             // `compose` puts plain uses in an order of its own: name the one written second.
-            let (line, col) = first.max((use_.line, use_.col));
+            let span = first.max(use_.span);
             return Err(error(
-                line,
-                col,
+                span,
                 format!("module `{}` is already used", use_.name),
             ));
         }
@@ -202,8 +189,7 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
         for req in &module.requires {
             if !by_name.contains_key(&req.name) {
                 return Err(
-                    error(req.line, req.col, format!("unknown module `{}`", req.name))
-                        .in_file(&module.origin),
+                    error(req.span, format!("unknown module `{}`", req.name)).in_file(module.file)
                 );
             }
         }
@@ -211,12 +197,11 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
     let order: Vec<String> = prog.compose.iter().map(|use_| use_.name.clone()).collect();
     for name in order {
         let module = prog.modules[by_name[&name]].clone();
-        check_guarded(&module).map_err(|err| err.in_file(&module.origin))?;
+        check_guarded(&module).map_err(|err| err.in_file(module.file))?;
         if !module.params.is_empty() {
-            let (line, col) = used[&name];
+            let span = used[&name];
             return Err(error(
-                line,
-                col,
+                span,
                 format!(
                     "module `{}` is generic; instantiate it as `{}(...)`",
                     module.name, module.name
@@ -226,11 +211,12 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
         for decl in module.types {
             if let Some(have) = prog.types.iter().find(|have| have.name == decl.name) {
                 return Err(exported_twice(
+                    &prog.files,
                     &module.name,
                     "type",
                     &decl.name,
-                    (&decl.origin, decl.line, decl.col),
-                    (&have.origin, have.line, have.col),
+                    (decl.file, decl.span),
+                    (have.file, have.span),
                 ));
             }
             prog.types.push(decl);
@@ -238,11 +224,12 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
         for decl in module.errors {
             if let Some(have) = prog.errors.iter().find(|have| have.name == decl.name) {
                 return Err(exported_twice(
+                    &prog.files,
                     &module.name,
                     "error",
                     &decl.name,
-                    (&decl.origin, decl.line, decl.col),
-                    (&have.origin, have.line, have.col),
+                    (decl.file, decl.span),
+                    (have.file, have.span),
                 ));
             }
             prog.errors.push(decl);
@@ -250,11 +237,12 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
         for decl in module.error_sets {
             if let Some(have) = prog.error_sets.iter().find(|have| have.name == decl.name) {
                 return Err(exported_twice(
+                    &prog.files,
                     &module.name,
                     "error set",
                     &decl.name,
-                    (&decl.origin, decl.line, decl.col),
-                    (&have.origin, have.line, have.col),
+                    (decl.file, decl.span),
+                    (have.file, have.span),
                 ));
             }
             prog.error_sets.push(decl);
@@ -262,11 +250,12 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
         for decl in module.events {
             if let Some(have) = prog.events.iter().find(|have| have.name == decl.name) {
                 return Err(exported_twice(
+                    &prog.files,
                     &module.name,
                     "event",
                     &decl.name,
-                    (&decl.origin, decl.line, decl.col),
-                    (&have.origin, have.line, have.col),
+                    (decl.file, decl.span),
+                    (have.file, have.span),
                 ));
             }
             prog.events.push(decl);
@@ -312,16 +301,14 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
                 .find(|iface| iface.name == named.name)
             else {
                 return Err(error(
-                    named.line,
-                    named.col,
+                    named.span,
                     format!("unknown interface `{}`", named.name),
                 ));
             };
             // Each member speaks for the interface where the contract names it.
             members.extend(iface.methods.iter().cloned().map(|mut member| {
                 member.interface = Some(named.name.clone());
-                member.line = named.line;
-                member.col = named.col;
+                member.span = named.span;
                 member
             }));
         }
@@ -333,8 +320,7 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
                     module: exposed.module.clone(),
                     guard: guarded.name.rsplit('.').next().unwrap_or("").to_string(),
                     entry: entry.name.clone(),
-                    line: entry.line,
-                    col: entry.col,
+                    span: entry.span,
                 });
             }
             prog.funcs.push(entry);
@@ -352,7 +338,7 @@ fn exported_name(module: &str, name: &str, k: usize) -> String {
 }
 
 /// A module's internal and external functions never share a name, as a contract's don't.
-pub(super) fn reject_mixed_names(funcs: &[Func]) -> Result<(), Error> {
+pub(super) fn reject_mixed_names(files: &SourceMap, funcs: &[Func]) -> Result<(), Error> {
     let internal = |func: &Func| {
         matches!(
             func.kind,
@@ -367,8 +353,8 @@ pub(super) fn reject_mixed_names(funcs: &[Func]) -> Result<(), Error> {
             return Err(crate::modules::clash(
                 format!("duplicate function `{}`", crate::modules::shown(&new.name)),
                 &new.name,
-                &crate::modules::Site::of(&have.origin, have.line, have.col, ""),
-                &crate::modules::Site::of(&new.origin, new.line, new.col, ""),
+                &crate::modules::Site::of(files, have.file, have.span, ""),
+                &crate::modules::Site::of(files, new.file, new.span, ""),
                 None,
                 "an external and an internal function cannot share a name; rename one of them",
             ));
@@ -380,6 +366,7 @@ pub(super) fn reject_mixed_names(funcs: &[Func]) -> Result<(), Error> {
 /// Internal functions that share a name become `f@1`, `f@2`, ..., which no source can name;
 /// a call picks one by its arguments. An internal and an external never share a name.
 pub(super) fn name_overloads(
+    files: &SourceMap,
     funcs: &mut [Func],
     prefix: &str,
     overloads: &mut FxHashMap<String, Vec<String>>,
@@ -418,8 +405,8 @@ pub(super) fn name_overloads(
                         own.join(", ")
                     ),
                     &name,
-                    &crate::modules::Site::of(&have.origin, have.line, have.col, ""),
-                    &crate::modules::Site::of(&new.origin, new.line, new.col, ""),
+                    &crate::modules::Site::of(files, have.file, have.span, ""),
+                    &crate::modules::Site::of(files, new.file, new.span, ""),
                     None,
                     "overloads need different parameter types; rename one or change its parameters",
                 ));
@@ -483,8 +470,7 @@ fn declared_entry(prog: &Program, module: &str, decl: Func) -> Result<Func, Erro
                 )
             };
             return Err(error(
-                decl.line,
-                decl.col,
+                decl.span,
                 format!(
                     "{}: it has no external `{}`\n\n  interface:  {}\n\n{hint}",
                     lacks(module, &decl),
@@ -516,7 +502,7 @@ fn declared_entry(prog: &Program, module: &str, decl: Func) -> Result<Func, Erro
                     for func in several {
                         msg.push_str(&format!("\n  {}", header_text(func, &decl.name)));
                     }
-                    return Err(error(decl.line, decl.col, msg));
+                    return Err(error(decl.span, msg));
                 }
             }
         }
@@ -674,18 +660,16 @@ pub(crate) fn several_contracts(prog: &Program) -> Error {
         }
     }
     let site = prog.siblings.first();
-    let (line, col) = site
-        .map(|sibling| (sibling.contract_line, sibling.contract_col))
-        .unwrap_or((1, 1));
+    let span = site.map_or(Span::default(), |sibling| sibling.contract_span);
     error(
-        line,
-        col,
+        span,
         format!(
             "this file defines {}\none bytecode needs a single contract",
             names.join(", ")
         ),
     )
-    .in_file(&prog.origin)
+    .in_file(prog.file)
+    .placed(&prog.files, prog.file)
 }
 
 /// A `supports` entry, and each of its methods' signature, selector, and ABI result.
@@ -750,8 +734,7 @@ pub(super) fn supports_interface(
         }
         if !missing.is_empty() {
             return Err(error(
-                named.line,
-                named.col,
+                named.span,
                 format!(
                     "the contract supports `{}` but does not dispatch:\n{}\n\nexpose them from a module with `use M exposing`, or write them as externals",
                     named.name,
@@ -769,15 +752,14 @@ pub(super) fn supports_interface(
     checked.interface_ids = ids.clone();
     if have.iter().any(|(sel, _)| *sel == own_sel) {
         if !known.is_empty() && !checked.asks_interfaces {
-            let (line, col) = checked
+            let span = checked
                 .prog
                 .funcs
                 .iter()
                 .find(|func| func.name == "supportsInterface")
-                .map_or((1, 1), |func| (func.line, func.col));
+                .map_or(Span::default(), |func| func.span);
             return Err(error(
-                line,
-                col,
+                span,
                 "the contract writes its own `supportsInterface`, which does not answer for the interfaces `supports` lists\n\nanswer for them there, with `Abi.supportsInterface`, or remove it to have them answered",
             ));
         }
@@ -786,15 +768,13 @@ pub(super) fn supports_interface(
     if known.is_empty() {
         return Ok(checked);
     }
-    let (line, col) = (
-        checked.prog.contract_line.max(1),
-        checked.prog.contract_col.max(1),
-    );
+    let span = match checked.prog.contract_span {
+        Span::NONE => Span::default(),
+        span => span,
+    };
     let mut source = checked.source.clone();
     let supports = std::mem::take(&mut source.supports);
-    source
-        .funcs
-        .push(erc165_func(line, col, &source.origin, &ids));
+    source.funcs.push(erc165_func(span, source.file, &ids));
     let mut again = check(source, evm)?;
     again.source.supports = supports;
     again.interface_ids = ids;
@@ -803,23 +783,20 @@ pub(super) fn supports_interface(
 
 /// `external pure function supportsInterface(const interfaceId : bytes4) : bool`, true for
 /// exactly `ids`.
-fn erc165_func(line: u32, col: u32, origin: &str, ids: &[u32]) -> Func {
+fn erc165_func(span: Span, file: FileId, ids: &[u32]) -> Func {
     let ident = || Expr::Ident {
-        line,
-        col,
+        span,
         name: "interfaceId".to_string(),
         sym: None,
         builtin: None,
         ty: 0,
     };
     let test = |id: u32| Expr::Binary {
-        line,
-        col,
+        span,
         op: BinOp::Eq,
         left: Box::new(ident()),
         right: Box::new(Expr::Lit {
-            line,
-            col,
+            span,
             lit: Lit::Int(Word::from_u64(u64::from(id)), Some(8)),
             ty: 0,
         }),
@@ -829,29 +806,25 @@ fn erc165_func(line: u32, col: u32, origin: &str, ids: &[u32]) -> Func {
         .iter()
         .skip(1)
         .fold(test(ids[0]), |acc, &id| Expr::Binary {
-            line,
-            col,
+            span,
             op: BinOp::Or,
             left: Box::new(acc),
             right: Box::new(test(id)),
             ty: 0,
         });
     let name = |name: &str| TypeRef::Name {
-        line,
-        col,
+        span,
         name: name.to_string(),
     };
     Func {
-        line,
-        col,
+        span,
         kind: ItemKind::View,
         private: false,
-        origin: origin.to_string(),
+        file,
         name: "supportsInterface".to_string(),
         type_params: Vec::new(),
         params: vec![Param {
-            line,
-            col,
+            span,
             mutable: false,
             storage: false,
             name: "interfaceId".to_string(),
