@@ -204,6 +204,11 @@ pub(crate) fn timing() -> bool {
     *ON.get_or_init(|| std::env::var_os("LITHE_TIME").is_some())
 }
 
+fn price_batch() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("LITHE_PRICE_BATCH").is_some())
+}
+
 /// A phase of the backend, as the timers name it.
 #[derive(Clone, Copy)]
 enum Phase {
@@ -534,7 +539,7 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
     let too_big = std::sync::Mutex::new(Vec::<Big>::new());
     // Each plan's build, or the error building it hit. Builds over the limit are noted by
     // `note_big`, only once the search uses them. Identical plans are emitted once.
-    let build_raw = |plans: &[Plan]| -> Vec<Result<Candidate, Error>> {
+    let build_plans = |plans: &[Plan]| -> Vec<Result<Candidate, Error>> {
         let emitted: Vec<Result<(Arc<Emitted>, Vec<Facet>), Error>> = {
             enum Slot {
                 Hit(EmitHit),
@@ -621,6 +626,32 @@ pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> 
                 })
             })
             .collect();
+        built
+    };
+    // Under `LITHE_PRICE_BATCH`, each plan is built with `batch` flipped too and both costs
+    // are logged once per pair. The twins only add cache entries, so the search still
+    // picks the same plan.
+    let priced_pairs = std::sync::Mutex::new(FxHashSet::<Plan>::default());
+    let build_raw = |plans: &[Plan]| -> Vec<Result<Candidate, Error>> {
+        if !price_batch() {
+            return build_plans(plans);
+        }
+        let twins = plans.iter().map(|p| Plan {
+            batch: !p.batch,
+            ..p.clone()
+        });
+        let all: Vec<Plan> = plans.iter().cloned().chain(twins).collect();
+        let mut built = build_plans(&all);
+        let twins = built.split_off(plans.len());
+        let mut priced = priced_pairs.lock().unwrap_or_else(|e| e.into_inner());
+        for (c, t) in built.iter().zip(&twins) {
+            let (Ok(c), Ok(t)) = (c, t) else { continue };
+            let (on, off) = if c.plan.batch { (c, t) } else { (t, c) };
+            if priced.insert(on.plan.clone()) {
+                let f = |c: &Candidate| format!("{} {} {}", c.cost(), c.built.bytes, c.built.gas);
+                eprintln!("[batch] on {} off {}", f(on), f(off));
+            }
+        }
         built
     };
     let note_big = |c: &Candidate| {
