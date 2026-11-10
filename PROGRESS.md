@@ -52,7 +52,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 ### Phase 4 — parallelism inside one build
 
 - [x] **4.1** Per-function parallel emit, schedule, and optimize. Deterministic join. Wasm stays single-threaded. Test `LITHE_THREADS=1` vs N. **Not taken (S23):** the emitter's per-body work, the only part that exists per function before `resolve` joins the stream, is 9.1 % of the Fast backend and 8.2 % of Release over 50 `bench/` files. Even with unlimited threads and a free join, that caps the speedup at 1.10×. The join would also have to relocate every piece of shared emitter state that `recall_body` relocates, including the 21 cases where it gives up today. See `## S23 4.1 closed: not taken`.
-- [ ] **4.2** Overlap sibling `check` and `route::abi` with codegen. Determinism test.
+- [x] **4.2** Overlap sibling `check` and `route::abi` with codegen. Determinism test. **Landed (S24):** `compile` builds a file's sibling units on `gen::parallel_map` and returns them in declaration order. `sibling_units::pooled_build_matches_one_thread_in_order` checks the bytes, and factory's digests are identical at `LITHE_THREADS=1` and 16. No benchmark number moves, because `examples/factory.lithe` is the only file with two units. See `## S24 4.2`.
 
 ### Phase 5 — frontend hygiene and caching
 
@@ -84,7 +84,8 @@ This section is the single source of truth for what is open and what blocks what
 - **3.3b(ii) landed.** Batched promotion (below). Rounds are 4 at ladder N = 16/64/128 (were 34/130/258) and ladder 128 Fast `promote` 49.6 → 12.0 ms. It is `Plan::batch`, default on in the start plan, tried off by the search as `Move::Batch`. Sizes: runtime bytes −0.027 % over the 272 target-modes (parent → here), and −0.153 % creation + runtime over the 13 whose code changes; the `Fast` increases behind that (`nft` +74, `utils` +14, `governance_token` +2, `erc20_full` +2) are the batched start plan's own price, since `Fast` builds that plan and nothing else and has no candidate to decline it. Gas: **transaction gas +0.0002 %** (the step totals, 68 121 512 → 68 121 662) and **gas including deploy −0.018 %** (96 454 261 → 96 437 353); every step outcome identical. See `## 3.3b(ii)` for the tables.
 - **3.3c measured, not taken (S40, reproduced by S53).** `LITHE_PRICE_BATCH=1` prices every plan the Release search builds with `batch` on and off. Over the 51 `bench/*.lithe`: 1 140 pairs, 103 wins, 1 015 ties, **22 losses** (erc20_full 12, erc721_full 4, erc721 3, fixed_point, uniswap_v2_factory, uniswap_v2_pair 1 each; worst +0.96 % cost on erc721). The deletion's own condition fails, so the greedy `promote_region` path, `Plan::batch` and `Move::Batch` stay. The command and the comparison with S40's scratch count are in `## S40 3.3c priced`.
 - **3.3 closed as not taken (S48).** The value-numbering scheduler is not built. `promote` is 8.9 % of the Fast backend over `bench/` and 3–4 % on the ladder, so the rewrite moves no open target. The record also covers what 3.3 owed beyond compile time. Size and gas are within budget: runtime −0.027 % and deploy-inclusive gas −0.018 %, but transaction gas is +0.0002 %, so §5's expected gas improvement is not delivered. The stack-too-deep guarantee comes from memory homes plus the `< 16` reach checks in `hold`/`plan_region`/`walk_alias`/`abandon_walk` and the outliner, with no spilling. See `## S48 3.3 closed: not taken`.
-- **4.1 closed as not taken (S23).** Per-body emission, the only per-function unit before `resolve`, is 9.1 % of the Fast backend and 8.2 % of Release (50 `bench/` files, `LITHE_THREADS=1`). The `[time]` line now reports it as `body`. Unlimited threads would give at most 1.10×, and the join would have to rebuild each body's shared emitter state. `parallel_map` still parallelises plan candidates only. Release output is byte-identical at 1 and 16 threads over all 51 `bench/` files and ladder 128. See `## S23 4.1 closed: not taken`.
+- **4.1 closed as not taken (S23).** Per-body emission, the only per-function unit before `resolve`, is 9.1 % of the Fast backend and 8.2 % of Release (50 `bench/` files, `LITHE_THREADS=1`). The `[time]` line now reports it as `body`. Unlimited threads would give at most 1.10×, and the join would have to rebuild each body's shared emitter state. `parallel_map` still parallelises plan candidates only. Release output is byte-identical at 1 and 16 threads over all 51 `bench/` files and ladder 128. The command and digests for erc20_full, ladder 128 and factory, in both modes, are recorded there (S55). See `## S23 4.1 closed: not taken`.
+- **4.2 landed (S24).** Sibling units build on the pool, in declaration order. They are byte-identical at 1 and 16 threads, and no benchmark moves because only `examples/factory.lithe` has two units. See `## S24 4.2`.
 - **3.5 open, `promote` half done**: `promote` is now flat in the function count, so what is left of the 2.23×/2.01× per-line ratio is `optimize`. Re-measure once 3.2b's successor and 3.3c land.
 - **Final comparison table** below is a mid-branch snapshot; regenerate it once the steps above land.
 
@@ -847,9 +848,50 @@ I re-ran the command exactly as written, Fast, while `make check` was running (l
 - **Deterministic, byte-identical join.** A body is not self-contained. Bodies take labels and memory spaces from shared counters. The first body that needs a helper (`subs`), a panic or raise stub, the error head, an embedded datum, or an early query creates it, and later bodies reuse it. The machinery that already re-installs one body in another build is `recall_body` (1.4's `BodyMemo`). It records 38 fields per body, and in 21 cases it declines rather than relocates: an earlier helper already exists, the embedded-data prefix differs, an early query moved, or the error head does not line up. A parallel join would have to handle all 21 by relocating instead of declining. That is a rewrite of the memo path, for a speedup of at most 1.10×.
 - **Wasm fallback and determinism.** Nothing new runs in parallel, so the wasm build stays single-threaded and `make check`'s `wasm` target still builds the playground. With the existing candidate pool, `--release` output is byte-identical at `LITHE_THREADS=1` and `LITHE_THREADS=16` for all 51 `bench/*.lithe` and ladder 128 (sha256 of stdout per file).
 
+**Reproducing the 1-vs-N answer (S55).** The test is a recorded command, not a `tests/` integration test. The thread budget is read once per process: `gen::thread_cap()` and `gen::budget()` are `OnceLock`s over `LITHE_THREADS`, so one test process cannot build at both 1 and N threads. A test that drove the binary would run the debug build's Release search on erc20_full twice in each of `make check`'s `test` and `verify` passes. The release binary does the whole check below in 3 s. Run it from the repo root after `cargo build --release --locked`. Factory goes through directory mode because `lithe compile` refuses a single file with two units ("one bytecode needs a single contract"):
+
+```
+L=$PWD/target/release/lithe; T=$(mktemp -d); python3 scripts/gen_scaling.py 128 > $T/ladder128.lithe
+mkdir $T/f && cp examples/factory.lithe $T/f/
+for mode in --fast --release; do for n in 1 16; do
+  export LITHE_CACHE_DIR= LITHE_THREADS=$n
+  a=$($L compile $mode bench/erc20_full.lithe | sha256sum | cut -c1-16)
+  b=$($L compile $mode $T/ladder128.lithe | sha256sum | cut -c1-16)
+  c=$(cd $T && rm -rf out && $L compile $mode f >/dev/null && cat out/f*/*.json | sha256sum | cut -c1-16)
+  echo "$mode threads=$n erc20_full=$a ladder128=$b factory=$c"
+done; done; rm -rf $T
+```
+
+Run at `a11e921` on 16 cores, load 2.5, 3.1 s wall:
+
+| mode | threads | `bench/erc20_full.lithe` | ladder 128 | `examples/factory.lithe` (`Factory.json` + `Vault.json`) |
+|---|---:|---|---|---|
+| Fast | 1 | `869680db938303ac` | `280bf6115328624d` | `f181acbe1056d6cc` |
+| Fast | 16 | `869680db938303ac` | `280bf6115328624d` | `f181acbe1056d6cc` |
+| Release | 1 | `66e0cbebb7dcf7a6` | `280bf6115328624d` | `0844adae3a9c0581` |
+| Release | 16 | `66e0cbebb7dcf7a6` | `280bf6115328624d` | `0844adae3a9c0581` |
+
+Every digest is the same at 1 and 16 threads, so the re-run agrees with the claim above. On ladder 128, the Release search ends on the start plan's bytes, so its digest equals Fast's. `examples/factory.lithe` is in the list because it is the only file in `bench/`, `examples/` and `fuzz/` with two units. It is the evidence `## S24 4.2` relies on.
+
 **What would reopen it.** Per-body emission growing to about a third of the Fast backend, so that the ceiling passes 1.5×. That could happen once `optimize`/`outline` (71 % of Fast) become linear: ladder 128 Fast is already at 16 %. The design would then be `recall_body` extended to relocate where it now declines, run on forks of one `Gen`, and joined in target order.
 
 Tests: `make check` (fmt, clippy, test, verify, differential, snapshot, bench-gas, wasm); `python3 scripts/bench_compile.py --self-check`. Both snapshots are unchanged, because the change only reads the clock under `LITHE_TIME`.
+
+## S24 4.2
+
+Plan: overlap one sibling unit's `check` and `route::abi` with another's codegen by building a file's units on the existing pool. Proof: results come back in declaration order, a unit test compares them with one-at-a-time builds, and the S55 command compares digests at 1 and 16 threads. Expected number: none moves on this corpus (see "Payoff").
+
+**The change** (`d38f65b`). `compile` (`src/lib.rs:190-217`) wraps each unit from `modules::split_units` in a `Mutex<Option<_>>` and hands the list to `gen::parallel_map`. Whichever worker reaches a unit takes it and runs `build`, which does `check` → `route::abi` → `route::method_ids` → `split::build_from`. So one sibling's check and ABI overlap another's codegen. `in_file` is applied to an error on the worker, and the pool returns results in declaration order, so the order of `contracts` and errors is the order the file declares them.
+
+**Determinism.** The test is `sibling_units::pooled_build_matches_one_thread_in_order` (`src/lib.rs:2190`). It runs `compile` on `examples/factory.lithe` and compares each unit with a sequential `build` of the same unit: name, bytecode, deployed bytecode, method identifiers and warnings. For 1 vs N there is the binary-level command in `## S23 4.1 closed: not taken`, whose target list includes `examples/factory.lithe`. Directory mode, `LITHE_CACHE_DIR=` empty, 16 cores, load 2.5, sha256 of `out/factory.lithe/Factory.json` + `Vault.json`: Fast `f181acbe1056d6cc` and Release `0844adae3a9c0581`, identical at `LITHE_THREADS=1` and `16`. Those are the digests the S24 handoff reported, so the re-run agrees with it.
+
+**What the test proves, and what it does not.** `gen::pool` spawns a worker only while `spawned.len() + 1 < items.len().min(cap)` and a budget unit can be claimed (`src/gen/mod.rs:1316`). At `LITHE_THREADS=1`, on one core, or when other pools in the test process hold the spare budget, the two units run inline and in order on the calling thread. The unit test therefore proves the bytes are equal, not that the units overlapped. Overlap happens only when a second thread is free, as in the 16-thread run of the command. That run checks bytes too; it does not time anything.
+
+**Payoff.** None on this corpus, and none is claimed. Counting `contract` declarations across `bench/`, `examples/` and `fuzz/`, `examples/factory.lithe` has 2 and no other file has more than 1. (`examples/compose.lithe` matches the word twice, but one match is inside a comment.) For all 51 `bench/*.lithe` the pool gets one item and spawns nothing, so no benchmark number moves. The change pays only for future files with several units.
+
+**`LITHE_TIME` with siblings.** Each pooled sibling runs its own `build` and prints its own `[time]` line (2 lines for factory). With a second thread those lines can come out in either order. `scripts/bench_compile.py::phases` sums `check_s` and `backend_s` across all matching lines, but takes `emits`, `finishes`, `promote`, `optimize`, `outline` and `body` from the last line only. So for a multi-unit file it reports summed check and backend wall time next to one sibling's counters, and which sibling depends on the race. No bytes move. Only the harness's per-file counters are affected, and on the current corpus only factory, which is not a `bench/` file.
+
+Tests: `make check`. No code changed in this step, so both snapshots are unchanged.
 
 ## 5.1 Interning: scope measured
 
