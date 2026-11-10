@@ -1217,9 +1217,9 @@ impl Move {
 /// — `asm::optimize`'s tracked path, `finish`'s uncached path, the body memo's keys — that
 /// it runs with no budget to pool.
 ///
-/// Each item's certificates are its own, and the pool merges them in item order, which is
-/// the order they were made in at one thread, so one proof covers the whole build whatever
-/// thread took which item.
+/// Each item's certificates are its own, and the pool merges them in item order after the
+/// ones the caller held before the pool, which is the order they were made in at one thread,
+/// so one proof covers the whole build whatever thread took which item.
 ///
 /// Track notes are not merged, and the caller's track is set aside while the pool runs. A
 /// note is keyed by a label of the one build that made it, and only that build reads it, so
@@ -1227,9 +1227,17 @@ impl Move {
 /// build's labels. Dropping them is what one thread's caller does too, since a build's own
 /// notes are taken by the build itself.
 pub(crate) fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    pool(items, budget(), f)
+}
+
+/// `parallel_map` on at most `cap` threads, the caller's among them.
+fn pool<T: Sync, R: Send>(items: &[T], cap: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let byte_gas = asm::byte_gas();
     let certify = certify::wanted();
     let track = asm::track::on();
+    #[cfg(test)]
+    let forced = (FORCE_STATIC_HEAP.get(), FORCE_SPECIALIZE.get());
+    let before = certify.then(certify::take_certs);
     let next = AtomicUsize::new(0);
     let done = std::sync::Mutex::new(Vec::with_capacity(items.len()));
     let work = |unit: Option<Unit>| {
@@ -1259,13 +1267,18 @@ pub(crate) fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + 
         // The calling thread is one worker. Each thread spawned claims a unit of the
         // process's budget, so pools nested inside other pools never overrun it.
         let mut spawned = Vec::new();
-        while spawned.len() + 1 < items.len() {
+        while spawned.len() + 1 < items.len().min(cap) {
             let Some(unit) = claim() else { break };
             match std::thread::Builder::new()
                 .stack_size(64 << 20)
                 .spawn_scoped(s, move || {
                     if certify {
                         certify::certifying(true);
+                    }
+                    #[cfg(test)]
+                    {
+                        FORCE_STATIC_HEAP.set(forced.0);
+                        FORCE_SPECIALIZE.set(forced.1);
                     }
                     asm::with_byte_gas(byte_gas, || work(Some(unit)));
                     take_counts()
@@ -1285,6 +1298,9 @@ pub(crate) fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + 
     });
     let mut done = done.into_inner().unwrap_or_else(|e| e.into_inner());
     done.sort_by_key(|(i, ..)| *i);
+    if let Some(before) = before {
+        certify::keep(before);
+    }
     for (_, _, certs) in &mut done {
         certify::keep(std::mem::take(certs));
     }
@@ -1437,7 +1453,8 @@ fn shared_budget_bounds_nested_pools() {
 }
 
 /// A pooled build's state is the caller's, whatever thread its items land on: the flags that
-/// pick the tracked passes and the uncached finish, and the counters a `[time]` line sums.
+/// pick the tracked passes and the uncached finish, the knobs a test forces, and the counters
+/// a `[time]` line sums.
 #[cfg(test)]
 #[test]
 fn a_pools_work_is_the_callers_build() {
@@ -1451,9 +1468,53 @@ fn a_pools_work_is_the_callers_build() {
         "{saw:?}"
     );
 
+    FORCE_SPECIALIZE.set(Some(true));
+    let forced = pool(&[0usize; 8], 8, |_| forced());
+    FORCE_SPECIALIZE.set(None);
+    assert!(forced.iter().all(|&f| f), "{forced:?}");
+
     reset_timing();
     parallel_map(&[0usize; 8], |_| note(|n| n.emits += 1));
     assert_eq!(counts().emits, 8, "{}", counts().emits);
+}
+
+/// The certificates the caller held before a pool come first, whichever item its own thread
+/// takes: a slow first item lets the caller start on a later one.
+#[cfg(test)]
+#[test]
+fn a_callers_certificates_stay_ahead_of_its_pool() {
+    let made = |func: &str, head: usize| {
+        let mut certs = certify::Certs::default();
+        certs.loops.push(certify::LoopCert {
+            func: func.to_string(),
+            line: 0,
+            col: 0,
+            creation: false,
+            head,
+            exit: None,
+            counter: None,
+            locals: Vec::new(),
+        });
+        certs
+    };
+    let n = 8usize;
+    let items: Vec<usize> = (0..n).collect();
+    let funcs = |cap: usize| {
+        certify::certifying(true);
+        certify::keep(made("caller", 0));
+        pool(&items, cap, |&i| {
+            std::thread::sleep(std::time::Duration::from_millis((n - i) as u64 * 2));
+            certify::keep(made(&i.to_string(), i));
+        });
+        let certs = certify::take_certs();
+        certify::certifying(false);
+        certs.loops.into_iter().map(|c| c.func).collect::<Vec<_>>()
+    };
+    let want: Vec<String> = std::iter::once("caller".to_string())
+        .chain(items.iter().map(|i| i.to_string()))
+        .collect();
+    assert_eq!(funcs(1), want);
+    assert_eq!(funcs(n), want);
 }
 
 /// A pool's certificates read in the order the items were asked for, the order a build with
@@ -1511,7 +1572,7 @@ fn a_pools_certificates_read_in_item_order() {
             locals: Vec::new(),
         })
     });
-    items.iter().copied().for_each(item);
+    pool(&items, 1, |&i| item(i));
     let one = certify::take_certs();
     let notes = asm::track::take().expect("the caller's track");
     certify::certifying(false);
@@ -1520,7 +1581,7 @@ fn a_pools_certificates_read_in_item_order() {
     certify::certifying(true);
     asm::track::start();
     asm::track::note(|t| t.sites.clone_from(&notes.sites));
-    let order = parallel_map(&items, |&i| {
+    let order = pool(&items, n, |&i| {
         item(i);
         i
     });

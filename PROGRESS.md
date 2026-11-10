@@ -93,6 +93,7 @@ This section is the single source of truth for what is open and what blocks what
 - **S37/S45 landed:** build state no longer depends on how much of the thread budget was free. `parallel_map` releases a worker's unit as soon as the queue drains, workers start from the caller's byte weight, certifying and tracking, and the `LITHE_TIME` counters are thread-local, summed back by the pool. A parallel `compile_dir` now prints one `[time]` line per build, each with its own `emits`/`finishes`. See `## S37/S45 build state off the budget`.
 - **S49 landed:** the `simplify:` list in `src/evm/bench_gas.rs` now matches `Meter`/`charge()` — the seed is EIP-2929's precompile set 1..=0x11, and the two addresses it leaves cold until first touched (`0x100` P256VERIFY, and anything `CREATE`/`CREATE2` made) are named. Doc-only; no gas total moved. See `## S49`.
 - **S51 landed, `make check` green.** S37's three open findings: `split::facet` no longer answers from its process-wide memo while a test forces a codegen knob (`gen::forced()`), `parallel_map` merges a pool's certificates in item order so a proof is the same at any `LITHE_THREADS`, and worker `Track` notes are deliberately not merged (their labels belong to one build) with the caller's track returned untouched. The whole-suite `LITHE_VERIFY` failure this tree carried since `b8fc4fa` is gone: 558 lib tests pass under VERIFY, 0 fail. See `## S51 S37's findings, and make check green`.
+- **S52 landed:** S51's three residual findings. A pool keeps the caller's pre-pool certificates ahead of its items', a worker sees the caller's forced codegen knobs, and the item-order test compares the pool at one thread with the pool at N. See `## S52 S51's residual findings`.
 - **S40 is next:** the greedy `promote_region` path and `Move::Batch` by cost model, as the plan orders it.
 
 ## 0.2b baseline
@@ -667,6 +668,25 @@ snapshot cargo test --locked --lib evm::snapshot      ok  (2)
 bench    LITHE_BENCH_GAS=1 ... evm::bench_gas         ok  (2, ignored included)
 wasm     cd playground && cargo build --release       ok
 ```
+
+## S52 S51's residual findings
+
+**Plan.** (a) The calling thread is also a pool worker, and its `take_certs` after each item swept certificates it made *before* the pool into whichever item it took first. Take those aside before the pool and keep them ahead of the item-ordered merge. (b) Run the one-thread arm of `a_pools_certificates_read_in_item_order` through the pool at a cap of one. (c) Hand `FORCE_STATIC_HEAP`/`FORCE_SPECIALIZE` to workers so `gen::forced()` is the caller's. No expectation edited. Both snapshots must stay unchanged.
+
+**What changed** (`src/gen/mod.rs`).
+- `parallel_map(items, f)` is now `pool(items, budget(), f)`. `pool` takes a thread cap that includes the caller. Below the cap, the spawn loop still claims from the process budget, so the public entry behaves as before.
+- `pool` takes the caller's `Certs` before any item runs, when certifying. It keeps them first and then the items' certificates in item order. That is the order a one-thread build makes them in.
+- A spawned worker sets both forced knobs from the caller's values. This is `#[cfg(test)]` code, like the knobs.
+
+**Why it cannot change bytecode.** Moving certificates only changes where values that were already computed end up, and no pass reads them. The knobs exist only under `cfg(test)`. With cap = `budget()`, the spawn bound `min(items, budget)` is never tighter than the claims already allow.
+
+**Proof.** Each new or changed test fails with its fix reverted (mutated and run, then restored):
+- `gen::a_callers_certificates_stay_ahead_of_its_pool` (new). The caller holds a `"caller"` certificate. The pool runs eight items, and the lower an item's index, the slower it is. At cap 1 and at cap 8 the result must be `["caller","0",…,"7"]`. It fails at cap 8 without the take-aside, because the caller's certificate follows the item the caller's thread drained.
+- `gen::a_pools_work_is_the_callers_build` gains a check: with `FORCE_SPECIALIZE` set, `forced()` is true in every item of a cap-8 pool. It fails without the propagation.
+- `split::tests::a_forced_facet_built_in_a_pool_is_not_read_from_the_memo` (new). It builds `tracked_token`'s facet in four pool items, first plain and then forced. Every forced item must differ from the plain facet. It fails without the propagation: items on worker threads read the plain facet back from the memo. The S51 test never pooled, because that contract has a single facet.
+- `gen::a_pools_certificates_read_in_item_order`. The one-thread arm is `pool(&items, 1, …)` and the other is `pool(&items, 8, …)`. Its assertions are unchanged.
+
+**`make check`** (16 cores, `LITHE_THREADS` unset), exit 0. fmt and clippy are clean for the crate and `playground/`. `test` and `verify` each pass 560 lib tests (0 failed, 2 ignored), 25 bin tests and 1 doctest. `differential` at 2000 steps passes 5. `snapshot` passes 2, so both bytecode snapshots are unchanged. `bench_gas` passes 2, and the wasm playground builds.
 
 ## 5.1 Interning: scope measured
 

@@ -1882,4 +1882,34 @@ mod tests {
             "the forced build differs, so reading the plain facet back would hide it"
         );
     }
+
+    /// A forced facet built on a pool's worker thread bypasses the memo too.
+    #[test]
+    fn a_forced_facet_built_in_a_pool_is_not_read_from_the_memo() {
+        let sources = crate::Sources::disk();
+        let path = Path::new("examples/verification/tracked_token.lithe");
+        let prog = crate::modules::load(&sources, path).expect("load");
+        let checked = crate::check::check(prog, EvmVersion::default()).expect("check");
+        let opts = Options::default();
+        let module = marked(&checked, &opts).pop().expect("a delegated module");
+        let built = || {
+            parallel(&[(); 4], |_| {
+                let crossing = module_crossings(&checked, &module, &opts)?;
+                facet(&checked, &module, &crossing, &opts)
+            })
+            .expect("facets")
+            .into_iter()
+            .map(|f| f.runtime)
+            .collect::<Vec<_>>()
+        };
+        let plain = built();
+        crate::gen::FORCE_SPECIALIZE.set(Some(true));
+        let forced = built();
+        crate::gen::FORCE_SPECIALIZE.set(None);
+        assert!(plain.iter().all(|code| *code == plain[0]));
+        assert!(
+            forced.iter().all(|code| *code != plain[0]),
+            "every item, on whatever thread, builds the forced facet"
+        );
+    }
 }
