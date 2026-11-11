@@ -58,7 +58,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 
 - [x] **5.1** Identifier interner. **Measured and split: not doable in one slice.** Adding `Symbol`/`Names` and flipping `NameAt.name` alone breaks 184 sites in 19 files, 12 of them outside this slice, and the table has to be shared across merged files before any field can move. Split into 5.1a (table + determinism proof, **landed**), 5.1b (AST fields, **landed**) and 5.1c (the checker's maps, **landed**, S29): `Checker.named`, `Checker.domain_tys`, `Scope.vars` and `Checked.named`/`domain_tys` are keyed by `Symbol`, `route`/`index` sort on `Names::get` text so ABI and hover order is unchanged, and `check` on erc20_full is 5.83 → 5.67 ms (min of 25, interleaved A/B). Both snapshots and a 52 213-line diagnostic corpus unchanged. See `## 5.1 Interning: scope measured`, `## 5.1a The table`, `## 5.1b` and `## 5.1c`.
 - [x] **5.2** `FileId` and byte `Span`. Diagnostics keep `line` and `column`. **Landed (S57, 5.2a):** every AST `line`/`col` pair is a `Span { lo, hi }` and every `origin: String` a `FileId` into one `SourceMap` per load; `Error` resolves at `in_file`/`placed`. Both snapshots unchanged, a 7 342-line diagnostic corpus byte-identical, erc20_full LSP diagnostics 6.28–6.87 → 6.23–6.26 ms (not moved beyond noise). See `## 5.2a`.
-- [ ] **5.3** Remove deep clones. Make `Plan` cheap. **Measured: `Plan` is not where the time is.** A Release `Plan` clone with 640 set members costs **3.0 µs**; `bench/erc20_full.lithe` Release runs 98 emits and 92 finishes totalling 1.66 s. The ~200 plan clones a search does are therefore ~0.6 ms, 0.04 % of the backend. Not taken on its own; the clones that matter are `Program`'s, which 5.1/5.2 already remove. See `## 5.3 Plan clones measured`.
+- [x] **5.3** Remove deep clones. Make `Plan` cheap. **Measured, not taken:** a Release `Plan` clone with 640 set members costs **3.0 µs**; `bench/erc20_full.lithe` Release runs 98 emits and 92 finishes totalling 1.66 s. The ~200 plan clones a search does are therefore ~0.6 ms, 0.04 % of the backend. The clones that matter are `Program`'s, and 5.1/5.2 removed them. See `## 5.3 Plan clones measured`.
 - [x] **5.4** Fx hasher. Every std `HashMap`/`HashSet` in `check`, `gen`, `route`, `split` and `index` (and `asm.rs`'s last few) is now `asm::FxHashMap`/`FxHashSet`; the two whose order was seen are `BTreeMap`s (no `IndexMap`: no new dependency). Both snapshots unchanged; `check` −1.5–2 %. See `## S27 Fx hashing`.
 - [x] **5.5** Index-arena AST. **Measured and not taken (S32):** the flip is 1 378 errors in 41 files, and its payoff is 0.08 % of a Release build and 1.2–1.7 % of a Fast one — 3 `Program` clones per build (0.4–0.9 ms in total: 0.6–0.9 ms Fast, 0.4 ms Release), which a flat `Vec<Expr>` does not make cheaper (159 µs vs 142 µs on erc20_full, because the cost is `Program.modules`, not the expression tree). `Checked.source` cannot be removed by borrowing: it is the program *before* `compose` inlines modules, so it is a different value, not the same value held twice. See `## S32 5.5 closed: not taken`.
 - [x] **5.6** Parsed and checked module cache across `compile_dir` and `abi_dir`. **Parsed half landed; checked half is already shared per file.** `emit_dir` now holds one `ModuleCache` for the directory, so the `lib/` files 51 bench entries import are parsed once instead of once per importer (68 parses → 68, 43 of them hits). Byte-identical output and thread-count-independent. The directory build is 360 ms at one thread of which **loading is 20 ms and parsing 3.6 ms**; the 300 ms is codegen, which is why the number does not move beyond noise. The checked half has nothing to add: `check` runs per entry file on its own merged program, and two entries' programs are different types, so no entry reuses another's `Checked` — that memo already serves the LSP, where the same file checks twice. See `## 5.6`.
@@ -87,7 +87,7 @@ This section is the single source of truth for what is open and what blocks what
 - **4.1 closed as not taken (S23).** Per-body emission, the only per-function unit before `resolve`, is 9.1 % of the Fast backend and 8.2 % of Release (50 `bench/` files, `LITHE_THREADS=1`). The `[time]` line now reports it as `body`. Unlimited threads would give at most 1.10×, and the join would have to rebuild each body's shared emitter state. `parallel_map` still parallelises plan candidates only. Release output is byte-identical at 1 and 16 threads over all 51 `bench/` files and ladder 128. The command and digests for erc20_full, ladder 128 and factory, in both modes, are recorded there (S55). See `## S23 4.1 closed: not taken`.
 - **4.2 landed (S24).** Sibling units build on the pool, in declaration order. They are byte-identical at 1 and 16 threads, and no benchmark moves because only `examples/factory.lithe` has two units. See `## S24 4.2`.
 - **3.5 met, closed (S50).** The ≤ 1.5× per-line bar from 439 to 1735 lines is met on this tree with no new code: **Fast 0.63×, Release 0.90×** (min of 5 runs; medians 0.59× / 0.87×). The step that closed it was already-landed 3.2c (`merge_tails` takes its next-best free pair) plus 3.3b(ii) (batched promotion); the 3.5 table was written before both. What remains is a much weaker superlinear term that starts past the measured range (Release 1735→3463 is 1.30×, 3463→6919 1.81×). Measurement, method and the residual in `## S50 3.5 closed`.
-- **Final comparison table** below is a mid-branch snapshot; regenerate it once the steps above land.
+- **Final comparison table regenerated (S43).** `## Comparison with baseline.json` is now the finished branch at `6646998`, not the mid-branch snapshot: every `bench/` contract and the ladder, Release and Fast, `LITHE_THREADS=1` and 16, gas and step outcomes against `baseline.json`. Whole set at one thread: 20 409 → 13 148 ms Release (**1.55×**), 6 360 ms Release at 16 threads, 1 995 ms Fast (**10.2×**). `erc20_full` Fast 1 731.9 → 50.4 ms. Transaction gas +0.0022 % Release, deploy-inclusive +0.042 %; bytes +0.08 % without the ladder. 3.5's bar re-measures at **0.64× Fast / 0.92× Release** on this tree, consistent with S50's 0.63× / 0.90×. The architecture page was checked line by line against the tree; two sentences were wrong and are corrected (a `JUMPI` does not end a block, and `promote` is priced by bytes, not by `asm::gas`) — see the section's closing note.
 
 - **5.1 measured, handoff: needs its own slice.** The interner was started and the exact cost measured before writing it. Details and the number that decides the split are in `## 5.1 Interning: scope measured`.
 - **5.1c landed (S29):** `Checker.named`/`domain_tys`, `Scope.vars` and `Checked.named`/`domain_tys` are `FxHashMap<Symbol, _>`; `route::InternalNames` and `index`'s type-name table sort on `Names::get` text so ABI `internalType` and hover names keep their parent order; `type_name` picks the alphabetically smallest of a type's names where the parent picked a hash-order one (deterministic now, no corpus diagnostic moved). `check` on erc20_full 5.83 → 5.67 ms (min of 25, interleaved A/B); both snapshots and a 52 213-line, 1 225-invocation diagnostic corpus byte-identical. See `## 5.1c`.
@@ -849,7 +849,7 @@ I re-ran the command exactly as written, Fast, while `make check` was running (l
 
 **Why this closes 4.1.** Each of its obligations, in turn:
 
-- **Emit per function in parallel.** The bound is the `body` share. Fast, the mode §4's compile targets are written for, has at most 1.10× to gain over `bench/` and 1.19× on erc20_full, and that assumes unlimited threads and a join that costs nothing. Release reaches 21–25 % only on the ladder. Release builds already run their candidate plans in parallel across the same thread budget: erc20_full Release goes 1 848 → 624 ms from 1 to 16 threads (`## Comparison with baseline.json`). With `parallel_map` already using the threads, splitting each candidate's bodies adds no CPUs.
+- **Emit per function in parallel.** The bound is the `body` share. Fast, the mode §4's compile targets are written for, has at most 1.10× to gain over `bench/` and 1.19× on erc20_full, and that assumes unlimited threads and a join that costs nothing. Release reaches 21–25 % only on the ladder. Release builds already run their candidate plans in parallel across the same thread budget: erc20_full Release goes 1 848 → 624 ms from 1 to 16 threads on the tree this was measured on, and 1 438.2 → 452.7 ms on the finished branch (`## Comparison with baseline.json`). With `parallel_map` already using the threads, splitting each candidate's bodies adds no CPUs.
 - **Schedule (`promote`) per function.** There is no per-function scheduler unit (S48). The only split measured, `promote` cut at function edges, costs +4.1 % Fast and +4.6 % Release runtime bytes (`## 3.3b(i)`). That is four times the §2 budget, and the loss comes from cutting the stream, not from tuning (`## 3.3b(i)`).
 - **Optimize per function.** `optimize` takes `resolve`'s output, and `resolve` places every memory region using heat counted over the whole joined stream (`Gen::resolve` in `src/gen/plan.rs`). One function's addresses depend on every other function, so per-function input to `optimize` does not exist before the join. The cross-function passes it runs (`merge_tails`, `dedup_blocks`) and `outline` run on the joined stream anyway.
 - **Deterministic, byte-identical join.** A body is not self-contained. Bodies take labels and memory spaces from shared counters. The first body that needs a helper (`subs`), a panic or raise stub, the error head, an embedded datum, or an early query creates it, and later bodies reuse it. The machinery that already re-installs one body in another build is `recall_body` (1.4's `BodyMemo`). It records 38 fields per body, and in 21 cases it declines rather than relocates: an earlier helper already exists, the embedded-data prefix differs, an early query moved, or the error head does not line up. A parallel join would have to handle all 21 by relocating instead of declining. That is a rewrite of the memo path, for a speedup of at most 1.10×.
@@ -1242,80 +1242,179 @@ Per-line `promote`+`optimize` ratio, Fast: 439→1735 **2.23×**, 1735→3463 **
 
 ## Comparison with baseline.json
 
-Commit `9ec81c7` plus 3.4, measured on 2026-11-07. 3.2b, 3.3, 3.5, and phases 4–6 are not in this tree, so this table records the branch at this point. It is not the end of the program; re-run it when those land. `target/release/lithe` on 16 cores, `python3 scripts/bench_compile.py`, cache off. Fast rows use the same script with `--bin` pointing at a wrapper that passes `--fast` instead of `--release`, and `--skip-gas`. Wall-clock time includes process startup. **R** is Release, **F** is Fast; `(1)` is `LITHE_THREADS=1` and `(16)` is every core. "base" is `baseline.json` (v0.4.0, `796fdfe`).
+The final refresh (S43), on the finished branch. Commit `6646998`, `target/release/lithe` (fat LTO, the release profile §4 asks for), 16 cores, one file per process, `LITHE_CACHE_DIR` empty so every row is a real compile. "base" is `baseline.json`, taken at `796fdfe` on the same box. **R** is Release and **F** is Fast; `(1)` is `LITHE_THREADS=1` and `(16)` is every core. Release rows are `python3 scripts/bench_compile.py` unchanged; Fast rows are the same script with `--bin` pointed at a two-line `execv` wrapper that rewrites `--release` to `--fast`, plus `--skip-gas`, which is how 1.2 and 3.5 took theirs and keeps the CLI's own default out of the comparison. (This is the final-refresh obligation the plan labels S43; `## S43 One thread budget` is a different step that shares the label.)
 
-- The Release run started while sibling builds were finishing. The ladder and large rows have wall ≈ CPU (for example, erc20_full 1.848 s wall vs 1.85 s CPU). Small Release rows under about 20 ms have startup noise of several milliseconds.
-- The first Fast run was discarded: load average was 50 and wall was twice CPU. It was re-run once the load average dropped below 6.
+Five full rounds of each mode, each figure the minimum of its five. The spread across rounds on the 127-target total is 0.75 % Release at one thread (13.29–13.39 s), 0.76 % Release at 16, 2.9 % Fast (2.09–2.15 s) and 3.8 % Fast at 16. Wall time includes process startup, which is 4–6 ms of every row and most of why a Fast row on a 14-line file reads 5.9 ms rather than 2. Gas in release mode was identical in all five rounds. The one-minute load average on 16 cores was 0.2–2.0 at every round's start and end; the 15-minute figure was 14–18 from sibling worktrees, which is why these are minima.
 
-| target | lines | base R ms (1) | R ms (1) | R ms (16) | F ms (1) | F ms (16) | base R runtime | R runtime | F runtime |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `bench/base64.lithe` | 14 | 7.6 | 15.0 | 15.7 | 7.0 | 7.3 | 891 | 891 | 874 |
-| `bench/book.lithe` | 35 | 11.7 | 21.3 | 22.4 | 10.2 | 12.0 | 1160 | 1160 | 1091 |
-| `bench/codec.lithe` | 69 | 52.2 | 91.9 | 67.0 | 20.6 | 20.6 | 2596 | 2596 | 2645 |
-| `bench/collections.lithe` | 43 | 15.3 | 16.4 | 14.7 | 8.0 | 8.6 | 627 | 627 | 636 |
-| `bench/counter.lithe` | 48 | 7.3 | 8.6 | 9.4 | 8.0 | 7.5 | 198 | 198 | 198 |
-| `bench/date_time.lithe` | 57 | 70.7 | 81.7 | 65.0 | 9.4 | 11.3 | 1166 | 1166 | 1152 |
-| `bench/deployers.lithe` | 69 | 64.1 | 71.6 | 54.8 | 12.5 | 12.3 | 1503 | 1503 | 1554 |
-| `bench/dialer.lithe` | 52 | 18.1 | 21.1 | 24.5 | 11.8 | 11.6 | 1401 | 1401 | 1383 |
-| `bench/env.lithe` | 16 | 5.1 | 7.7 | 7.7 | 7.5 | 7.9 | 81 | 81 | 81 |
-| `bench/erc1155.lithe` | 158 | 590.0 | 698.5 | 290.1 | 31.0 | 32.7 | 5013 | 5013 | 4736 |
-| `bench/erc20.lithe` | 99 | 121.2 | 133.6 | 70.4 | 16.3 | 14.5 | 2244 | 2244 | 2042 |
-| `bench/erc20_full.lithe` | 183 | 1731.9 | 1848.4 | 623.9 | 57.7 | 56.5 | 7382 | 7382 | 7425 |
-| `bench/erc4626.lithe` | 24 | 226.0 | 245.8 | 107.8 | 21.2 | 19.8 | 2884 | 2884 | 3120 |
-| `bench/erc6909.lithe` | 68 | 159.2 | 181.5 | 87.9 | 17.4 | 19.2 | 3326 | 3326 | 3273 |
-| `bench/erc721.lithe` | 119 | 159.2 | 180.5 | 96.8 | 20.0 | 20.4 | 3074 | 3074 | 3054 |
-| `bench/erc721_full.lithe` | 176 | 503.4 | 590.5 | 225.1 | 32.3 | 34.4 | 5640 | 5640 | 5664 |
-| `bench/exchange.lithe` | 51 | 9.8 | 12.0 | 11.4 | 9.2 | 8.2 | 417 | 417 | 442 |
-| `bench/executor.lithe` | 115 | 16.3 | 24.9 | 17.1 | 10.0 | 8.1 | 807 | 807 | 822 |
-| `bench/fixed_point.lithe` | 60 | 98.7 | 111.9 | 66.1 | 23.1 | 22.9 | 2831 | 2831 | 2918 |
-| `bench/flash_borrower.lithe` | 55 | 15.6 | 16.8 | 16.1 | 11.4 | 11.4 | 822 | 822 | 871 |
-| `bench/layout.lithe` | 64 | 7.0 | 8.6 | 8.4 | 8.6 | 9.4 | 705 | 705 | 705 |
-| `bench/lists.lithe` | 68 | 18.9 | 18.7 | 20.1 | 11.0 | 10.7 | 1624 | 1624 | 1599 |
-| `bench/logs.lithe` | 42 | 6.9 | 8.2 | 7.9 | 7.0 | 7.2 | 277 | 277 | 305 |
-| `bench/loops.lithe` | 84 | 13.3 | 16.7 | 14.1 | 9.0 | 9.0 | 871 | 871 | 874 |
-| `bench/math.lithe` | 24 | 6.5 | 7.5 | 6.6 | 8.0 | 7.7 | 424 | 424 | 424 |
-| `bench/names.lithe` | 58 | 15.2 | 17.1 | 20.8 | 12.3 | 11.8 | 1312 | 1312 | 1289 |
-| `bench/numerics.lithe` | 43 | 39.7 | 41.3 | 36.7 | 18.1 | 16.8 | 1679 | 1679 | 1702 |
-| `bench/overloads.lithe` | 73 | 17.4 | 20.5 | 17.0 | 8.1 | 8.8 | 458 | 458 | 449 |
-| `bench/ownable_roles.lithe` | 54 | 27.6 | 28.6 | 23.1 | 9.9 | 9.6 | 952 | 952 | 975 |
-| `bench/profile.lithe` | 26 | 8.6 | 9.1 | 10.3 | 9.2 | 9.4 | 586 | 586 | 584 |
-| `bench/reasons.lithe` | 80 | 10.8 | 12.4 | 10.9 | 8.9 | 7.8 | 844 | 844 | 845 |
-| `bench/receiver.lithe` | 40 | 11.3 | 9.5 | 11.8 | 9.8 | 8.8 | 454 | 454 | 473 |
-| `bench/receiver1155.lithe` | 76 | 18.8 | 17.1 | 15.4 | 9.7 | 9.1 | 926 | 926 | 944 |
-| `bench/records.lithe` | 125 | 31.8 | 28.5 | 26.3 | 13.1 | 11.5 | 1508 | 1508 | 1508 |
-| `bench/registry.lithe` | 68 | 13.9 | 14.9 | 13.1 | 11.1 | 9.1 | 1034 | 1034 | 1028 |
-| `bench/relay.lithe` | 42 | 24.3 | 24.6 | 26.4 | 16.6 | 15.9 | 1886 | 1886 | 1828 |
-| `bench/safe_erc20.lithe` | 29 | 11.7 | 11.6 | 12.3 | 9.0 | 9.5 | 543 | 543 | 543 |
-| `bench/selectors.lithe` | 46 | 10.6 | 9.7 | 10.4 | 7.9 | 6.5 | 399 | 399 | 449 |
-| `bench/shapes.lithe` | 86 | 17.9 | 18.9 | 18.1 | 11.6 | 12.8 | 1306 | 1306 | 1340 |
-| `bench/solady_erc1155.lithe` | 249 | 91.7 | 96.1 | 62.5 | 19.9 | 17.6 | 2707 | 2707 | 2630 |
-| `bench/solady_erc20.lithe` | 176 | 40.2 | 40.2 | 27.8 | 12.5 | 11.7 | 1395 | 1395 | 1402 |
-| `bench/solady_erc721.lithe` | 241 | 67.6 | 74.1 | 48.9 | 19.4 | 15.9 | 2110 | 2110 | 2151 |
-| `bench/staking.lithe` | 239 | 104.5 | 114.7 | 62.9 | 12.8 | 15.8 | 2486 | 2486 | 2177 |
-| `bench/strings.lithe` | 70 | 17.2 | 18.7 | 17.9 | 14.8 | 13.3 | 1724 | 1724 | 1695 |
-| `bench/tally.lithe` | 58 | 6.2 | 6.7 | 6.8 | 5.5 | 5.5 | 439 | 439 | 439 |
-| `bench/texts.lithe` | 127 | 69.6 | 76.6 | 69.4 | 24.3 | 27.4 | 4105 | 4105 | 3911 |
-| `bench/token.lithe` | 70 | 11.4 | 11.3 | 10.5 | 8.1 | 8.5 | 357 | 357 | 397 |
-| `bench/traits.lithe` | 45 | 8.3 | 9.1 | 8.7 | 11.3 | 8.4 | 468 | 468 | 468 |
-| `bench/uniswap_v2_factory.lithe` | 97 | 349.1 | 360.2 | 155.3 | 33.5 | 33.3 | 6038 | 6038 | 6213 |
-| `bench/uniswap_v2_pair.lithe` | 529 | 338.6 | 347.4 | 151.6 | 31.7 | 32.1 | 5073 | 5073 | 5201 |
-| `bench/vault.lithe` | 75 | 7.8 | 9.2 | 9.3 | 10.0 | 8.6 | 387 | 387 | 400 |
-| `scaling/n16.lithe` | 439 | 34.5 | 35.2 | 29.9 | 21.9 | 22.8 | 2549 | 2549 | 2549 |
-| `scaling/n32.lithe` | 871 | 80.0 | 80.1 | 58.7 | 44.8 | 42.8 | 4774 | 4774 | 4774 |
-| `scaling/n64.lithe` | 1735 | 261.6 | 252.9 | 175.8 | 118.9 | 118.8 | 9231 | 9231 | 9231 |
-| `scaling/n128.lithe` | 3463 | 1122.9 | 1006.2 | 706.0 | 495.0 | 485.4 | 18126 | 18126 | 18126 |
-| `scaling/n256.lithe` | 6919 | 7407.3 | 4966.5 | 4118.6 | 2754.7 | 2755.8 | 42512 | 42512 | 42512 |
-| **examples (71 targets)** | | 6195 | 6415 | 3076 | 862 | 858 | 85979 | 85979 | 87238 |
-| **all (127 targets)** | | 20409 | 18623 | 11000 | 5044 | 5020 | 252311 | 252311 | 253359 |
+This replaces the mid-branch snapshot taken at `9ec81c7`, which said of itself that 3.2b, 3.3, 3.5 and phases 4–6 were missing and that it should be re-run when they landed. They have all landed, and its rows are deleted rather than kept beside these because they measured a different tree; its headline numbers (18.6 s Release, 5.0 s Fast, the 1.37× ladder ratio, "Release bytecode and gas identical") are superseded by the ones below.
 
+**A method note the Fast column depends on.** The `--bin` wrapper has to be cheap, because its own startup is inside the wall time. Three rounds taken through a Python wrapper read 5–6 ms higher on the small files than the same binary through a compiled one (`bench/counter` 11.9 ms against 6.3, `bench/env` 10.9 against 5.8), which is the interpreter's startup and nothing else. The five rounds reported here all use a small C wrapper that rewrites `--release` to `--fast` and calls `execv`, so what they measure is the compiler. The Python rounds are not used for any figure in this table.
 
-Release bytecode and gas are identical to the baseline. All 45 `bench_gas` suites have identical outcomes. Total gas is 68 120 141 → 68 120 141, deploy gas 28 276 660 → 28 276 660, and suite runtime bytes 105 876 → 105 876. Every target's Release runtime size matches `baseline.json`. Fast is 0.4% larger in total runtime (252 311 → 253 359 bytes over all 127 targets). Its gas is in the 1.2 table.
+### Every `bench/` contract, both modes, 1 and N threads
 
-Headlines against the prompt's targets:
-- erc20_full in Fast: 1731.9 ms → **57.7 ms** (target ≤ 60 ms after Phase 1; ≤ 15 ms after Phase 3 is not met yet).
-- All 127 targets, one thread: 20.4 s Release baseline → 18.6 s Release, 11.0 s Release on 16 threads, and **5.0 s Fast**.
-- Ladder in Fast, per-line cost from 439 to 1735 lines: 21.9 ms / 439 = 50 µs/line → 118.9 ms / 1735 = 69 µs/line, a ratio of **1.37×**. From 1735 to 3463 lines it is 143 µs/line, a ratio of 2.1×. So scaling is still superlinear past 1735 lines; see State.
-- Threads only help Release. Fast is one build, so 1 vs 16 threads is the same within noise. Phase 4 is what would change that.
+| target | lines | base R ms (1) | R ms (1) | R ms (16) | F ms (1) | F ms (16) | base runtime | R runtime | F runtime | Δ release runtime |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `bench/base64.lithe` | 14 | 7.6 | 6.7 | 8.1 | 5.9 | 5.7 | 891 | 891 | 874 | 0 |
+| `bench/book.lithe` | 35 | 11.7 | 11.9 | 12.3 | 9.2 | 8.9 | 1160 | 1160 | 1091 | 0 |
+| `bench/codec.lithe` | 69 | 52.2 | 49.7 | 42.6 | 17.3 | 18.4 | 2596 | 2613 | 2646 | +17 |
+| `bench/collections.lithe` | 43 | 15.3 | 13.4 | 12.6 | 7.6 | 8.3 | 627 | 627 | 636 | 0 |
+| `bench/counter.lithe` | 48 | 7.3 | 6.2 | 6.8 | 6.3 | 5.5 | 198 | 198 | 198 | 0 |
+| `bench/date_time.lithe` | 57 | 70.7 | 67.8 | 44.2 | 8.3 | 8.3 | 1166 | 1166 | 1152 | 0 |
+| `bench/deployers.lithe` | 69 | 64.1 | 63.2 | 38.5 | 10.9 | 11.1 | 1503 | 1503 | 1554 | 0 |
+| `bench/dialer.lithe` | 52 | 18.1 | 18.3 | 18.0 | 9.3 | 9.2 | 1401 | 1401 | 1383 | 0 |
+| `bench/env.lithe` | 16 | 5.1 | 5.4 | 5.5 | 5.8 | 5.9 | 81 | 81 | 81 | 0 |
+| `bench/erc1155.lithe` | 158 | 590.0 | 546.5 | 219.4 | 26.0 | 27.4 | 5013 | 5026 | 4747 | +13 |
+| `bench/erc20.lithe` | 99 | 121.2 | 93.1 | 50.5 | 10.6 | 11.1 | 2244 | 2269 | 2042 | +25 |
+| `bench/erc20_full.lithe` | 183 | 1731.9 | 1438.2 | 452.7 | 50.4 | 50.7 | 7382 | 7334 | 7426 | −48 |
+| `bench/erc4626.lithe` | 24 | 226.0 | 210.5 | 98.1 | 18.5 | 18.2 | 2884 | 2821 | 3063 | −63 |
+| `bench/erc6909.lithe` | 68 | 159.2 | 133.8 | 61.6 | 16.0 | 16.6 | 3326 | 3423 | 3275 | +97 |
+| `bench/erc721.lithe` | 119 | 159.2 | 147.5 | 69.4 | 17.4 | 16.6 | 3074 | 3081 | 3061 | +7 |
+| `bench/erc721_full.lithe` | 176 | 503.4 | 476.1 | 184.2 | 27.3 | 27.2 | 5640 | 5624 | 5671 | −16 |
+| `bench/exchange.lithe` | 51 | 9.8 | 8.9 | 9.4 | 6.8 | 6.8 | 417 | 417 | 442 | 0 |
+| `bench/executor.lithe` | 115 | 16.3 | 16.8 | 14.9 | 8.3 | 8.5 | 807 | 807 | 822 | 0 |
+| `bench/fixed_point.lithe` | 60 | 98.7 | 98.4 | 57.9 | 22.4 | 22.5 | 2831 | 2831 | 2918 | 0 |
+| `bench/flash_borrower.lithe` | 55 | 15.6 | 15.6 | 15.6 | 8.6 | 8.6 | 822 | 822 | 871 | 0 |
+| `bench/layout.lithe` | 64 | 7.0 | 7.0 | 7.7 | 6.6 | 6.5 | 705 | 705 | 705 | 0 |
+| `bench/lists.lithe` | 68 | 18.9 | 17.2 | 16.8 | 8.4 | 8.5 | 1624 | 1624 | 1599 | 0 |
+| `bench/logs.lithe` | 42 | 6.9 | 6.6 | 7.4 | 6.9 | 5.9 | 277 | 277 | 305 | 0 |
+| `bench/loops.lithe` | 84 | 13.3 | 13.4 | 11.8 | 8.1 | 7.6 | 871 | 871 | 874 | 0 |
+| `bench/math.lithe` | 24 | 6.5 | 6.1 | 6.8 | 6.9 | 6.1 | 424 | 424 | 424 | 0 |
+| `bench/names.lithe` | 58 | 15.2 | 15.5 | 15.3 | 8.8 | 9.0 | 1312 | 1312 | 1289 | 0 |
+| `bench/numerics.lithe` | 43 | 39.7 | 36.7 | 34.5 | 14.3 | 14.7 | 1679 | 1679 | 1702 | 0 |
+| `bench/overloads.lithe` | 73 | 17.4 | 15.3 | 15.6 | 6.8 | 6.8 | 458 | 458 | 449 | 0 |
+| `bench/ownable_roles.lithe` | 54 | 27.6 | 25.8 | 20.2 | 8.9 | 8.3 | 952 | 952 | 975 | 0 |
+| `bench/profile.lithe` | 26 | 8.6 | 8.4 | 9.0 | 7.2 | 7.2 | 586 | 586 | 584 | 0 |
+| `bench/reasons.lithe` | 80 | 10.8 | 10.7 | 10.3 | 6.6 | 6.7 | 844 | 844 | 845 | 0 |
+| `bench/receiver.lithe` | 40 | 11.3 | 9.4 | 10.5 | 7.4 | 7.4 | 454 | 454 | 473 | 0 |
+| `bench/receiver1155.lithe` | 76 | 18.8 | 15.8 | 15.5 | 7.8 | 8.1 | 926 | 926 | 944 | 0 |
+| `bench/records.lithe` | 125 | 31.8 | 27.9 | 22.1 | 10.4 | 10.4 | 1508 | 1508 | 1508 | 0 |
+| `bench/registry.lithe` | 68 | 13.9 | 12.3 | 12.6 | 8.3 | 8.3 | 1034 | 1034 | 1028 | 0 |
+| `bench/relay.lithe` | 42 | 24.3 | 22.4 | 22.0 | 11.1 | 11.3 | 1886 | 1886 | 1828 | 0 |
+| `bench/safe_erc20.lithe` | 29 | 11.7 | 10.3 | 10.2 | 7.2 | 7.1 | 543 | 543 | 543 | 0 |
+| `bench/selectors.lithe` | 46 | 10.6 | 9.1 | 10.1 | 5.9 | 5.9 | 399 | 399 | 449 | 0 |
+| `bench/shapes.lithe` | 86 | 17.9 | 17.8 | 17.1 | 8.7 | 9.1 | 1306 | 1306 | 1340 | 0 |
+| `bench/solady_erc1155.lithe` | 249 | 91.7 | 87.3 | 55.6 | 14.8 | 15.4 | 2707 | 2707 | 2630 | 0 |
+| `bench/solady_erc20.lithe` | 176 | 40.2 | 36.7 | 25.6 | 8.9 | 8.7 | 1395 | 1395 | 1402 | 0 |
+| `bench/solady_erc721.lithe` | 241 | 67.6 | 64.4 | 42.0 | 12.7 | 13.3 | 2110 | 2110 | 2151 | 0 |
+| `bench/staking.lithe` | 239 | 104.5 | 103.9 | 52.8 | 12.8 | 11.7 | 2486 | 2486 | 2177 | 0 |
+| `bench/strings.lithe` | 70 | 17.2 | 15.5 | 15.9 | 10.9 | 11.8 | 1724 | 1724 | 1695 | 0 |
+| `bench/tally.lithe` | 58 | 6.2 | 5.2 | 6.0 | 4.2 | 4.3 | 439 | 439 | 439 | 0 |
+| `bench/texts.lithe` | 127 | 69.6 | 68.5 | 58.2 | 22.6 | 23.5 | 4105 | 4105 | 3911 | 0 |
+| `bench/token.lithe` | 70 | 11.4 | 8.0 | 9.1 | 6.3 | 6.5 | 357 | 357 | 397 | 0 |
+| `bench/traits.lithe` | 45 | 8.3 | 7.1 | 7.6 | 6.2 | 6.6 | 468 | 468 | 468 | 0 |
+| `bench/uniswap_v2_factory.lithe` | 97 | 349.1 | 333.2 | 144.8 | 29.3 | 29.7 | 6038 | 6039 | 6214 | +1 |
+| `bench/uniswap_v2_pair.lithe` | 529 | 338.6 | 337.1 | 128.2 | 26.0 | 26.2 | 5073 | 5073 | 5201 | 0 |
+| `bench/vault.lithe` | 75 | 7.8 | 7.7 | 9.1 | 7.4 | 6.6 | 387 | 387 | 400 | 0 |
+| **`bench/` (51)** | | 5308 | 4790 | 2253 | 612 | 615 | 89140 | 89173 | 88902 | +33 |
+| **`examples/` (71)** | | 6195 | 5575 | 2581 | 694 | 697 | 85979 | 86113 | 87328 | +134 |
+| **all (127)** | | 20409 | 13148 | 6360 | 1995 | 2003 | 252311 | 246539 | 247483 | −5772 |
+
+Release at one thread is **1.55×** faster over the whole set; at 16 threads it is **3.21×**, and the three groups range 2.36–5.84×. Fast is **10.2×** faster at one thread and 10.2× at 16, since one build has nothing to spread. The `bench/` and `examples/` groups are only 1.11× at one thread because most of those files are small enough that startup and the fixed per-build cost dominate; the median `bench/` row is 17.9 → 16.8 ms Release (15.9 at 16 threads) and 8.7 ms Fast. The ladder is where the backend work shows: 3.20× Release at one thread and 12.9× Fast.
+
+### The ladder
+
+| N | lines | base R ms | R ms | R µs/line | F ms | F µs/line | R promote+optimize µs/line | F promote+optimize µs/line |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 16 | 439 | 34.5 | 26.8 | 61.1 | 16.5 | 37.6 | 21.9 | 14.3 |
+| 32 | 871 | 80.0 | 55.6 | 63.8 | 27.4 | 31.5 | 18.8 | 10.0 |
+| 64 | 1735 | 261.6 | 143.5 | 82.7 | 51.3 | 29.5 | 20.2 | 9.1 |
+| 128 | 3463 | 1122.9 | 467.3 | 135.0 | 129.0 | 37.3 | 26.0 | 9.7 |
+| 256 | 6919 | 7407.3 | 2089.0 | 301.9 | 465.4 | 67.3 | 46.9 | 11.8 |
+
+Per-line `promote`+`optimize` from 439 to 1735 lines is **0.64× Fast and 0.92× Release**, inside 3.5's ≤ 1.5× bar; `baseline.json` is Release-only and its same-ratio figure is **2.79×**. The marginal cost is still not flat above 1735 lines — Fast goes 9.1 → 9.7 → 11.8 µs/line and Release 20.2 → 26.0 → 46.9 — which is the `optimize` residual S50 records rather than a bar this table moves. N = 256 is the one rung whose Release runtime moves by more than 0.1 %: 42 512 → 36 573 bytes, −5 939, or −14 %. That contract is over `SIZE_LIMIT` (24 576) on the baseline and still is here, so both builds run the outline-more fallback, which every mode keeps (`## 1.1`); the search now finds a plan 14 % smaller than it did at `796fdfe`. Fast lands on the same 36 573 bytes because the fallback is not a search step and both modes run it.
+
+### Size, every target, against the §2 budget
+
+| measure | base | Release | Fast |
+|---|---:|---:|---:|
+| creation + runtime, all 127 targets | 520 077 | 508 495 (−2.23 %) | 510 575 (−1.83 %) |
+| creation + runtime, the 122 non-ladder targets | 365 643 | 365 939 (**+0.08 %**) | — |
+| creation + runtime, the 19 non-ladder targets whose Release code changes | 162 826 | 163 122 (+0.18 %) | — |
+| release runtime, `bench/` only | 89 140 | 89 173 (+0.04 %) | — |
+
+The −2.23 % is the ladder's N = 256 shrinking plus 19 real targets, which move between −150 and +194 bytes; without the ladder the release total is **+0.08 %**, well inside 1 %. Six of the 19 move more than 1 % of their own size — up: `erc6909` +194 bytes (+2.68 %), `examples/stdlib/claims` +194 (+2.70 %, the same contract under one name), `stdlib/token` +81 (+1.43 %), `stdlib/ownable_roles` +28 (+1.26 %); down: `erc4626` −150 (−2.31 %), `examples/raw_codec` −20 (−1.31 %). These are the Release keys `tests/snapshots/bytecode.json` moved for 3.2c and 3.3b(ii), each already justified against the totals in those sections; no later step changed codegen. Release is not byte-identical to the baseline anywhere codegen changed — that is what the rest of this file has recorded since 3.2c — while §2's budget is on totals, and the totals pass with 92 % of the allowance unspent.
+
+### Gas and outcomes, all 45 `bench/run.py` suites
+
+`evm::bench_gas` replays every suite's steps through the in-crate interpreter and reports transaction gas, deploy gas, suite runtime bytes, and each step's status and returndata hash. It runs as `cargo test --release --lib evm::bench_gas::bench_gas -- --exact`, the same command `scripts/bench_compile.py` uses to fill `baseline.json`'s `gas` key, so the base and both new columns are measured the same way. Release and Fast each get a full run. Outcomes: **1 294 ok / 492 revert, 1 786 steps**, and every suite's status vector is identical in all three runs. One suite's returndata hashes differ, `uniswap_v2`, for the reason 1.2 and 3.2c record: the factory creates its pair with `CREATE2` and its runtime is 6 038 → 6 039 bytes, so the pair address and the `DOMAIN_SEPARATOR` that commits to it differ on the 12 steps that read a `CREATE2`-derived address. Status stays `ok` on all 12.
+
+The harness has no Fast gas mode, so the Fast column came from a two-line `LITHE_OPT=fast` switch in `src/evm/mod.rs::compile_file` that selects `Opt::Fast` for the test builds, the same device 1.2 used for its Fast gas run; **that switch is not in the tree**, and both the bytecode snapshot and every other test build the default Release. Reproduce the Release column with `LITHE_BENCH_OUT=/tmp/gas.json cargo test --release --lib evm::bench_gas::bench_gas -- --exact`, and the Fast column by adding those two lines, running `LITHE_BENCH_OUT=… LITHE_OPT=fast cargo test --release …`, then removing them.
+
+| suite | base gas | R gas | F gas | base deploy | R deploy | F deploy | base run | R run | F run | gas Δ R | outcomes |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `codec` | 417713 | 417753 | 419637 | 614569 | 618241 | 625377 | 2596 | 2613 | 2646 | +0.0096 % | 12 ok / 3 revert |
+| `counter` | 188814 | 188814 | 188814 | 96234 | 96234 | 96234 | 198 | 198 | 198 | 0 | 6 ok / 1 revert |
+| `token` | 372657 | 372657 | 372898 | 130646 | 130646 | 139282 | 357 | 357 | 397 | 0 | 7 ok / 4 revert |
+| `traits` | 323801 | 323801 | 323801 | 154360 | 154360 | 154360 | 468 | 468 | 468 | 0 | 5 ok / 7 revert |
+| `shapes` | 634279 | 634279 | 634808 | 335825 | 335825 | 343177 | 1306 | 1306 | 1340 | 0 | 5 ok / 20 revert |
+| `reasons` | 571023 | 571023 | 571040 | 258073 | 258073 | 258269 | 844 | 844 | 845 | 0 | 6 ok / 15 revert |
+| `strings` | 970540 | 970540 | 972130 | 426262 | 426262 | 419989 | 1724 | 1724 | 1695 | 0 | 16 ok / 10 revert |
+| `vault` | 317954 | 317954 | 318000 | 137130 | 137130 | 139906 | 387 | 387 | 400 | 0 | 6 ok / 4 revert |
+| `selectors` | 267094 | 267094 | 267290 | 139452 | 139452 | 150268 | 399 | 399 | 449 | 0 | 7 ok / 2 revert |
+| `logs` | 203290 | 203290 | 203450 | 113044 | 113044 | 119100 | 277 | 277 | 305 | 0 | 6 ok / 0 revert |
+| `env` | 116703 | 116703 | 116703 | 70684 | 70684 | 70684 | 81 | 81 | 81 | 0 | 4 ok / 0 revert |
+| `date_time` | 396468 | 396468 | 397991 | 305282 | 305282 | 302240 | 1166 | 1166 | 1152 | 0 | 14 ok / 1 revert |
+| `math` | 216943 | 216943 | 216943 | 144860 | 144860 | 144860 | 424 | 424 | 424 | 0 | 6 ok / 3 revert |
+| `numerics` | 2381064 | 2381064 | 2381862 | 416065 | 416065 | 421041 | 1679 | 1679 | 1702 | 0 | 96 ok / 10 revert |
+| `fixed_point` | 1662324 | 1662324 | 1662907 | 664955 | 664955 | 683760 | 2831 | 2831 | 2918 | 0 | 69 ok / 5 revert |
+| `layout` | 703234 | 703234 | 703234 | 205473 | 205473 | 205473 | 705 | 705 | 705 | 0 | 20 ok / 1 revert |
+| `records` | 1773784 | 1773784 | 1773805 | 379148 | 379148 | 379148 | 1508 | 1508 | 1508 | 0 | 30 ok / 4 revert |
+| `lists` | 733731 | 733731 | 734679 | 404327 | 404327 | 398906 | 1624 | 1624 | 1599 | 0 | 17 ok / 5 revert |
+| `texts` | 1951926 | 1951926 | 1956723 | 940824 | 940824 | 898785 | 4105 | 4105 | 3911 | 0 | 42 ok / 12 revert |
+| `loops` | 614339 | 614339 | 614362 | 241501 | 241501 | 242149 | 871 | 871 | 874 | 0 | 15 ok / 1 revert |
+| `names` | 1679284 | 1679284 | 1680607 | 336877 | 336877 | 331907 | 1312 | 1312 | 1289 | 0 | 32 ok / 2 revert |
+| `base64` | 420292 | 420292 | 421267 | 245739 | 245739 | 242101 | 891 | 891 | 874 | 0 | 12 ok / 0 revert |
+| `overloads` | 403648 | 403648 | 403876 | 152176 | 152176 | 150244 | 458 | 458 | 449 | 0 | 9 ok / 3 revert |
+| `tally` | 394299 | 394299 | 394299 | 148090 | 148090 | 148090 | 439 | 439 | 439 | 0 | 8 ok / 2 revert |
+| `collections` | 1132123 | 1132123 | 1132177 | 188708 | 188708 | 190654 | 627 | 627 | 636 | 0 | 24 ok / 2 revert |
+| `registry` | 1415692 | 1415692 | 1417006 | 306261 | 306261 | 305177 | 1034 | 1034 | 1028 | 0 | 32 ok / 2 revert |
+| `relay` | 1124027 | 1124027 | 1126344 | 1401808 | 1401808 | 1347207 | 5991 | 5991 | 5739 | 0 | 7 ok / 1 revert |
+| `dial` | 452973 | 452973 | 454587 | 660159 | 660159 | 641325 | 2561 | 2561 | 2474 | 0 | 7 ok / 1 revert |
+| `profile` | 439226 | 439226 | 439962 | 756561 | 756561 | 756024 | 1758 | 1758 | 1752 | 0 | 14 ok / 0 revert |
+| `erc20` | 1244833 | 1244635 | 1247917 | 647380 | 652719 | 604001 | 2244 | 2269 | 2042 | −0.0159 % | 25 ok / 18 revert |
+| `erc721` | 2570130 | 2570138 | 2576092 | 977909 | 979375 | 979717 | 3528 | 3535 | 3534 | +0.0003 % | 41 ok / 25 revert |
+| `erc1155` | 4968746 | 4968711 | 4994531 | 1668104 | 1670906 | 1618738 | 6393 | 6406 | 6164 | −0.0007 % | 57 ok / 47 revert |
+| `erc6909` | 2486070 | 2485730 | 2491749 | 873118 | 894035 | 862698 | 3326 | 3423 | 3275 | −0.0137 % | 57 ok / 17 revert |
+| `erc721_full` | 8299747 | 8300452 | 8309308 | 1555648 | 1552149 | 1566801 | 6094 | 6078 | 6144 | +0.0085 % | 130 ok / 84 revert |
+| `erc4626` | 2200528 | 2201577 | 2207220 | 1364952 | 1356702 | 1360398 | 5256 | 5218 | 5233 | +0.0477 % | 54 ok / 8 revert |
+| `safe_erc20` | 504262 | 504262 | 506092 | 817898 | 823237 | 774519 | 2787 | 2812 | 2585 | 0 | 10 ok / 2 revert |
+| `ownable_roles` | 557293 | 557293 | 557600 | 284784 | 284784 | 289770 | 952 | 952 | 975 | 0 | 14 ok / 4 revert |
+| `erc20_full` | 6789562 | 6789846 | 6806198 | 2120779 | 2110414 | 2141006 | 8204 | 8156 | 8297 | +0.0042 % | 106 ok / 42 revert |
+| `solady_erc20` | 1371033 | 1371033 | 1371430 | 354803 | 354803 | 356317 | 1395 | 1395 | 1402 | 0 | 33 ok / 12 revert |
+| `solady_erc721` | 2304732 | 2304732 | 2306785 | 660714 | 660714 | 673691 | 2564 | 2564 | 2624 | 0 | 36 ok / 21 revert |
+| `solady_erc1155` | 3478017 | 3478017 | 3486115 | 1043237 | 1043237 | 1034600 | 4087 | 4087 | 4047 | 0 | 40 ok / 33 revert |
+| `deployers` | 1177479 | 1177479 | 1180789 | 474308 | 474308 | 485398 | 1701 | 1701 | 1752 | 0 | 21 ok / 4 revert |
+| `swap` | 1006980 | 1006980 | 1007525 | 373267 | 373267 | 382113 | 1224 | 1224 | 1264 | 0 | 10 ok / 6 revert |
+| `uniswap_v2` | 5295906 | 5295914 | 5306397 | 2677002 | 2687934 | 2628325 | 10526 | 10577 | 10298 | +0.0002 % | 100 ok / 39 revert, hashes differ |
+| `staking` | 1585578 | 1585578 | 1593981 | 2007664 | 2018342 | 1854341 | 6974 | 7024 | 6261 | 0 | 26 ok / 9 revert |
+| **45 suites** | **68 120 141** | **68 121 662** | **68 250 931** | **28 276 660** | **28 315 691** | **27 918 170** | **105 876** | **106 059** | **104 194** | **+0.0022 %** | **1 294 ok / 492 revert** |
+
+- **Release transaction gas +0.0022 %** (68 120 141 → 68 121 662), **deploy gas +0.138 %**, **gas including deploy +0.042 %**, **suite runtime bytes +0.173 %**. Everything is inside §2's 1 %. This is the accumulated cost of 3.2c's pair selection and 3.3b(ii)'s batched promotion, which `## 3.2c` and `## 3.3b(ii)` each gate and justify; nothing moved them.
+- **Fast is within the same budget and cheaper to deploy in aggregate:** transaction gas **+0.192 %** (68 250 931), deploy gas **−1.268 %** (27 918 170), gas including deploy **−0.236 %**, suite runtime bytes **−1.589 %**. Per suite the sign flips both ways — `erc20_full` costs 0.25 % more per step and 0.95 % more to deploy in Fast, `erc1155` 0.52 % more per step and 2.96 % less to deploy — so the aggregate is the number the §2 budget is on.
+- Both modes' step statuses are identical to the baseline in every suite. §2's rule is that an outcome change is a behaviour change; there is none, in either mode, across 1 786 steps.
+
+### Headlines against §4's targets
+
+| target | bar | measured |
+|---|---|---|
+| `erc20_full` Fast compile | ≤ 60 ms (Phase 1), ≤ 15 ms (Phase 3) | **50.4 ms** at one thread, 50.7 at 16 — Phase 1 met with 16 % margin, Phase 3 **not met** |
+| synthetic 1 735-line contract, single build | ≈ 195 ms (prompt's baseline), ≤ 25 ms Phase 3 | **51.3 ms** Fast wall (40.8 backend), 143.5 ms Release. `baseline.json` measured this rung at 261.6 ms so the drop is 5.1× Fast / 1.82× Release; the ≤ 195 ms reading is met, ≤ 25 ms is **not met** |
+| LSP diagnostics on an `erc20_full` edit | ≤ 20 ms Phase 2, ≤ 5 ms Phase 3 | 6.3–6.5 ms in release, 7.7–7.9 dev — Phase 2 met, ≤ 5 ms **missed**; the floor is `check` alone at 5.1–7.0 ms (`## 2.6`, `## 5.1c`) |
+| Release bytes and gas on `bench/` | identical at Phase 1, within 1 % by Phase 3 | **+0.08 %** bytes without the ladder, **+0.0022 %** transaction gas, outcomes identical |
+| Threads | determinism at 1 and N | bytes identical at 1 and 16 on all 127 targets, in both modes |
+
+`erc20_full` in Fast, phase by phase at one thread: check 5.7 ms, backend 35.8, emit 5.5, promote 4.7, optimize 11.6, outline 9.0, body 5.4, 1 emit / 2 finishes, creation 9 380 / runtime 7 426. Release at one thread is 1 438.2 ms (99 emits / 93 finishes) against 1 731.9, and 452.7 ms at 16 threads. Two numbers worth stating plainly: Release is only **1.20×** faster at one thread on this contract, because the search still runs 99 candidate builds and the per-candidate passes are what 3.2c and 3.3b(ii) sped up; and Fast is **34×** faster, which is the whole point of 1.1.
+
+Threads help Release (1 438.2 → 452.7 ms, 3.18×) and do nothing for Fast (50.4 → 50.7, inside noise) because Fast is one build and there is nothing to spread. `gen::budget` is one process-wide pool (S43), so these N-thread rows mean what they say.
+
+### The architecture page against what landed
+
+`docs/src/pages/guide/architecture.mdx` was read line by line against the tree at this commit. Its stages, the block IR, the promotion description and the stack-too-deep argument are what landed. Two sentences did not match and are corrected here:
+
+- **"A block starts at its labels, or right after an instruction that ends execution or jumps away"** said `JUMPI` ends a block. It does not: `is_terminal` is `STOP | JUMP | RETURN | REVERT | INVALID | SELFDESTRUCT` (`src/asm.rs`), and `asm::blocks` keeps a run through a `JUMPI` together on purpose (`## 3.1`). The page now says a conditional jump stays inside the block, and that the marked path runs the passes on the stream so prover marks survive — the `track::on()` branch in `asm::optimize`.
+- **"Each candidate is priced with the same gas and byte cost model the rest of the backend uses (`asm::gas`, `byte_gas`)"** was written in `6104ed6` (3.4) about `promote`. `promote` prices bytes: `rest` counts each later load as 2 bytes saved and each store as 1, and `plan_region` adds `saved += 2` per rewritten load and `+= 1` per store, with the `floor` a byte count. There is no call to `asm::gas`, `byte_gas` or `heat` anywhere in `promote`, `plan_promotion`, `promote_region`, `region_batch`, `plan_region` or `hold`, and none in the same region at `796fdfe` either, so the sentence was wrong when written rather than made wrong by a later step. The page now says promotion is priced by the bytes it saves, and keeps the gas-and-byte cost model for the two places that do use it: plan selection in `gen::codegen` (`priced`, `asm::gas`/`gas_from` plus `byte_gas * runtime`) and `outline`'s `gain` (`heat * gas` less `byte_gas * bytes`).
+
+The rest of the page's claims were re-checked rather than assumed: every local has a memory word (`Gen.local: Vec<i32>`, loads `Mem(addr)` + `Op(MLOAD)`); promotion refuses a rewrite beyond reach (`(0..16).contains(&above)` in `hold`, `d < 16` in `plan_region`/`walk_alias`, `d >= 16` refusing in `abandon_walk`); the outliner refuses a run that takes or leaves more than 16 (`takes > 16 || leaves > 16`) or whose parameters sit deeper than 16 (`fetches`). The page needs no other change, and no §5 step is left to land that would move it.
 
 ## S28 5.1b + 5.2: scope re-measured, split again
 

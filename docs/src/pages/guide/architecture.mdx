@@ -25,15 +25,15 @@ In a [release build](/tooling/cli), `gen` searches over code generation plans: w
 
 ## The block IR
 
-The instruction stream is cut into blocks (`asm::blocks::Blocks`). A block starts at its labels, or right after an instruction that ends execution or jumps away. It runs up to the next such instruction or label. Every label heads exactly one block. A pushed label is an edge to the block that label heads, and a block that does not end in a jump or an exit falls through into the next one. Each block knows its successors and predecessors.
+The instruction stream is cut into blocks (`asm::blocks::Blocks`). A block starts at its labels, or right after an instruction that ends execution or jumps unconditionally. It runs up to the next such instruction or label. Every label heads exactly one block. A pushed label is an edge to the block that label heads, and a block that does not end in a jump or an exit falls through into the next one. Each block knows its successors and predecessors. A conditional jump does not end a block: it is kept inside one, so a run of straight code through it stays a single unit for the peephole and the scheduler.
 
-The optimizer's passes work on this structure. They edit blocks in place or move whole blocks, never splicing the whole stream. These passes include removing dead code, threading jumps, merging identical blocks and identical tails, peephole rewrites, and instruction scheduling. The stream is written out once, at the end of `optimize`.
+The optimizer's passes work on this structure. They edit blocks in place or move whole blocks, never splicing the whole stream. These passes include removing dead code, threading jumps, merging identical blocks and identical tails, peephole rewrites, and instruction scheduling. The stream is written out once, at the end of `optimize`. When a build carries marks for the prover, `optimize` runs the same passes one at a time on the stream instead, so the marks survive each rewrite.
 
 ## Stack promotion
 
 Since every local starts in memory, the code `gen` writes is correct but slow: each read is an `MLOAD` and each write an `MSTORE`. `promote` keeps a word on the stack instead when only one function or body uses it and its address never escapes. A load becomes a `DUP`, a store becomes a `SWAP` and `POP`, and a store that nothing reads is dropped. It holds values within straight runs and across branches and loops. Every path into a label must agree on where the value sits.
 
-Each candidate is priced with the same gas and byte cost model the rest of the backend uses (`asm::gas`, `byte_gas`), not by building the program to measure it. Every rewrite is checked against a model of the stack, and a word that cannot be held safely stays in memory.
+Each candidate is priced by the bytes it saves, counted from the instructions it would replace, not by building the program to measure it. Every rewrite is checked against a model of the stack, and a word that cannot be held safely stays in memory. Codegen plans and the helpers `outline` adds are priced with the backend's gas and byte model (`asm::gas`, `byte_gas`), so the search compares them by what they cost to run as well as what they cost to deploy.
 
 ## Why stack-too-deep cannot occur
 
