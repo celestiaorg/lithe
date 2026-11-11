@@ -70,7 +70,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **6.2** Assembler width fixpoint. It already is one, and candidate cost is already cached. Nothing taken.
 - [x] **6.3** Memoize constant keccak. Measured; not taken.
 - [x] **6.4** Incremental `heat` / `flow`. Taken in 3.2b(ii) as a skeleton-keyed `flow` cache with a ~5% hit rate; goal missed, and 3.2c reached the same goal the other way (fewer `merge_tails` calls, so `heat` runs on 1019 calls instead of 1940 on erc20_full) rather than by making one call cheaper.
-- [ ] **6.5** `--timings`, and CI that fails when erc20_full Fast compile exceeds 2× the recorded baseline.
+- [x] **6.5** `--timings`, and CI that fails when erc20_full Fast compile exceeds 2× the recorded baseline. Landed (S41): the flag is the `LITHE_TIME` line, and the `perf` job gates 7 runs at 118 ms. See `## S41 6.5 --timings and the perf gate`.
 
 ## State
 
@@ -105,6 +105,7 @@ This section is the single source of truth for what is open and what blocks what
 - **S27 landed (5.4):** Fx hashing in `check`/`gen`/`route`/`split`/`index`; `BTreeMap` where order is seen. See `## S27 Fx hashing`.
 - **S40 measured, not taken:** see the 3.3c bullet above.
 - **S53 landed:** the S40 instrument is `LITHE_PRICE_BATCH`. With it set, all 51 `--release` outputs are byte-identical, and both snapshots are unchanged.
+- **S41 landed (6.5):** `--timings` sets `LITHE_TIME=1` before any command runs, so it prints the `[time]` line the harness already parses; a `perf` CI job fails when the best of seven Fast compiles of `bench/erc20_full.lithe` at one thread exceeds 118 ms (2× the 59 ms baseline in `## 1.1`), and is in `success`'s `needs`. See `## S41 6.5 --timings and the perf gate`.
 
 ## 0.2b baseline
 
@@ -1763,3 +1764,47 @@ The corpus diff being empty is the load-bearing result: every file in the repo i
 
 **Ceiling, unchanged.** A statement missing its `;` still swallows the next statement up to the next `;`, and a `}` inside a `(`-group is now treated as the block's — which is right for the recovery we have (there is no block expression that a bare `}` can close inside parentheses) but would need a real expression end if the language ever grows one. Recorded rather than pre-built.
 
+## S41 6.5 `--timings` and the perf gate
+
+**Plan.** One flag, no new instrumentation: `--timings` sets `LITHE_TIME=1` before any command runs, so it prints the `[time]` line the harness already parses. Then a `perf` CI job that compiles `bench/erc20_full.lithe` seven times in Fast mode at one thread and fails on the best time over 2× the recorded baseline. Bytecode cannot move: the flag only reads the clock on a path the counters already own, and the job changes no source.
+
+### The flag
+
+`main` takes `--timings` out of the arguments, wherever it sits after the command, and sets `LITHE_TIME` before dispatching (`src/main.rs`, `take_timings`). Nothing else changes: `gen::timing()` reads the variable once per process into a `OnceLock`, so a process with `--timings` behaves exactly like `LITHE_TIME=1`. `lithe compile f --fast --timings`:
+
+```text
+[time] check=5.85ms backend=35.65ms | emits=1 sum=5.56ms (promote 4.74ms, 58 rounds) | finishes=2 sum=22.02ms (optimize 11.89ms, outline+ 8.91ms) | body 5.42ms
+```
+
+`--timings` with no variable prints the same line, and without either there is no line (checked: `grep -c '^\[time\]'` is 1 and 0). `cargo test --bin lithe tests::timings_flag_is_taken_from_anywhere` covers the argument handling, including that the flag is taken from between other arguments and that a command without it is untouched. Documented in `docs/src/pages/tooling/cli.mdx` under **Timings**, and in `lithe`'s usage text.
+
+### The gate
+
+`.github/workflows/ci.yml` gains a `perf` job: `cargo build --release --locked`, then seven timed runs of
+
+```text
+LITHE_CACHE_DIR= LITHE_THREADS=1 target/release/lithe compile bench/erc20_full.lithe --fast --timings
+```
+
+It fails if the best run exceeds 118 ms, twice the 59 ms recorded for `--fast` on this contract in `## 1.1`. Best-of-7 because a shared runner has noisy neighbours and one slow run says nothing about the compiler; an absolute bar at 2× because the baseline is a wall-clock number of the same shape. The step also fails if the run prints no `[time]` line, so a broken `--timings` cannot make the job pass by measuring nothing.
+
+The script was extracted from the workflow and run here unchanged (load average ~2, 16 cores, release binary):
+
+| run | 1 | 2 | 3 | 4 | 5 | 6 | 7 | best |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| wall ms | 50 | 52 | 53 | 50 | 54 | 53 | 54 | **50** |
+
+50 ms against a 118 ms limit, 42 % of it. A hosted runner's cores are not these cores, so the margin is deliberate: `simplify:` in the workflow names the ceiling (a runner 2.4× slower than this box fails on hardware) and the upgrade path (a self-hosted runner, or a ratio against a reference binary built from the baseline commit in the same job). It is the cheapest form of the check: it reuses the job's one release build.
+
+Lowering `baseline_ms` to 20 and rerunning the same extracted script failed as it should — `::error ... took 52 ms, over 2x the 20 ms baseline`, exit 1 — so the over-limit branch is exercised, not just written. The `perf` job is added to `success`'s `needs`, so a slow run turns the required check red.
+
+### Gates
+
+| gate | result |
+|---|---|
+| `make check` (fmt, clippy, `cargo test --locked`, `LITHE_VERIFY=1`, differential 2 000 steps, both bytecode snapshots, bench gas, playground wasm) | **green, exit 0** |
+| `cargo test --locked --bin lithe` | 28 passed, 0 failed |
+| `node docs/check.mjs` against this binary | 296 programs compile as documented |
+| the CI step's script, extracted from the workflow and run locally | passes at 50 ms; fails at exit 1 with the `::error` line when the baseline is lowered to 20 ms |
+| `actionlint` / `zizmor` on the workflow | **not run here**: actionlint needs Docker, and no Docker daemon is running in this workspace. The YAML parses (`yaml.safe_load`, nine jobs), the script passes `bash -n`, and the job copies the shapes of the existing ones (pinned action hashes, `persist-credentials: false`, `timeout-minutes`) |
+| bytecode | unchanged by construction: the change reads no code path that emits, and no source outside `main`'s argument handling (plus docs) differs |

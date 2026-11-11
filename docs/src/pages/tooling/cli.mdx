@@ -55,6 +55,18 @@ lib/fees.lithe:4:18: unknown name `rate`
 
 What runs from a facet is the source's choice, `use M delegated;`, never a flag's. See [Contract size limit](/tooling/size-limit).
 
+### Timings
+
+Any command also takes `--timings`, which prints how the compiler spent its time to stderr, as `LITHE_TIME=1` in the environment does:
+
+```text
+[time] check=5.8ms backend=35.6ms | emits=1 sum=5.6ms (promote 4.7ms, 58 rounds) | finishes=2 sum=22.0ms (optimize 11.9ms, outline+ 8.9ms) | body 5.4ms
+```
+
+`emits` and `finishes` count the codegen plans tried; their `sum` is the CPU time those plans took. `promote`, `optimize`, and `outline+` are the phases inside them, and `body` is the emitter alone. A build in the default `--fast` mode tries one plan, so its `emits` is `1`; `--release` searches, and the counts show how much that search costs.
+
+`lithe compile` prints one line per contract it builds, so a directory of contracts prints one each. `abi` prints nothing and takes the flag anyway, because it reads the checked program and builds no code. The language server takes no flags; set `LITHE_TIME=1` in its environment to see its frontend phases on every edit.
+
 ### Target fork
 
 The default is `osaka`, the fork Ethereum mainnet has run since December 2025, and solc's default too. Osaka adds `CLZ` (EIP-7939), a one-byte count of leading zero bits. `Uint.clz` is that one opcode, and `Math.log2`, `log256`, `sqrt`, and `cbrt` start from it. Code built for Osaka fails with an invalid opcode on a chain that hasn't adopted it, which some L2s and test chains lag on.
