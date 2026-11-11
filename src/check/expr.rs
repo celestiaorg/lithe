@@ -494,11 +494,7 @@ impl Checker {
                         if let Some(domain) = self
                             .is_module(*module)
                             .then(|| {
-                                self.kind_domain(
-                                    module.as_str(),
-                                    kind.as_str(),
-                                    name.as_str(),
-                                )
+                                self.kind_domain(module.as_str(), kind.as_str(), name.as_str())
                             })
                             .flatten()
                         {

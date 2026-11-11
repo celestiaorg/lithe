@@ -733,7 +733,7 @@ impl Checker {
         }
         let iface_methods = |iface: &str| {
             self.named
-                .get(&intern(&iface))
+                .get(&intern(iface))
                 .filter(|&&id| self.types[id].kind == TyKind::Interface)
                 .and_then(|id| self.ifaces.get(id))
         };

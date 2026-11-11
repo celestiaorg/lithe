@@ -90,8 +90,7 @@ impl Checker {
     pub(super) fn register_interfaces(&mut self, prog: &Program) -> Result<(), Error> {
         let mut ids = Vec::new();
         for iface in &prog.interfaces {
-            if self.named.contains_key(&intern(&iface.name))
-                || self.decls.contains_key(&iface.name)
+            if self.named.contains_key(&intern(&iface.name)) || self.decls.contains_key(&iface.name)
             {
                 return Err(
                     error(iface.span, format!("duplicate name `{}`", iface.name))
@@ -898,13 +897,8 @@ impl Checker {
         let target = self.named[&name];
         if self.types[target].kind == TyKind::List {
             self.list_cast(span, args, target)?;
-            self.conversions.push((
-                self.file,
-                TypeRef::Name {
-                    span,
-                    name,
-                },
-            ));
+            self.conversions
+                .push((self.file, TypeRef::Name { span, name }));
             *builtin = Some(Builtin::Cast);
             *ty = target;
             return Ok(());

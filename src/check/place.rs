@@ -80,11 +80,7 @@ impl Checker {
                     _ => None,
                 };
                 if let Some((module, mspan, domain)) = module_domain {
-                    let sym = self.open_module_domain(
-                        mspan,
-                        module.as_str(),
-                        domain.as_str(),
-                    )?;
+                    let sym = self.open_module_domain(mspan, module.as_str(), domain.as_str())?;
                     let sty = self.syms[sym].ty;
                     *root = Some(sym);
                     *leaf = 0;

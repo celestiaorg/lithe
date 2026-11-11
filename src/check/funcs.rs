@@ -159,7 +159,10 @@ impl Checker {
         if f.kind == ItemKind::Entry && f.ret.is_some() && !abi_value(&self.types, ret) {
             return Err(error(f.span, "an entry returns an ABI value"));
         }
-        if f.kind == ItemKind::Fallback && f.ret.is_some() && !self.same(ret, self.named[&intern("bytes")]) {
+        if f.kind == ItemKind::Fallback
+            && f.ret.is_some()
+            && !self.same(ret, self.named[&intern("bytes")])
+        {
             let span = f.ret.as_ref().map(|t| t.span()).unwrap_or(f.span);
             return Err(error(
                 span,
