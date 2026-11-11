@@ -60,7 +60,7 @@ pub(crate) fn stub(sig: &Func) -> String {
 pub(crate) fn facet_modules(prog: &Program) -> Vec<String> {
     let mut out = Vec::new();
     for mark in &prog.facets {
-        crate::split::closure(&prog.modules, &mark.name, &mut out);
+        crate::split::closure(&prog.modules, &mark.name.to_string(), &mut out);
     }
     out
 }
@@ -77,7 +77,7 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
             );
         }
     }
-    let used: Vec<String> = prog.compose.iter().map(|u| u.name.clone()).collect();
+    let used: Vec<String> = prog.compose.iter().map(|u| u.name.to_string()).collect();
     let impls = std::mem::take(&mut prog.hooks);
     let mut written: Vec<(String, String, Span)> = Vec::new();
     let mut placed = Vec::new();
@@ -85,7 +85,7 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
         let Some(of) = imp.hook_of.clone() else {
             continue;
         };
-        let module = of.module.name.clone();
+        let module = of.module.name.to_string();
         let span = of.module.span;
         let Some(decl) = prog.modules.iter().find(|m| m.name == module) else {
             return Err(error(span, format!("unknown module `{}`", shown(&module))));
@@ -183,7 +183,7 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
                 hook_of: Some(HookOf {
                     module: NameAt {
                         span: decl.span,
-                        name: name.clone(),
+                        name: Names::shared().intern(name),
                     },
                     name: sig.name.clone(),
                     form: if callbacks {
@@ -201,11 +201,11 @@ pub(super) fn place_hooks(prog: &mut Program) -> Result<(), Error> {
     for imp in &placed {
         let Some(of) = &imp.hook_of else { continue };
         if !matches!(of.form, HookForm::Body | HookForm::Via(_))
-            || !facet_side.contains(&of.module.name)
+            || !facet_side.contains(&of.module.name.to_string())
         {
             continue;
         }
-        entries.push(callback_entry(imp, &of.module.name, &of.name));
+        entries.push(callback_entry(imp, &of.module.name.to_string(), &of.name));
     }
     prog.funcs.extend(placed);
     prog.funcs.extend(entries);
@@ -218,13 +218,13 @@ fn callback_entry(imp: &Func, module: &str, name: &str) -> Func {
     let span = imp.span;
     let call = Expr::Call {
         span,
-        name: hook_fn(module, name),
+        name: Names::shared().intern(&hook_fn(module, name)),
         args: imp
             .params
             .iter()
             .map(|p| Expr::Ident {
                 span,
-                name: p.name.clone(),
+                name: Names::shared().intern(&p.name),
                 sym: None,
                 builtin: None,
                 ty: 0,
@@ -264,7 +264,7 @@ fn callback_entry(imp: &Func, module: &str, name: &str) -> Func {
         hook_of: Some(HookOf {
             module: NameAt {
                 span,
-                name: module.to_string(),
+                name: Names::shared().intern(module),
             },
             name: name.to_string(),
             form: HookForm::Entry,
@@ -288,7 +288,7 @@ fn pass_params(
         .iter()
         .map(|p| Expr::Ident {
             span: via.span,
-            name: p.name.clone(),
+            name: Names::shared().intern(&p.name),
             sym: None,
             builtin: None,
             ty: 0,
@@ -303,7 +303,7 @@ fn pass_params(
     {
         let target = match base.as_deref() {
             Some(Expr::Ident { name: module, .. }) => format!("{module}.{name}"),
-            _ => name.clone(),
+            _ => name.to_string(),
         };
         let found: Vec<&Func> = funcs.iter().filter(|f| f.name == target).collect();
         if !found.is_empty() {
@@ -440,7 +440,7 @@ impl Checker {
             else {
                 continue;
             };
-            let theirs = format!("`{}`'s", shown(&of.module.name));
+            let theirs = format!("`{}`'s", shown(&of.module.name.to_string()));
             let mut reason = None;
             if sig.params.len() != func.params.len() {
                 reason = Some(format!(
@@ -492,7 +492,7 @@ impl Checker {
                     of.module.span,
                     format!(
                         "hook `{}` doesn't match {theirs} declaration: {reason}\n\n  module:    {}\n  contract:  {}",
-                        label(&of.module.name, &of.name),
+                        label(&of.module.name.to_string(), &of.name),
                         header(sig),
                         header(&Func { name: of.name.clone(), ..func.clone() })
                     ),
@@ -556,7 +556,7 @@ impl Checker {
         }
         for &h in &hooks {
             let of = funcs[h].hook_of.as_ref().expect("a hook");
-            let name = label(&of.module.name, &of.name);
+            let name = label(&of.module.name.to_string(), &of.name);
             match &of.form {
                 HookForm::Missing if seen[h] => {
                     let mut path = Vec::new();
@@ -580,7 +580,7 @@ impl Checker {
                     let mut msg = format!(
                         "{name} is reached through {}; implement it:\n\n  use {} ... with {{\n    {}\n  }}",
                         steps.join(" → "),
-                        shown(&of.module.name),
+                        shown(&of.module.name.to_string()),
                         sig.map_or_else(|| format!("hook {} is {{ ... }}", of.name), stub)
                     );
                     if sig.is_some_and(|sig| sig.ret.is_none()) {
@@ -648,7 +648,7 @@ impl Checker {
                 of.module.span,
                 format!(
                     "hook `{}` reaches itself: {}\n\nrecursion is not supported: iteration is bounded, write a `for` loop",
-                    label(&of.module.name, &of.name),
+                    label(&of.module.name.to_string(), &of.name),
                     shown_chain.join(" → ")
                 ),
             )
@@ -732,7 +732,7 @@ fn step(f: &Func, upgrade_guard: bool) -> String {
     }
     let name = crate::split::display_name(&f.name);
     if let Some(of) = &f.hook_of {
-        return format!("hook `{}`", label(&of.module.name, &of.name));
+        return format!("hook `{}`", label(&of.module.name.to_string(), &of.name));
     }
     if let Some(guard) = f.name.strip_suffix("#guard") {
         return format!("guard `{}`", shown(guard));
@@ -800,7 +800,7 @@ pub(crate) fn hook_item(checked: &Checked, (hook, facet): &(usize, Option<String
         (_, Some(module)) => format!("called back from `{}`'s facet", shown(module)),
         _ => "in the contract".to_string(),
     };
-    format!("{} ({place})", label(&of.module.name, &of.name))
+    format!("{} ({place})", label(&of.module.name.to_string(), &of.name))
 }
 
 /// A hook the contract implements as `is f;`, passing `f` every parameter unchanged, is `f`
@@ -927,7 +927,7 @@ pub(super) fn forward_via_hooks(funcs: &mut [Func]) {
             } => {
                 if let Some((g, target)) = callee.and_then(|c| to.get(&c)) {
                     *callee = Some(*g);
-                    *name = target.clone();
+                    *name = Names::shared().intern(target);
                 }
                 args.iter_mut().for_each(|a| expr(a, to));
                 if let Some(base) = base {

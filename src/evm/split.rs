@@ -43,7 +43,7 @@ pub(super) fn mark_facets(mut prog: crate::ast::Program, every: bool) -> crate::
                     .iter()
                     .any(|d| d.name == m.name && d.params.is_empty())
             })
-            .map(|m| m.name.clone())
+            .map(|m| m.name.to_string())
             .collect()
     } else {
         prog.exposes.iter().map(|e| e.module.clone()).collect()
@@ -52,7 +52,7 @@ pub(super) fn mark_facets(mut prog: crate::ast::Program, every: bool) -> crate::
         if !prog.facets.iter().any(|m| m.name == name) {
             prog.facets.push(crate::ast::NameAt {
                 span: crate::ast::Span::NONE,
-                name,
+                name: crate::ast::Names::shared().intern(&name),
             });
         }
     }

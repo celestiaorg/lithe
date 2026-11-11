@@ -500,7 +500,7 @@ impl<'a> Gen<'a> {
                 let mark = self.facts.len();
                 let counter_expr = Expr::Ident {
                     span: *span,
-                    name: String::new(),
+                    name: Symbol::empty(),
                     sym: Some(counter),
                     builtin: None,
                     ty: self.checked.syms[counter].ty,
@@ -1407,7 +1407,7 @@ impl<'a> Gen<'a> {
             let (len, data) = (self.temp(), self.temp());
             let ident = Expr::Ident {
                 span: Span::NONE,
-                name: String::new(),
+                name: Symbol::empty(),
                 sym: Some(sym),
                 builtin: None,
                 ty: info.ty,
@@ -1479,7 +1479,7 @@ impl<'a> Gen<'a> {
             let (len, data) = (self.temp(), self.temp());
             let ident = Expr::Ident {
                 span: Span::NONE,
-                name: String::new(),
+                name: Symbol::empty(),
                 sym: Some(sym),
                 builtin: None,
                 ty: info.ty,
@@ -2720,7 +2720,7 @@ impl<'a> Gen<'a> {
             .iter()
             .map(|p| Expr::Ident {
                 span: p.span,
-                name: p.name.clone(),
+                name: Names::shared().intern(&p.name),
                 sym: p.sym,
                 builtin: None,
                 ty: p.ty_id,

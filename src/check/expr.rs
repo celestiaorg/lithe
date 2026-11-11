@@ -99,21 +99,22 @@ impl Checker {
                 ty,
                 span,
             } => {
-                if let Some(id) = self.lookup(name) {
+                let spelled = name.as_str();
+                if let Some(id) = self.lookup(spelled) {
                     *builtin = None;
                     *sym = Some(id);
                     *ty = self.syms[id].ty;
                     self.pure_storage(*span, id)?;
-                    self.across_phases(*span, name, id)?;
+                    self.across_phases(*span, spelled, id)?;
                     return Ok(());
                 }
-                if let Some(repl) = retired_builtin(name) {
+                if let Some(repl) = retired_builtin(spelled) {
                     return Err(error(
                         *span,
                         format!("`{name}` is not a value; use `{repl}`"),
                     ));
                 }
-                if name == "None" {
+                if spelled == "None" {
                     let Some(opt) = self
                         .expect
                         .filter(|id| self.types[*id].kind == TyKind::Option)
@@ -125,7 +126,7 @@ impl Checker {
                     *ty = opt;
                     return Ok(());
                 }
-                Err(self.unbound(*span, name))
+                Err(self.unbound(*span, spelled))
             }
             // A field of a value no name holds, such as a call's result.
             Expr::Field {
@@ -149,9 +150,9 @@ impl Checker {
                 if rec.kind != TyKind::Record {
                     return Err(error(*span, "field access on a non-record"));
                 }
-                let Some(f) = rec.fields.iter().find(|f| f.name == *name) else {
+                let Some(f) = rec.fields.iter().find(|f| f.name == name.as_str()) else {
                     let record = peel_id(&self.types, base.ty());
-                    return Err(self.no_field(*span, record, name));
+                    return Err(self.no_field(*span, record, &name.to_string()));
                 };
                 *ty = f.ty;
                 Ok(())
@@ -388,7 +389,7 @@ impl Checker {
                 self.list_cast(span, &mut args, to)?;
                 *e = Expr::Call {
                     span,
-                    name: self.ty_label(to),
+                    name: Names::shared().intern(&self.ty_label(to)),
                     args,
                     base: None,
                     callee: None,
@@ -462,10 +463,11 @@ impl Checker {
                     *builtin = None;
                 }
                 let record = base.is_none() && matches!(args.as_slice(), [Expr::Record { .. }]);
+                let spelled = name.to_string();
                 if braced || record && builtin.is_none() {
-                    let ctor = name == "Some"
-                        || !self.fn_names.iter().any(|n| n == name)
-                            && self.ctor(*span, name)?.is_some();
+                    let ctor = spelled == "Some"
+                        || !self.fn_names.iter().any(|n| n == &spelled)
+                            && self.ctor(*span, &spelled)?.is_some();
                     if braced && !ctor {
                         return Err(error(
                             *span,
@@ -473,11 +475,13 @@ impl Checker {
                         ));
                     }
                     if !braced && ctor {
-                        return Err(error(*span, record_in_parens(name, &args[0])));
+                        return Err(error(*span, record_in_parens(&spelled, &args[0])));
                     }
                 }
                 self.pick_overload(*span, base, name, args)?;
-                if let Some(target) = self.generic_call(base, name) {
+                // The overload chosen renamed the call, so later lookups read the new name.
+                let spelled = name.to_string();
+                if let Some(target) = self.generic_call(base, &spelled) {
                     return self.specialize(*span, target, args, callee, ty);
                 }
                 if let Some(Expr::Field {
@@ -488,11 +492,18 @@ impl Checker {
                 {
                     if let Expr::Ident { name: module, .. } = module.as_ref() {
                         if let Some(domain) = self
-                            .is_module(module)
-                            .then(|| self.kind_domain(module, kind, name))
+                            .is_module(&module.to_string())
+                            .then(|| {
+                                self.kind_domain(
+                                    &module.to_string(),
+                                    &kind.to_string(),
+                                    &name.to_string(),
+                                )
+                            })
                             .flatten()
                         {
-                            if let Some(err) = self.no_member(*span, module, &domain, "a function")
+                            if let Some(err) =
+                                self.no_member(*span, &module.to_string(), &domain, "a function")
                             {
                                 return Err(err);
                             }
@@ -502,7 +513,7 @@ impl Checker {
                 if let Some(base_expr) = base.as_ref() {
                     if let Expr::Ident { name: alias, .. } = base_expr.as_ref() {
                         let qualified = format!("{alias}.{name}");
-                        let hook = hook_fn(alias, name);
+                        let hook = hook_fn(&alias.to_string(), &name.to_string());
                         if self.fn_names.iter().any(|n| n == &hook) {
                             if self.module_name.as_deref() != Some(alias.as_str()) {
                                 return Err(error(
@@ -510,18 +521,18 @@ impl Checker {
                                     format!(
                                         "`{}` is a hook of `{}`: only `{}`'s own code calls it, and the contract implements it in `use {} ... with {{ hook {name} ... }}`",
                                         crate::modules::shown(&qualified),
-                                        crate::modules::shown(alias),
-                                        crate::modules::shown(alias),
-                                        crate::modules::shown(alias)
+                                        crate::modules::shown(&alias.to_string()),
+                                        crate::modules::shown(&alias.to_string()),
+                                        crate::modules::shown(&alias.to_string())
                                     ),
                                 ));
                             }
-                            *name = hook;
+                            *name = Names::shared().intern(&hook);
                             *base = None;
                         } else if self.fn_names.iter().any(|n| n == &qualified)
                             || self.named.contains_key(&qualified)
                         {
-                            *name = qualified;
+                            *name = Names::shared().intern(&qualified);
                             *base = None;
                         } else if self
                             .fn_names
@@ -535,10 +546,15 @@ impl Checker {
                                 ),
                             ));
                         } else if builtin.is_none()
-                            && self.lookup(alias).is_none()
-                            && !self.intrinsic_module(alias)
+                            && self.lookup(&alias.to_string()).is_none()
+                            && !self.intrinsic_module(&alias.to_string())
                         {
-                            if let Some(err) = self.no_member(*span, alias, name, "a function") {
+                            if let Some(err) = self.no_member(
+                                *span,
+                                &alias.to_string(),
+                                &name.to_string(),
+                                "a function",
+                            ) {
                                 return Err(err);
                             }
                         }
@@ -546,18 +562,19 @@ impl Checker {
                 }
                 if base.is_none() {
                     if let Some(module) = self.module_name.clone() {
-                        if !name.contains('.') {
+                        let spelled = name.as_str();
+                        if !spelled.contains('.') {
                             let qualified = format!("{module}.{name}");
-                            let hook = hook_fn(&module, name);
+                            let hook = hook_fn(&module, spelled);
                             if self.fn_names.iter().any(|n| n == &hook) {
-                                *name = hook;
+                                *name = Names::shared().intern(&hook);
                             } else if self.fn_names.iter().any(|n| n == &qualified) {
-                                *name = qualified;
+                                *name = Names::shared().intern(&qualified);
                             }
                         }
                     }
                 }
-                if self.builtin_module(*span, name, args, base, builtin, ty)? {
+                if self.builtin_module(*span, name.as_str(), args, base, builtin, ty)? {
                     return Ok(());
                 }
                 if let (Some(base), false) = (
@@ -709,8 +726,8 @@ impl Checker {
                     *ty = TY_OPERATION;
                     return Ok(());
                 }
-                if base.is_none() && !self.fn_names.iter().any(|n| n == name) {
-                    if let Some((vty, k)) = self.ctor(*span, name)? {
+                if base.is_none() && !self.fn_names.iter().any(|n| n == name.as_str()) {
+                    if let Some((vty, k)) = self.ctor(*span, name.as_str())? {
                         self.value_variant(*span, vty)?;
                         let Some(payload) = self.types[vty].variants[k].payload else {
                             return Err(error(*span, format!("`{name}` has no payload")));
@@ -741,12 +758,12 @@ impl Checker {
                 }
                 if base.is_none()
                     && args.len() == 1
-                    && !self.fn_names.iter().any(|n| n == name)
-                    && self.named.contains_key(name)
+                    && !self.fn_names.iter().any(|n| n == name.as_str())
+                    && self.named.contains_key(name.as_str())
                 {
-                    return self.cast(*span, name, args, builtin, ty);
+                    return self.cast(*span, name.as_str(), args, builtin, ty);
                 }
-                if name == "Some" && base.is_none() && args.len() == 1 {
+                if name.as_str() == "Some" && base.is_none() && args.len() == 1 {
                     let opt = match self
                         .expect
                         .filter(|id| self.types[*id].kind == TyKind::Option)
@@ -778,10 +795,11 @@ impl Checker {
                     *ty = opt;
                     return Ok(());
                 }
-                let Some(idx) = self.fn_names.iter().position(|n| n == name) else {
+                let spelled = name.to_string();
+                let Some(idx) = self.fn_names.iter().position(|n| n == &spelled) else {
                     let qualified = match &self.module_name {
-                        Some(module) if !name.contains('.') => format!("{module}.{name}"),
-                        _ => name.clone(),
+                        Some(module) if !spelled.contains('.') => format!("{module}.{name}"),
+                        _ => spelled.clone(),
                     };
                     let exported = format!("{qualified}#");
                     if self.fn_names.iter().any(|n| n.starts_with(&exported)) {
@@ -796,20 +814,20 @@ impl Checker {
                 };
                 // `--check-specs` checks the contract's invariants where a module's phase
                 // ends, in the module's code.
-                let spec_check = crate::spec::is_spec_fn(name);
+                let spec_check = crate::spec::is_spec_fn(&spelled);
                 if let Some(mine) = self.module_name.clone().filter(|_| !spec_check) {
                     // A module is closed over what it requires: the code it runs never
                     // depends on the contract that uses it. A constant is only a value.
-                    if !name.contains('.') && !self.work.get(idx).is_some_and(|f| f.constant) {
+                    if !spelled.contains('.') && !self.work.get(idx).is_some_and(|f| f.constant) {
                         return Err(error(
                             *span,
                             format!(
                                 "module `{mine}` cannot call `{}`, which belongs to no module; move it into `{mine}` or a module it requires",
-                                source_name(name)
+                                source_name(&spelled)
                             ),
                         ));
                     }
-                    if let Some((other, _)) = name.split_once('.') {
+                    if let Some((other, _)) = spelled.split_once('.') {
                         if other != mine
                             && self.needs_use(other, idx)
                             && !self.requires.iter().any(|req| req == other)
@@ -820,7 +838,7 @@ impl Checker {
                             ));
                         }
                     }
-                } else if let Some((other, _)) = name.split_once('.') {
+                } else if let Some((other, _)) = spelled.split_once('.') {
                     if self.module_name.is_none()
                         && self.needs_use(other, idx)
                         && !self.used_modules.contains(other)
@@ -829,7 +847,7 @@ impl Checker {
                             *span,
                             format!(
                                 "module `{other}` is not used\n\n`{}` isn't pure and `{other}` holds state: `use {other};`",
-                                source_name(name)
+                                source_name(&spelled)
                             ),
                         ));
                     }
@@ -845,11 +863,11 @@ impl Checker {
                         *span,
                         format!(
                             "{} cannot be called from inside the contract; move the shared logic into an internal function",
-                            describe(sig_kind, name)
+                            describe(sig_kind, name.as_str())
                         ),
                     ));
                 }
-                self.callee_effect(*span, name, sig_kind)?;
+                self.callee_effect(*span, &spelled, sig_kind)?;
                 self.check_private(idx, *span)?;
                 if args.len() != params.len() {
                     return Err(error(
@@ -1146,7 +1164,7 @@ impl Checker {
         else {
             return Ok(None);
         };
-        let Some((vty, k)) = self.ctor(*span, name)? else {
+        let Some((vty, k)) = self.ctor(*span, name.as_str())? else {
             return Ok(None);
         };
         self.value_variant(*span, vty)?;
@@ -1165,7 +1183,7 @@ impl Checker {
         } else {
             Expr::Call {
                 span: *span,
-                name: name.clone(),
+                name: *name,
                 args: Vec::new(),
                 base: None,
                 callee: None,
@@ -1183,9 +1201,9 @@ impl Checker {
         let t = &self.types[ty];
         let zero = |ty| self.zero_value(span, ty);
         let lit = |lit| Expr::Lit { span, lit, ty };
-        let call = |name: String, args, builtin| Expr::Call {
+        let call = |name: &str, args, builtin| Expr::Call {
             span,
-            name,
+            name: Names::shared().intern(name),
             args,
             base: None,
             callee: None,
@@ -1203,7 +1221,7 @@ impl Checker {
             TyKind::Record if is_sum(&self.types, ty) => {
                 let case = &t.variants[0];
                 let args = case.payload.map(zero).transpose()?.into_iter().collect();
-                call(case.name.clone(), args, Builtin::Ctor(0))
+                call(&case.name, args, Builtin::Ctor(0))
             }
             TyKind::Record => Expr::Record {
                 span,
@@ -1230,14 +1248,14 @@ impl Checker {
             },
             TyKind::Option => Expr::Ident {
                 span,
-                name: "None".into(),
+                name: Names::shared().intern("None"),
                 sym: None,
                 builtin: Some(Builtin::None),
                 ty,
             },
             TyKind::Nominal if t.variants.is_empty() => {
                 let under = t.elem.unwrap_or(ty);
-                call(self.type_name(ty), vec![zero(under)?], Builtin::Cast)
+                call(&self.type_name(ty), vec![zero(under)?], Builtin::Cast)
             }
             TyKind::String | TyKind::Bytes if t.bits == 0 => lit(Lit::Str(String::new())),
             TyKind::Bool => lit(Lit::Bool(false)),
@@ -1272,15 +1290,16 @@ impl Checker {
             } => (name, false),
             _ => return false,
         };
-        if name == if bare { "None" } else { "Some" } {
+        let spelled = name.to_string();
+        if spelled == if bare { "None" } else { "Some" } {
             return true;
         }
-        self.lookup(name).is_none()
-            && (bare || !self.fn_names.iter().any(|n| n == name))
+        self.lookup(&spelled).is_none()
+            && (bare || !self.fn_names.iter().any(|n| n == &spelled))
             && self
                 .named
                 .values()
-                .any(|&ty| self.types[ty].variants.iter().any(|v| &v.name == name))
+                .any(|&ty| self.types[ty].variants.iter().any(|v| v.name == spelled))
     }
 
     /// `Uint.max`, `Int.min`, `Int.max`, `Address.zero`, and `Evm.osaka`, as literals. A bound takes
@@ -1296,10 +1315,10 @@ impl Checker {
         let Expr::Ident { name: module, .. } = base.as_ref() else {
             return Ok(None);
         };
-        if !self.intrinsic_module(module) {
+        if !self.intrinsic_module(&module.to_string()) {
             return Ok(None);
         }
-        let tag = self.intrinsic(base, name);
+        let tag = self.intrinsic(base, *name);
         if tag == Some(Tag::EvmOsaka) {
             return Ok(Some(Expr::Lit {
                 lit: Lit::Bool(self.evm >= crate::EvmVersion::Osaka),
@@ -1336,7 +1355,7 @@ impl Checker {
             Some(Tag::AddressZero) => (TY_ADDRESS, Word::from_u64(0)),
             _ => {
                 return Err(self
-                    .no_member(*span, module, name, "a value")
+                    .no_member(*span, &module.to_string(), &name.to_string(), "a value")
                     .unwrap_or_else(|| error(*span, format!("unknown name `{module}.{name}`"))));
             }
         };
@@ -1538,7 +1557,7 @@ impl Checker {
         let inner = std::mem::replace(e, unit);
         *e = Expr::Call {
             span,
-            name: String::new(),
+            name: Symbol::empty(),
             args: vec![inner],
             base: None,
             callee: None,
@@ -1881,7 +1900,7 @@ impl Checker {
         };
         *e = Expr::Call {
             span,
-            name: String::new(),
+            name: Symbol::empty(),
             args: vec![*base, *index],
             base: None,
             callee: None,

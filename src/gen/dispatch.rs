@@ -639,7 +639,7 @@ impl<'a> Gen<'a> {
         else {
             return;
         };
-        let hook = crate::check::hook_fn(&of.module.name, &of.name);
+        let hook = crate::check::hook_fn(&of.module.name.to_string(), &of.name);
         let stateful = self
             .checked
             .prog

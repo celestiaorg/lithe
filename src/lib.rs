@@ -907,7 +907,7 @@ fn module_contract(
             return;
         }
         for req in &decl.requires {
-            if let Some(dep) = find(&req.name) {
+            if let Some(dep) = find(&req.name.to_string()) {
                 visit(dep, find, order);
             }
         }
@@ -1289,7 +1289,7 @@ fn hook_stubs(
         };
         match out.iter_mut().find(|(m, _)| *m == of.module.name) {
             Some((_, lines)) => lines.push_str(&line),
-            None => out.push((of.module.name.clone(), line)),
+            None => out.push((of.module.name.to_string(), line)),
         }
     }
     Ok(out)

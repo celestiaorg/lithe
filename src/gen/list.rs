@@ -1312,7 +1312,7 @@ impl<'a> Gen<'a> {
             } => Some((*sym, String::new())),
             Expr::Field { base, name, .. } => self
                 .place_path(base)
-                .map(|(sym, path)| (sym, path + "." + name)),
+                .map(|(sym, path)| (sym, path + "." + &name.to_string())),
             Expr::Index { base, .. } => self.place_path(base).map(|(sym, path)| (sym, path + "[]")),
             _ => None,
         }

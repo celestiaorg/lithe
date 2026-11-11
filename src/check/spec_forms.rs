@@ -75,7 +75,7 @@ impl Checker {
                 };
                 let bound = self.build(&TypeRef::Name {
                     span: *tspan,
-                    name: tname.clone(),
+                    name: *tname,
                 })?;
                 let Expr::Ident {
                     name,
@@ -96,7 +96,7 @@ impl Checker {
                     slot: 0,
                     span: 0,
                 });
-                self.define(*bspan, name, id)?;
+                self.define(*bspan, &name.to_string(), id)?;
                 *sym = Some(id);
                 *bty = bound;
                 let expect = self.expect.take();

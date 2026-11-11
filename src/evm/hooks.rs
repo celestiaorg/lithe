@@ -1478,6 +1478,36 @@ contract C is {{
     assert!(!body.contains("#hook"), "{body}");
 }
 
+/// A module that calls `A.f` while declaring its own hook `f` calls `A`'s function: the
+/// qualified name the call took keeps it from being read as the module's own hook.
+#[test]
+fn a_qualified_call_is_not_the_callers_own_hook() {
+    let src = r#"import "std/evm";
+
+module A is {
+  pure function f() : uint is 7
+}
+
+module M is {
+  requires A;
+  view hook f() : uint;
+  external view function mine() : uint is A.f()
+  external view function hooked() : uint is f()
+}
+
+contract C is {
+  use A;
+  use M exposing { view function mine() : uint; view function hooked() : uint; } with {
+    hook f : uint is { skip } with 3
+  }
+}
+"#;
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let word = |sig: &str| load_bytes(&call(&runtime, sig, &[]).returndata, 0);
+    assert_eq!(word("mine()"), Word::from_u64(7), "`A.f`, not M's hook");
+    assert_eq!(word("hooked()"), Word::from_u64(3), "M's own hook");
+}
+
 /// A delegated module's facet takes a bit for each hook its code reaches, not for those of
 /// a module it only requires, so a contract calls it without the hook word.
 #[test]

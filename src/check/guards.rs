@@ -121,7 +121,7 @@ pub(super) fn guard_call(module: &str, guarded: &Guarded) -> Stmt {
         .iter()
         .map(|arg| Expr::Ident {
             span: arg.span,
-            name: arg.name.clone(),
+            name: arg.name,
             sym: None,
             builtin: None,
             ty: 0,
@@ -131,7 +131,7 @@ pub(super) fn guard_call(module: &str, guarded: &Guarded) -> Stmt {
         span,
         expr: Expr::Call {
             span,
-            name: guard_fn(module, &guarded.name),
+            name: Names::shared().intern(&guard_fn(module, &guarded.name)),
             args,
             base: None,
             callee: None,
@@ -160,7 +160,7 @@ pub(super) fn place_guards(prog: &mut Program, needs: &[Need]) -> Result<(), Err
         let Some(of) = guard.guard_of.clone() else {
             continue;
         };
-        let module = of.module.name.clone();
+        let module = of.module.name.to_string();
         let span = of.module.span;
         let Some(decl) = prog.modules.iter().find(|m| m.name == module) else {
             return Err(error(span, format!("unknown module `{}`", shown(&module))));
@@ -274,7 +274,7 @@ fn pass_params(
         .iter()
         .map(|p| Expr::Ident {
             span: via.span,
-            name: p.name.clone(),
+            name: Names::shared().intern(&p.name),
             sym: None,
             builtin: None,
             ty: 0,
@@ -291,7 +291,7 @@ fn pass_params(
     };
     let target = match base.as_deref() {
         Some(Expr::Ident { name: module, .. }) => format!("{module}.{name}"),
-        _ => name.clone(),
+        _ => name.to_string(),
     };
     let found: Vec<&Func> = funcs.iter().filter(|f| f.name == target).collect();
     if found.is_empty() {
@@ -346,7 +346,7 @@ impl Checker {
         };
         for func in &prog.funcs {
             if let Some(of) = &func.guard_of {
-                let Some(sig) = sig_of(&of.module.name, &of.name) else {
+                let Some(sig) = sig_of(&of.module.name.to_string(), &of.name) else {
                     continue;
                 };
                 let mut same = sig.params.len() == func.params.len();
@@ -359,8 +359,8 @@ impl Checker {
                         of.module.span,
                         format!(
                             "guard `{}` takes different parameters than `{}` declares\n\n  module:    {}\n  contract:  {}",
-                            label(&of.module.name, &of.name),
-                            shown(&of.module.name),
+                            label(of.module.name.to_string().as_str(), &of.name),
+                            shown(&of.module.name.to_string()),
                             header(&of.name, &sig.params),
                             header(&of.name, &func.params)
                         ),

@@ -2027,7 +2027,7 @@ fn guard_rows(
                 labels.push((format!("raises {} when {text}", name.name), true));
                 match named.iter_mut().find(|(n, _)| *n == name.name) {
                     Some((_, texts)) => texts.push(text),
-                    None => named.push((name.name.clone(), vec![text])),
+                    None => named.push((name.name.to_string(), vec![text])),
                 }
             }
             ClauseKind::Panics => labels.push((format!("panics when {text}"), true)),
@@ -3080,7 +3080,7 @@ fn claims(
     for c in &conds {
         if let ClauseKind::Raises(name) = &c.kind {
             if !named.iter().any(|(n, _)| n == &name.name) {
-                named.push((name.name.clone(), error_sel(c)));
+                named.push((name.name.to_string(), error_sel(c)));
             }
         }
     }

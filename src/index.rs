@@ -1773,15 +1773,15 @@ impl<'a> Builder<'a> {
         self.file = self.file("");
         for set in &prog.error_sets {
             for m in &set.members {
-                let d = self.error_name(&m.name);
-                let at = self.locate_at(self.file, m.span, &m.name);
-                self.refer(at, &m.name, d);
+                let d = self.error_name(m.name.as_str());
+                let at = self.locate_at(self.file, m.span, m.name.as_str());
+                self.refer(at, m.name.as_str(), d);
             }
         }
         for u in &prog.compose {
-            let d = self.names.get(&('m', u.name.clone())).copied();
-            let at = self.locate_at(self.file, u.span, &u.name);
-            self.refer(at, &u.name, d);
+            let d = self.names.get(&('m', u.name.to_string())).copied();
+            let at = self.locate_at(self.file, u.span, u.name.as_str());
+            self.refer(at, u.name.as_str(), d);
         }
         if let Some(guard) = &prog.guard {
             self.func = None;
@@ -1790,12 +1790,12 @@ impl<'a> Builder<'a> {
         }
         for exposed in &prog.exposes {
             for named in &exposed.interfaces {
-                let d = self.names.get(&('i', named.name.clone())).copied();
+                let d = self.names.get(&('i', named.name.to_string())).copied();
                 let entries: Vec<String> = prog
                     .funcs
                     .iter()
                     .filter(|f| {
-                        f.interface.as_deref() == Some(&named.name)
+                        f.interface.as_deref() == Some(named.name.as_str())
                             && f.promoted.as_deref() == Some(&exposed.module)
                     })
                     .flat_map(|f| self.entry_lines(f))
@@ -1809,17 +1809,17 @@ impl<'a> Builder<'a> {
                             entries.join("\n")
                         ),
                     ]);
-                    let at = self.locate_at(self.file, named.span, &named.name);
-                    let span = self.span(self.file, at, &named.name);
+                    let at = self.locate_at(self.file, named.span, named.name.as_str());
+                    let span = self.span(self.file, at, named.name.as_str());
                     self.reference(span, d, Some(hover));
                 }
             }
         }
         // The checker's second pass, which adds `supportsInterface`, clears the program's list.
         for named in &c.source.supports {
-            let d = self.names.get(&('i', named.name.clone())).copied();
-            let at = self.locate_at(self.file, named.span, &named.name);
-            self.refer(at, &named.name, d);
+            let d = self.names.get(&('i', named.name.to_string())).copied();
+            let at = self.locate_at(self.file, named.span, named.name.as_str());
+            self.refer(at, named.name.as_str(), d);
         }
         for (i, f) in prog.funcs.iter().enumerate() {
             self.file = self.file_of(f.file);
@@ -1865,8 +1865,8 @@ impl<'a> Builder<'a> {
                 }
                 if let Some(raises) = &f.raises {
                     for part in &raises.parts {
-                        let d = self.error_name(&part.name).or_else(|| {
-                            (part.name == "forwarded").then(|| {
+                        let d = self.error_name(part.name.as_str()).or_else(|| {
+                            (part.name.as_str() == "forwarded").then(|| {
                                 self.pseudo(
                                     "forwarded",
                                     "raises forwarded".to_string(),
@@ -1874,8 +1874,8 @@ impl<'a> Builder<'a> {
                                 )
                             })
                         });
-                        let at = self.locate_at(self.file, part.span, &part.name);
-                        self.refer(at, &part.name, d);
+                        let at = self.locate_at(self.file, part.span, part.name.as_str());
+                        self.refer(at, part.name.as_str(), d);
                     }
                 }
             }
@@ -1943,11 +1943,11 @@ impl<'a> Builder<'a> {
             } => {
                 let key = match base.as_deref() {
                     Some(Expr::Ident { span, name: m, .. }) => {
-                        let d = self.names.get(&('m', m.clone())).copied();
-                        self.refer(self.lc(self.file, *span), m, d);
+                        let d = self.names.get(&('m', m.to_string())).copied();
+                        self.refer(self.lc(self.file, *span), m.as_str(), d);
                         format!("{m}.{name}")
                     }
-                    _ => name.clone(),
+                    _ => name.to_string(),
                 };
                 let c = self.c();
                 let d = c
@@ -1956,8 +1956,8 @@ impl<'a> Builder<'a> {
                     .iter()
                     .position(|f| f.name == key)
                     .and_then(|i| self.funcs.get(i).copied())
-                    .or_else(|| self.type_name(name));
-                let short_name = short(name);
+                    .or_else(|| self.type_name(name.as_str()));
+                let short_name = short(name.as_str());
                 let pos = self.locate_at(self.file, *span, short_name);
                 self.refer(pos, short_name, d);
                 for a in args {
@@ -1971,8 +1971,8 @@ impl<'a> Builder<'a> {
     fn type_refs(&mut self, t: &TypeRef) {
         match t {
             TypeRef::Name { span, name } => {
-                let d = self.type_name(name);
-                self.refer(self.lc(self.file, *span), name, d);
+                let d = self.type_name(name.as_str());
+                self.refer(self.lc(self.file, *span), name.as_str(), d);
             }
             TypeRef::Record { fields, .. } => {
                 for f in fields {
@@ -2450,11 +2450,11 @@ impl<'a> Builder<'a> {
                     .and_then(|s| self.syms.get(&s).copied())
                     .or_else(|| {
                         sym.filter(|&s| c.state_sym(s))
-                            .and_then(|_| self.place_def(name))
+                            .and_then(|_| self.place_def(name.as_str()))
                     })
-                    .or_else(|| self.value_name(name, *ty))
+                    .or_else(|| self.value_name(name.as_str(), *ty))
                     .or_else(|| {
-                        (name == "None").then(|| {
+                        (name.as_str() == "None").then(|| {
                             self.pseudo(
                                 "None",
                                 "None : option(T)".to_string(),
@@ -2462,7 +2462,7 @@ impl<'a> Builder<'a> {
                             )
                         })
                     });
-                self.refer(self.lc(self.file, *span), name, d);
+                self.refer(self.lc(self.file, *span), name.as_str(), d);
             }
             Expr::Field {
                 span,
@@ -2478,25 +2478,25 @@ impl<'a> Builder<'a> {
                         sym: None,
                         span: ns_span,
                         ..
-                    } if self.namespace(ns).is_some() => {
-                        let n = self.namespace(ns);
-                        self.refer(self.lc(self.file, *ns_span), ns, n);
-                        self.builtin(ns, name)
+                    } if self.namespace(ns.as_str()).is_some() => {
+                        let n = self.namespace(ns.as_str());
+                        self.refer(self.lc(self.file, *ns_span), ns.as_str(), n);
+                        self.builtin(ns.as_str(), name.as_str())
                     }
                     Expr::Ident {
                         span: m_span,
                         name: ns,
                         sym: None,
                         ..
-                    } if self.names.contains_key(&('m', ns.clone())) => {
-                        let m = self.names.get(&('m', ns.clone())).copied();
-                        self.refer(self.lc(self.file, *m_span), ns, m);
+                    } if self.names.contains_key(&('m', ns.to_string())) => {
+                        let m = self.names.get(&('m', ns.to_string())).copied();
+                        self.refer(self.lc(self.file, *m_span), ns.as_str(), m);
                         self.names.get(&('d', format!("{ns}.{name}"))).copied()
                     }
                     _ => {
                         self.expr(base);
                         let under = self.ix.tys[self.key(base.ty())].under - self.base;
-                        self.member(self.key(base.ty()), name).or_else(|| {
+                        self.member(self.key(base.ty()), name.as_str()).or_else(|| {
                             let sized = matches!(
                                 c.types[under].kind,
                                 TyKind::List | TyKind::Bytes | TyKind::String
@@ -2517,12 +2517,12 @@ impl<'a> Builder<'a> {
                     }
                     _ => None,
                 };
-                if self.storage_param_at(*line, *col, name) {
+                if self.storage_param_at(*line, *col, name.as_str()) {
                     return;
                 }
                 if let Some(d) = d {
                     // `M.storage.d` names its domain `storage.d`; the word to mark is `d`.
-                    let word = name.rsplit('.').next().unwrap_or(name);
+                    let word = name.as_str().rsplit('.').next().unwrap_or(name.as_str());
                     let at = self.locate_at(self.file, *span, word);
                     let at = self.span(self.file, at, word);
                     self.reference(at, d, hover);
@@ -2555,13 +2555,13 @@ impl<'a> Builder<'a> {
                 ty,
             } => {
                 let (line, col) = &self.lc(self.file, *span);
-                let short_name = short(name);
+                let short_name = short(name.as_str());
                 let namespace = match base.as_deref() {
                     Some(Expr::Ident {
                         name: ns,
                         sym: None,
                         ..
-                    }) => Some(ns.clone()),
+                    }) => Some(ns.to_string()),
                     _ => None,
                 };
                 let d = if let Some(i) = callee {
@@ -2580,7 +2580,7 @@ impl<'a> Builder<'a> {
                             section_intro("Some"),
                         )),
                         crate::ast::Builtin::Create => self.contracts.get(short_name).copied(),
-                        crate::ast::Builtin::Cast => self.type_name(name).or_else(|| {
+                        crate::ast::Builtin::Cast => self.type_name(name.as_str()).or_else(|| {
                             Some(self.pseudo(
                                 &format!("cast:{name}"),
                                 format!("{name}(x) : {name}"),
@@ -2588,7 +2588,9 @@ impl<'a> Builder<'a> {
                             ))
                         }),
                         crate::ast::Builtin::Ctor(_) => self.value_name(short_name, *ty),
-                        _ => namespace.as_deref().and_then(|ns| self.builtin(ns, name)),
+                        _ => namespace
+                            .as_deref()
+                            .and_then(|ns| self.builtin(ns, name.as_str())),
                     }
                 } else {
                     self.value_name(short_name, *ty)
@@ -2599,11 +2601,11 @@ impl<'a> Builder<'a> {
                         let d = m
                             .or_else(|| self.type_name(ns))
                             .or_else(|| self.namespace(ns));
-                        self.refer(self.lc(self.file, *span), name, d);
+                        self.refer(self.lc(self.file, *span), name.as_str(), d);
                     }
                     (Some(b), _) => self.expr(b),
                     (None, _) => {
-                        if let Some((m, _)) = name.rsplit_once('.') {
+                        if let Some((m, _)) = name.as_str().rsplit_once('.') {
                             let d = self.names.get(&('m', m.to_string())).copied();
                             let back = col.saturating_sub(m.len() as u32 + 1);
                             if back > 0 && self.word_at(self.file, *line, back) == m {
@@ -2724,7 +2726,7 @@ fn stored_path(e: &Expr) -> String {
     match e {
         Expr::Index { base, .. } => stored_path(base),
         Expr::Field { base, name, .. } => format!("{}.{name}", stored_path(base)),
-        Expr::Ident { name, .. } => name.clone(),
+        Expr::Ident { name, .. } => name.to_string(),
         _ => String::new(),
     }
 }
@@ -2920,7 +2922,7 @@ fn flat_ref(flat: bool, t: &TypeRef) -> String {
 
 fn ty_ref(t: &TypeRef) -> String {
     match t {
-        TypeRef::Name { name, .. } => name.clone(),
+        TypeRef::Name { name, .. } => name.to_string(),
         TypeRef::Record { fields, .. } => format!(
             "record {{ {} }}",
             fields

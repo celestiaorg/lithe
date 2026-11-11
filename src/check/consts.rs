@@ -90,7 +90,9 @@ impl Checker {
                 lit: Lit::Uint(w) | Lit::Int(w, _),
                 ..
             } => Ok(*w),
-            Expr::Ident { name, .. } => locals.get(name).copied().ok_or_else(not_const),
+            Expr::Ident { name, .. } => {
+                locals.get(&name.to_string()).copied().ok_or_else(not_const)
+            }
             Expr::Binary {
                 op, left, right, ..
             } => {
@@ -124,11 +126,8 @@ impl Checker {
             Expr::Call {
                 name, args, base, ..
             } if args.len() == 1 && base.is_none() => {
-                let ty = TypeRef::Name {
-                    span,
-                    name: name.clone(),
-                };
-                let id = self.build(&ty).map_err(|_| not_named(name))?;
+                let ty = TypeRef::Name { span, name: *name };
+                let id = self.build(&ty).map_err(|_| not_named(&name.to_string()))?;
                 let t = &self.types[self.peel(id)];
                 if t.kind != TyKind::Uint {
                     return Err(not_const());
@@ -149,10 +148,10 @@ impl Checker {
                     None => module
                         .map(|m| format!("{m}.{name}"))
                         .filter(|k| self.const_fns.contains_key(k))
-                        .unwrap_or_else(|| name.clone()),
+                        .unwrap_or_else(|| name.to_string()),
                 };
                 let Some(f) = self.const_fns.get(&key).cloned() else {
-                    return Err(not_named(name));
+                    return Err(not_named(&name.to_string()));
                 };
                 if busy.contains(&key) {
                     return Err(error(
@@ -755,7 +754,7 @@ impl Fold<'_> {
                 }
                 _ => "...".into(),
             },
-            Expr::Ident { name, .. } => name.clone(),
+            Expr::Ident { name, .. } => name.to_string(),
             Expr::Unary {
                 op: UnOp::Neg,
                 expr,
@@ -782,7 +781,7 @@ impl Fold<'_> {
                 ..
             } if self.funcs[*idx].constant => match base.as_deref() {
                 Some(b) => format!("{}.{name}", self.show(b)),
-                None => name.clone(),
+                None => name.to_string(),
             },
             Expr::Call {
                 name, args, base, ..

@@ -363,7 +363,7 @@ impl<'a> Gen<'a> {
                 span,
                 ..
             } => {
-                let (marker, len) = self.peer_code(name, *span)?;
+                let (marker, len) = self.peer_code(&name.to_string(), *span)?;
                 let value_at = self.capture_value(value)?;
                 let gas = self.arena_word(gas)?;
                 let salt_at = match base {
@@ -2146,7 +2146,7 @@ impl<'a> Gen<'a> {
         span: Span,
     ) -> Result<&'e str, Error> {
         match name {
-            Expr::Ident { name, .. } => Ok(name),
+            Expr::Ident { name, .. } => Ok(name.as_str()),
             _ => Err(error(
                 span,
                 "`Evm.creationCode` takes the name of a contract",

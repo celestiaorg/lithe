@@ -855,7 +855,7 @@ impl Resolver<'_> {
         }
         for d in &mut prog.error_sets {
             for member in &mut d.members {
-                self.named(&mut member.name, member.span, &[Cat::Error], "error")?;
+                self.named_sym(&mut member.name, member.span, &[Cat::Error], "error")?;
             }
         }
         for d in &mut prog.events {
@@ -876,30 +876,30 @@ impl Resolver<'_> {
         }
         for guard in &mut prog.guards {
             if let Some(of) = &mut guard.guard_of {
-                self.module_ref(&mut of.module.name, of.module.span)?;
+                self.module_ref_sym(&mut of.module.name, of.module.span)?;
             }
             self.func(guard)?;
         }
         for hook in &mut prog.hooks {
             if let Some(of) = &mut hook.hook_of {
-                self.module_ref(&mut of.module.name, of.module.span)?;
+                self.module_ref_sym(&mut of.module.name, of.module.span)?;
             }
             self.func(hook)?;
         }
         for use_ in prog.compose.iter_mut().chain(&mut prog.facets) {
-            self.module_ref(&mut use_.name, use_.span)?;
+            self.module_ref_sym(&mut use_.name, use_.span)?;
         }
         for exposed in &mut prog.exposes {
             self.module_ref(&mut exposed.module, exposed.span)?;
             for iface in &mut exposed.interfaces {
-                self.named(&mut iface.name, iface.span, &[Cat::Interface], "interface")?;
+                self.named_sym(&mut iface.name, iface.span, &[Cat::Interface], "interface")?;
             }
             for decl in &mut exposed.decls {
                 self.header(decl)?;
             }
         }
         for iface in &mut prog.supports {
-            self.named(&mut iface.name, iface.span, &[Cat::Interface], "interface")?;
+            self.named_sym(&mut iface.name, iface.span, &[Cat::Interface], "interface")?;
         }
         if let Some(guard) = &mut prog.guard {
             self.locals.clear();
@@ -931,9 +931,9 @@ impl Resolver<'_> {
 
     fn module_body(&mut self, module: &mut ModuleDecl) -> Result<(), Error> {
         for req in &mut module.requires {
-            self.module_ref(&mut req.name, req.span)?;
+            self.module_ref_sym(&mut req.name, req.span)?;
         }
-        let requires: Vec<String> = module.requires.iter().map(|r| r.name.clone()).collect();
+        let requires: Vec<String> = module.requires.iter().map(|r| r.name.to_string()).collect();
         let mut members: HashSet<String> = module
             .types
             .iter()
@@ -972,7 +972,7 @@ impl Resolver<'_> {
             }
             for d in &mut module.error_sets {
                 for member in &mut d.members {
-                    self.named(&mut member.name, member.span, &[Cat::Error], "error")?;
+                    self.named_sym(&mut member.name, member.span, &[Cat::Error], "error")?;
                 }
             }
             for d in &mut module.events {
@@ -1045,7 +1045,7 @@ impl Resolver<'_> {
         }
         if let Some(raises) = &mut func.raises {
             for part in &mut raises.parts {
-                self.named(
+                self.named_sym(
                     &mut part.name,
                     part.span,
                     &[Cat::Error, Cat::ErrorSet],
@@ -1066,12 +1066,16 @@ impl Resolver<'_> {
                 bind_expr(&clause.expr, &mut self.locals);
             }
             self.spec_owner = None;
-            if let Some(module) = &mut block.module {
-                self.module_ref(module, block.span)?;
-                self.spec_owner = Some(module.clone());
+            if block.module.is_some() {
+                let module = &mut block.module;
+                let mut text = module.clone().unwrap_or_default();
+                self.module_ref(&mut text, block.span)?;
+                *module = Some(text.clone());
+                self.spec_owner = Some(text);
             } else if let Some(target) = &mut block.target {
-                if let Some(name) = self.lookup(&target.name, &[Cat::Func]) {
-                    target.name = name;
+                let spelled = target.name.to_string();
+                if let Some(name) = self.lookup(&spelled, &[Cat::Func]) {
+                    target.name = Names::shared().intern(&name);
                 }
             }
             for clause in &mut block.clauses {
@@ -1081,7 +1085,7 @@ impl Resolver<'_> {
                         self.ty(ty)?;
                     }
                     ClauseKind::Raises(named) => {
-                        self.named(&mut named.name, named.span, &[Cat::Error], "error")?;
+                        self.named_sym(&mut named.name, named.span, &[Cat::Error], "error")?;
                     }
                     ClauseKind::Invariant(_) | ClauseKind::Panics | ClauseKind::Ensures => {}
                 }
@@ -1218,24 +1222,49 @@ impl Resolver<'_> {
         self.missing(name, cats, what, span)
     }
 
+    /// [`Self::named`] for a name the AST holds as a symbol: the table's text goes in, and the
+    /// rewritten text is interned back. The table is the process-wide one every parse interns
+    /// into, which is what makes a symbol name the same text in every later build.
+    fn named_sym(
+        &mut self,
+        name: &mut Symbol,
+        span: Span,
+        cats: &[Cat],
+        what: &str,
+    ) -> Result<(), Error> {
+        let mut text = name.to_string();
+        self.named(&mut text, span, cats, what)?;
+        *name = Names::shared().intern(&text);
+        Ok(())
+    }
+
+    /// [`Self::module_ref`] for a name the AST holds as a symbol.
+    fn module_ref_sym(&mut self, name: &mut Symbol, span: Span) -> Result<(), Error> {
+        let mut text = name.to_string();
+        self.module_ref(&mut text, span)?;
+        *name = Names::shared().intern(&text);
+        Ok(())
+    }
+
     fn ty(&mut self, ty: &mut TypeRef) -> Result<(), Error> {
         match ty {
             TypeRef::Name { name, span } => {
-                if self.type_params.contains(name.as_str())
-                    || universe_type(name)
-                    || self.own_member(name)
+                let text = name.to_string();
+                if self.type_params.contains(text.as_str())
+                    || universe_type(&text)
+                    || self.own_member(&text)
                 {
                     return Ok(());
                 }
-                if let Some(canonical) = self.lookup(name, &[Cat::Type, Cat::Interface]) {
-                    *name = canonical;
+                if let Some(canonical) = self.lookup(&text, &[Cat::Type, Cat::Interface]) {
+                    *name = Names::shared().intern(&canonical);
                     return Ok(());
                 }
-                if self.member(name) {
+                if self.member(&text) {
                     return Ok(());
                 }
                 let span = *span;
-                self.missing(&name.clone(), &[Cat::Type, Cat::Interface], "type", span)
+                self.missing(&text, &[Cat::Type, Cat::Interface], "type", span)
             }
             TypeRef::Record { fields, .. } => {
                 for field in fields {
@@ -1298,10 +1327,10 @@ impl Resolver<'_> {
             ) = (&mut call, &self.module)
             {
                 if let Expr::Ident { name, .. } = &*size {
-                    if module.consts.contains(name) {
+                    if module.consts.contains(&name.to_string()) {
                         *base = Some(Box::new(Expr::Ident {
                             span: size.span(),
-                            name: module.name.clone(),
+                            name: Names::shared().intern(&module.name),
                             sym: None,
                             builtin: None,
                             ty: 0,
@@ -1322,10 +1351,10 @@ impl Resolver<'_> {
             Some(module),
         ) = (&mut *size, &self.module)
         {
-            if module.funcs.contains(name.as_str()) {
+            if module.funcs.contains(&name.to_string()) {
                 *base = Some(Box::new(Expr::Ident {
                     span: *span,
-                    name: module.name.clone(),
+                    name: Names::shared().intern(&module.name),
                     sym: None,
                     builtin: None,
                     ty: 0,
@@ -1517,7 +1546,7 @@ impl Resolver<'_> {
         if path.len() >= 2 {
             let first = Expr::Ident {
                 span,
-                name: path[0].clone(),
+                name: Names::shared().intern(&path[0]),
                 sym: None,
                 builtin: None,
                 ty: 0,
@@ -1564,19 +1593,22 @@ impl Resolver<'_> {
             return false;
         };
         let span = base.span();
+        let names = Names::shared();
         let rewritten = match base.as_mut() {
-            Expr::Ident { name: kind, .. } if self.owns(kind, name) => Expr::Ident {
-                span,
-                name: format!("{kind}.{name}"),
-                sym: None,
-                builtin: None,
-                ty: 0,
-            },
+            Expr::Ident { name: kind, .. } if self.owns(&kind.to_string(), &name.to_string()) => {
+                Expr::Ident {
+                    span,
+                    name: names.intern(&format!("{kind}.{name}")),
+                    sym: None,
+                    builtin: None,
+                    ty: 0,
+                }
+            }
             Expr::Field {
                 base: module,
                 name: kind,
                 ..
-            } if STATE_KINDS.contains(&kind.as_str()) => {
+            } if STATE_KINDS.contains(&kind.to_string().as_str()) => {
                 let Some(canonical) = self.module_expr(module) else {
                     return false;
                 };
@@ -1587,12 +1619,12 @@ impl Resolver<'_> {
                     span: at_span,
                     base: Box::new(Expr::Ident {
                         span: module.span(),
-                        name: canonical,
+                        name: names.intern(&canonical),
                         sym: None,
                         builtin: None,
                         ty: 0,
                     }),
-                    name: format!("{kind}.{name}"),
+                    name: names.intern(&format!("{kind}.{name}")),
                     root: None,
                     leaf: 0,
                     ty: 0,
@@ -1624,22 +1656,23 @@ impl Resolver<'_> {
     /// The call a constant's name stands for: `n`, `A.n` through an import's alias, a
     /// module's own `n`, or `M.n`.
     fn constant(&mut self, expr: &Expr) -> Option<Expr> {
+        let names = Names::shared();
         let (name, base) = match expr {
-            Expr::Ident { name, .. } if self.locals.contains(name) => return None,
+            Expr::Ident { name, .. } if self.locals.contains(&name.to_string()) => return None,
             Expr::Ident { name, .. }
                 if self
                     .module
                     .as_ref()
-                    .is_some_and(|m| m.consts.contains(name)) =>
+                    .is_some_and(|m| m.consts.contains(&name.to_string())) =>
             {
-                (name.clone(), None)
+                (name.to_string(), None)
             }
-            Expr::Ident { name, .. } => (self.lookup(name, &[Cat::Const])?, None),
+            Expr::Ident { name, .. } => (self.lookup(&name.to_string(), &[Cat::Const])?, None),
             Expr::Field { base, name, .. } => {
                 let aliased = match base.as_ref() {
                     Expr::Ident { name: alias, .. }
-                        if !self.locals.contains(alias)
-                            && self.scope.aliases.contains_key(alias) =>
+                        if !self.locals.contains(&alias.to_string())
+                            && self.scope.aliases.contains_key(&alias.to_string()) =>
                     {
                         self.lookup(&format!("{alias}.{name}"), &[Cat::Const])
                     }
@@ -1655,12 +1688,12 @@ impl Resolver<'_> {
                         let span = base.span();
                         let base = Expr::Ident {
                             span,
-                            name: module,
+                            name: names.intern(&module),
                             sym: None,
                             builtin: None,
                             ty: 0,
                         };
-                        (name.clone(), Some(Box::new(base)))
+                        (name.to_string(), Some(Box::new(base)))
                     }
                 }
             }
@@ -1668,7 +1701,7 @@ impl Resolver<'_> {
         };
         Some(Expr::Call {
             span: expr.span(),
-            name,
+            name: names.intern(&name),
             args: Vec::new(),
             base,
             callee: None,
@@ -1708,10 +1741,13 @@ impl Resolver<'_> {
     /// The module an expression names, as `M` or `A.M`, when it is not a value.
     fn module_expr(&mut self, expr: &Expr) -> Option<String> {
         match expr {
-            Expr::Ident { name, .. } if !self.locals.contains(name) => self.lookup_module(name),
+            Expr::Ident { name, .. } if !self.locals.contains(&name.to_string()) => {
+                self.lookup_module(&name.to_string())
+            }
             Expr::Field { base, name, .. } => match base.as_ref() {
                 Expr::Ident { name: alias, .. }
-                    if !self.locals.contains(alias) && self.scope.aliases.contains_key(alias) =>
+                    if !self.locals.contains(&alias.to_string())
+                        && self.scope.aliases.contains_key(&alias.to_string()) =>
                 {
                     self.lookup_module(&format!("{alias}.{name}"))
                 }
@@ -1726,10 +1762,11 @@ impl Resolver<'_> {
         let Expr::Ident { name, span, .. } = expr else {
             return Ok(());
         };
-        if self.locals.contains(name) || self.scope.aliases.contains_key(name) {
+        let name = name.to_string();
+        if self.locals.contains(&name) || self.scope.aliases.contains_key(&name) {
             return Ok(());
         }
-        match self.hidden(name, &[Cat::Module]) {
+        match self.hidden(&name, &[Cat::Module]) {
             Some(note) => Err(error(*span, format!("unknown name `{name}`\n\n{note}"))),
             None => Ok(()),
         }
@@ -1756,14 +1793,15 @@ impl Resolver<'_> {
                 self.named_expr(ty, &[Cat::Type, Cat::Interface], "type")
             }
             (Tag::Call(Builtin::CreationCode), [Expr::Ident { name, span, .. }, ..]) => {
-                self.visible_contract(name, *span)
+                let spelled = name.to_string();
+                self.visible_contract(&spelled, *span)
             }
             (Tag::Call(Builtin::FacetAddress), [Expr::Ident { name, span, .. }, ..]) => {
-                if let Some(canonical) = self.lookup_module(name) {
-                    *name = canonical;
+                let spelled = name.to_string();
+                if let Some(canonical) = self.lookup_module(&spelled) {
+                    *name = Names::shared().intern(&canonical);
                     return Ok(());
                 }
-                let spelled = name.clone();
                 self.missing(&spelled, &[Cat::Module], "module", *span)
             }
             _ => Ok(()),
@@ -1774,9 +1812,13 @@ impl Resolver<'_> {
     fn named_expr(&mut self, expr: &mut Expr, cats: &[Cat], what: &str) -> Result<(), Error> {
         let span = expr.span();
         let spelled = match &*expr {
-            Expr::Ident { name, .. } if !self.locals.contains(name) => name.clone(),
+            Expr::Ident { name, .. } if !self.locals.contains(&name.to_string()) => {
+                name.to_string()
+            }
             Expr::Field { base, name, .. } => match base.as_ref() {
-                Expr::Ident { name: alias, .. } if self.scope.aliases.contains_key(alias) => {
+                Expr::Ident { name: alias, .. }
+                    if self.scope.aliases.contains_key(&alias.to_string()) =>
+                {
                     format!("{alias}.{name}")
                 }
                 _ => return Ok(()),
@@ -1792,7 +1834,7 @@ impl Resolver<'_> {
         if let Some(canonical) = self.lookup(&spelled, cats) {
             *expr = Expr::Ident {
                 span,
-                name: canonical,
+                name: Names::shared().intern(&canonical),
                 sym: None,
                 builtin: None,
                 ty: 0,
@@ -1834,8 +1876,9 @@ impl Resolver<'_> {
         match expr {
             Expr::Lit { .. } => Ok(()),
             Expr::Ident { name, .. } => {
-                if !self.locals.contains(name.as_str()) {
-                    self.contract_ref(&name.clone());
+                let text = name.to_string();
+                if !self.locals.contains(&text) {
+                    self.contract_ref(&text);
                 }
                 Ok(())
             }
@@ -1847,7 +1890,7 @@ impl Resolver<'_> {
                     let span = expr.span();
                     *expr = Expr::Ident {
                         span,
-                        name: canonical,
+                        name: Names::shared().intern(&canonical),
                         sym: None,
                         builtin: None,
                         ty: 0,
@@ -1861,7 +1904,7 @@ impl Resolver<'_> {
                     let span = base.span();
                     **base = Expr::Ident {
                         span,
-                        name: canonical,
+                        name: Names::shared().intern(&canonical),
                         sym: None,
                         builtin: None,
                         ty: 0,
@@ -1921,10 +1964,11 @@ impl Resolver<'_> {
                 ..
             } => {
                 let span = *span;
+                let names = Names::shared();
                 let named = match base.as_deref() {
                     None => Some(Expr::Ident {
                         span,
-                        name: name.clone(),
+                        name: *name,
                         sym: None,
                         builtin: None,
                         ty: 0,
@@ -1932,7 +1976,7 @@ impl Resolver<'_> {
                     Some(inner @ Expr::Ident { .. }) => Some(Expr::Field {
                         span,
                         base: Box::new(inner.clone()),
-                        name: name.clone(),
+                        name: *name,
                         root: None,
                         leaf: 0,
                         ty: 0,
@@ -1950,14 +1994,15 @@ impl Resolver<'_> {
                 }
                 if let Some(kind) = builtin.as_ref().filter(|k| **k != Builtin::Braced) {
                     if *kind == Builtin::Create {
-                        self.contract_ref(&name.clone());
-                        self.visible_contract(name, span)?;
+                        let spelled = name.to_string();
+                        self.contract_ref(&spelled);
+                        self.visible_contract(&spelled, span)?;
                     }
                     if *kind == Builtin::SpecForall {
                         if let Some(Expr::Ident { name, span, .. }) = args.get_mut(1) {
                             let mut ty = TypeRef::Name {
                                 span: *span,
-                                name: name.clone(),
+                                name: *name,
                             };
                             self.ty(&mut ty)?;
                             if let TypeRef::Name { name: resolved, .. } = ty {
@@ -1971,37 +2016,38 @@ impl Resolver<'_> {
                     return Ok(());
                 }
                 let callable = [Cat::Func, Cat::Type, Cat::Interface];
+                let spelled = name.to_string();
                 match base {
                     None => {
                         if self
                             .module
                             .as_ref()
-                            .is_some_and(|m| m.funcs.contains(name.as_str()))
+                            .is_some_and(|m| m.funcs.contains(&spelled))
                         {
                             return Ok(());
                         }
-                        if let Some(canonical) = self.lookup(name, &callable) {
-                            *name = canonical;
+                        if let Some(canonical) = self.lookup(&spelled, &callable) {
+                            *name = names.intern(&canonical);
                             return Ok(());
                         }
-                        if self.member(name)
-                            || universe_type(name)
-                            || self.type_params.contains(name.as_str())
-                            || self.ctors.contains(name.as_str())
-                            || matches!(name.as_str(), "Some" | "None")
+                        if self.member(&spelled)
+                            || universe_type(&spelled)
+                            || self.type_params.contains(&spelled)
+                            || self.ctors.contains(&spelled)
+                            || matches!(spelled.as_str(), "Some" | "None")
                         {
                             return Ok(());
                         }
-                        self.missing(&name.clone(), &callable, "function", span)
+                        self.missing(&spelled, &callable, "function", span)
                     }
                     Some(inner) => {
                         if let Expr::Ident { name: alias, .. } = inner.as_ref() {
-                            if !self.locals.contains(alias)
-                                && self.scope.aliases.contains_key(alias)
+                            if !self.locals.contains(&alias.to_string())
+                                && self.scope.aliases.contains_key(&alias.to_string())
                             {
                                 let spelled = format!("{alias}.{name}");
                                 if let Some(canonical) = self.lookup(&spelled, &callable) {
-                                    *name = canonical;
+                                    *name = Names::shared().intern(&canonical);
                                     *base = None;
                                     return Ok(());
                                 }
@@ -2012,11 +2058,11 @@ impl Resolver<'_> {
                             let tag = self
                                 .intrinsics
                                 .get(&canonical)
-                                .and_then(|members| members.get(name.as_str()))
+                                .and_then(|members| members.get(&spelled))
                                 .copied();
                             **inner = Expr::Ident {
                                 span,
-                                name: canonical,
+                                name: Names::shared().intern(&canonical),
                                 sym: None,
                                 builtin: None,
                                 ty: 0,
@@ -2108,7 +2154,7 @@ fn bind_expr(expr: &Expr, out: &mut HashSet<String>) {
             ..
         } => {
             if let Some(Expr::Ident { name, .. }) = args.first() {
-                out.insert(name.clone());
+                out.insert(name.to_string());
             }
             if let Some(body) = args.get(2) {
                 bind_expr(body, out);

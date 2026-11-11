@@ -172,10 +172,10 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
     publish_generic(prog)?;
     let mut used = std::collections::BTreeMap::new();
     for use_ in &prog.compose {
-        if !by_name.contains_key(&use_.name) {
+        if !by_name.contains_key(&use_.name.to_string()) {
             return Err(error(use_.span, format!("unknown module `{}`", use_.name)));
         }
-        if let Some(first) = used.insert(use_.name.clone(), use_.span) {
+        if let Some(first) = used.insert(use_.name.to_string(), use_.span) {
             // `compose` puts plain uses in an order of its own: name the one written second.
             let span = first.max(use_.span);
             return Err(error(
@@ -187,14 +187,18 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
     for name in used.keys() {
         let module = &prog.modules[by_name[name]];
         for req in &module.requires {
-            if !by_name.contains_key(&req.name) {
+            if !by_name.contains_key(&req.name.to_string()) {
                 return Err(
                     error(req.span, format!("unknown module `{}`", req.name)).in_file(module.file)
                 );
             }
         }
     }
-    let order: Vec<String> = prog.compose.iter().map(|use_| use_.name.clone()).collect();
+    let order: Vec<String> = prog
+        .compose
+        .iter()
+        .map(|use_| use_.name.to_string())
+        .collect();
     for name in order {
         let module = prog.modules[by_name[&name]].clone();
         check_guarded(&module).map_err(|err| err.in_file(module.file))?;
@@ -307,7 +311,7 @@ pub(super) fn compose(prog: &mut Program) -> Result<(), Error> {
             };
             // Each member speaks for the interface where the contract names it.
             members.extend(iface.methods.iter().cloned().map(|mut member| {
-                member.interface = Some(named.name.clone());
+                member.interface = Some(named.name.to_string());
                 member.span = named.span;
                 member
             }));
@@ -638,7 +642,7 @@ impl Header {
         let raises = func
             .raises
             .iter()
-            .flat_map(|raises| raises.parts.iter().map(|p| p.name.clone()))
+            .flat_map(|raises| raises.parts.iter().map(|p| p.name.to_string()))
             .collect();
         Self {
             head,
@@ -786,7 +790,7 @@ pub(super) fn supports_interface(
 fn erc165_func(span: Span, file: FileId, ids: &[u32]) -> Func {
     let ident = || Expr::Ident {
         span,
-        name: "interfaceId".to_string(),
+        name: Names::shared().intern("interfaceId"),
         sym: None,
         builtin: None,
         ty: 0,
@@ -814,7 +818,7 @@ fn erc165_func(span: Span, file: FileId, ids: &[u32]) -> Func {
         });
     let name = |name: &str| TypeRef::Name {
         span,
-        name: name.to_string(),
+        name: Names::shared().intern(name),
     };
     Func {
         span,

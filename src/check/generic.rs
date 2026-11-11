@@ -12,7 +12,7 @@ impl Checker {
             else {
                 return None;
             };
-            if let Some(index) = self.generic_module(module) {
+            if let Some(index) = self.generic_module(module.as_str()) {
                 if self.modules[index]
                     .funcs
                     .iter()
@@ -36,7 +36,7 @@ impl Checker {
             return None;
         }
         if let Some(module) = &self.module_name {
-            if let Some(index) = self.generic_module(module) {
+            if let Some(index) = self.generic_module(module.as_str()) {
                 if self.modules[index]
                     .funcs
                     .iter()
@@ -51,7 +51,7 @@ impl Checker {
             }
         }
         if let Some(module) = &self.spec_module {
-            if let Some(index) = self.generic_module(module) {
+            if let Some(index) = self.generic_module(module.as_str()) {
                 if self.modules[index]
                     .funcs
                     .iter()
@@ -88,6 +88,21 @@ impl Checker {
     /// Among overloads, the one taking as many arguments as the call passes, or of several,
     /// the one whose parameters the arguments' types match. The call is renamed to it.
     pub(super) fn pick_overload(
+        &mut self,
+        span: Span,
+        base: &Option<Box<Expr>>,
+        name: &mut Symbol,
+        args: &mut [Expr],
+    ) -> Result<(), Error> {
+        let mut text = name.to_string();
+        self.pick_overload_text(span, base, &mut text, args)?;
+        *name = Names::shared().intern(&text);
+        Ok(())
+    }
+
+    /// [`Self::pick_overload`] for a name as text: an overloaded call is renamed to the
+    /// overload it picks.
+    fn pick_overload_text(
         &mut self,
         span: Span,
         base: &Option<Box<Expr>>,
@@ -577,7 +592,7 @@ impl Checker {
         let param = self.expand_name(param, module, params, env)?;
         match &param {
             TypeRef::Name { name, .. } if params.iter().any(|item| item.name == *name) => {
-                if let Some(have) = env.get(name).copied() {
+                if let Some(have) = env.get(&name.to_string()).copied() {
                     if !self.same(have, arg) {
                         return Err(error(
                             span,
@@ -589,7 +604,7 @@ impl Checker {
                         ));
                     }
                 } else {
-                    env.insert(name.clone(), arg);
+                    env.insert(name.to_string(), arg);
                 }
                 Ok(())
             }
@@ -753,12 +768,12 @@ impl Checker {
 fn subst_bound(ty: &TypeRef, env: &FxHashMap<String, usize>) -> TypeRef {
     match ty {
         TypeRef::Name { name, span } => {
-            if let Some(id) = env.get(name) {
+            if let Some(id) = env.get(&name.to_string()) {
                 TypeRef::Hole { id: *id }
             } else {
                 TypeRef::Name {
                     span: *span,
-                    name: name.clone(),
+                    name: *name,
                 }
             }
         }
@@ -1069,16 +1084,16 @@ fn rewrite_expr(expr: &mut Expr, name: &str, path: &[Seg]) {
 fn storage_path(expr: &Expr, param: &str, keys: &mut Vec<(String, Expr)>) -> Option<Vec<Seg>> {
     match expr {
         // `M.storage.d`: the module, then its domain, whose name holds a dot of its own.
-        Expr::Ident { name, .. } => Some(match name.split_once('.') {
+        Expr::Ident { name, .. } => Some(match name.to_string().split_once('.') {
             Some((module, domain)) if !STATE_KINDS.contains(&module) => vec![
                 Seg::Field(module.to_string()),
                 Seg::Field(domain.to_string()),
             ],
-            _ => vec![Seg::Field(name.clone())],
+            _ => vec![Seg::Field(name.to_string())],
         }),
         Expr::Field { base, name, .. } => {
             let mut path = storage_path(base, param, keys)?;
-            path.push(Seg::Field(name.clone()));
+            path.push(Seg::Field(name.to_string()));
             Some(path)
         }
         Expr::Index { base, index, .. } => {
@@ -1098,7 +1113,7 @@ fn seg_expr(span: Span, path: &[Seg]) -> Expr {
         expr = Some(match (seg, expr) {
             (Seg::Field(name), None) => Expr::Ident {
                 span,
-                name: name.clone(),
+                name: Names::shared().intern(name),
                 sym: None,
                 builtin: None,
                 ty: 0,
@@ -1106,7 +1121,7 @@ fn seg_expr(span: Span, path: &[Seg]) -> Expr {
             (Seg::Field(name), Some(base)) => Expr::Field {
                 span,
                 base: Box::new(base),
-                name: name.clone(),
+                name: Names::shared().intern(name),
                 root: None,
                 leaf: 0,
                 ty: 0,
@@ -1116,7 +1131,7 @@ fn seg_expr(span: Span, path: &[Seg]) -> Expr {
                 base: Box::new(base.expect("a path starts with a name")),
                 index: Box::new(Expr::Ident {
                     span,
-                    name: name.clone(),
+                    name: Names::shared().intern(name),
                     sym: None,
                     builtin: None,
                     ty: 0,
@@ -1142,7 +1157,7 @@ fn rewrite_dest(
 ) {
     let key = |name: &str| Expr::Ident {
         span,
-        name: name.to_string(),
+        name: Names::shared().intern(name),
         sym: None,
         builtin: None,
         ty: 0,

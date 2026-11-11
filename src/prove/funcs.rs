@@ -383,7 +383,7 @@ fn prove_subject(
                         .position(|e| e.name == name.name)
                         .map_or(0, |i| i as i64 + 1);
                     conds.push(Cond {
-                        error: Some((name.name.clone(), code)),
+                        error: Some((name.name.to_string(), code)),
                         term,
                         label: said,
                         text: text.clone(),

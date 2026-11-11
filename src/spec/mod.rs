@@ -36,7 +36,7 @@ pub(crate) fn inferred(ty: &TypeRef) -> bool {
 pub(crate) fn inferred_ty() -> TypeRef {
     TypeRef::Name {
         span: Span::NONE,
-        name: INFERRED.to_string(),
+        name: Names::shared().intern(INFERRED),
     }
 }
 
@@ -187,7 +187,7 @@ fn check_unplaced(mut prog: Program, evm: crate::EvmVersion) -> Result<Specs, Er
             )
             .in_file(blocks[0].file));
         }
-        let requires: Vec<String> = module.requires.iter().map(|r| r.name.clone()).collect();
+        let requires: Vec<String> = module.requires.iter().map(|r| r.name.to_string()).collect();
         let mut funcs = Vec::new();
         for block in &blocks {
             add_block(&mut specs, &base, &prog, block, &mut funcs)?;
@@ -335,7 +335,7 @@ impl SpecBuild {
                     format!("#clause {i}"),
                     TypeRef::Name {
                         span: clause.span,
-                        name: "bool".to_string(),
+                        name: Names::shared().intern("bool"),
                     },
                 ),
             };
@@ -353,7 +353,7 @@ impl SpecBuild {
         funcs.push(spec_func(&fname, block.span, resolved.params, stmts, None));
         let label = match &module {
             Some(m) => format!("{m}.{}", target.name),
-            None => target.name.clone(),
+            None => target.name.to_string(),
         };
         self.pending.push(Pending {
             name: fname,
@@ -477,7 +477,7 @@ fn spec_func(
 ) -> Func {
     let bool_ty = TypeRef::Name {
         span,
-        name: "bool".to_string(),
+        name: Names::shared().intern("bool"),
     };
     Func {
         span,
@@ -551,7 +551,7 @@ fn resolve(
             },
             body: Body::Func {
                 module: module.map(str::to_string),
-                name: name.clone(),
+                name: name.to_string(),
                 external,
             },
             params: spec_params(&f.params),
@@ -573,7 +573,10 @@ fn resolve(
                 }
             }
             if found.is_empty() {
-                if let Some(i) = funcs.iter().position(|f| copied_external(f, module, name)) {
+                if let Some(i) = funcs
+                    .iter()
+                    .position(|f| copied_external(f, module, &name.to_string()))
+                {
                     found.push((true, Candidate::Func(i)));
                 }
             }
@@ -610,7 +613,7 @@ fn resolve(
                 None => !funcs.iter().any(|f| &f.name == name),
             };
             let declared = match module {
-                Some(module) => module_fn(prog, module, name),
+                Some(module) => module_fn(prog, module, &name.to_string()),
                 None => prog.funcs.iter().find(|f| &f.name == name),
             }
             .filter(|_| copied);
@@ -622,14 +625,14 @@ fn resolve(
                         target: Target::Func(format!("{module}.{name}")),
                         body: Body::Func {
                             module: Some(module.to_string()),
-                            name: name.clone(),
+                            name: name.to_string(),
                             external: true,
                         },
                         params: spec_params(&f.params),
                         errors: f
                             .raises
                             .iter()
-                            .flat_map(|r| r.parts.iter().map(|n| n.name.clone()))
+                            .flat_map(|r| r.parts.iter().map(|n| n.name.to_string()))
                             .collect(),
                     });
                 }

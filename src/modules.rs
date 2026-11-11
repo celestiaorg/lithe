@@ -445,7 +445,7 @@ fn load_entry_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Resu
     };
     stamp_all(&mut file.bare, &own)?;
     for (name, blocks) in &mut file.contracts {
-        stamp_all(blocks, &(own.0.clone(), Some(name.name.clone())))?;
+        stamp_all(blocks, &(own.0.clone(), Some(name.name.to_string())))?;
     }
     for (_, blocks) in &mut file.modules {
         stamp_all(blocks, &own)?;
@@ -460,7 +460,8 @@ fn load_entry_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Resu
     }
     prog.specs.extend(file.bare);
     for (name, blocks) in file.contracts {
-        let named = |unit: &Program| unit.contract_name.as_deref() == Some(name.name.as_str());
+        let named =
+            |unit: &Program| unit.contract_name.as_deref() == Some(name.name.to_string().as_str());
         if named(prog) {
             prog.specs.extend(blocks);
         } else if let Some(unit) = prog.siblings.iter_mut().find(|unit| named(unit)) {
@@ -889,12 +890,12 @@ fn check_import(src: &Program, via: &UseDecl) -> Result<(), Error> {
         let module = guard
             .guard_of
             .as_ref()
-            .map_or("", |of| of.module.name.as_str());
+            .map_or(String::new(), |of| of.module.name.to_string());
         return Err(error(
             span,
             format!(
                 "an imported file cannot bind guard `{}.{}`; the contract that exposes the module's externals writes its guards in `use ... with`",
-                shown(module),
+                shown(&module),
                 guard.name
             ),
         ));
@@ -904,7 +905,7 @@ fn check_import(src: &Program, via: &UseDecl) -> Result<(), Error> {
             span,
             format!(
                 "an imported file cannot bind hook `{}.{}`; the contract that uses the module implements its hooks in `use ... with`",
-                shown(&of.module.name),
+                shown(&of.module.name.to_string()),
                 of.name
             ),
         ));
@@ -986,10 +987,10 @@ fn append(dst: &mut Program, src: Program, own: bool, files: &SourceMap) -> Resu
     dst.modules.extend(src.modules);
     let mut mine = std::collections::HashSet::new();
     for use_ in src.compose {
-        if own && !mine.insert(use_.name.clone()) {
+        if own && !mine.insert(use_.name.to_string()) {
             return Err(error(
                 use_.span,
-                format!("module `{}` is already used", shown(&use_.name)),
+                format!("module `{}` is already used", shown(&use_.name.to_string())),
             ));
         }
         if dst.compose.iter().any(|have| have.name == use_.name) {
@@ -1042,6 +1043,7 @@ fn add_peer(
 /// of the plain uses nor whether a module is also written changes what the contract
 /// compiles to. The uses with `delegated`, `exposing`, or `with` follow, in the order written.
 fn imply(prog: &mut Program) {
+    let names = prog.names.clone();
     let bound = |name: &str| {
         prog.facets.iter().any(|m| m.name == name)
             || prog.exposes.iter().any(|e| e.module == name)
@@ -1060,7 +1062,7 @@ fn imply(prog: &mut Program) {
     let composable =
         |name: &str| module(name).is_some_and(|m| m.params.is_empty() && m.intrinsics.is_empty());
     let mut implied: Vec<NameAt> = Vec::new();
-    let mut todo: Vec<String> = prog.compose.iter().map(|u| u.name.clone()).collect();
+    let mut todo: Vec<String> = prog.compose.iter().map(|u| u.name.to_string()).collect();
     let mut wanted: Vec<String> = prog.refs.clone();
     loop {
         for name in wanted.drain(..) {
@@ -1068,7 +1070,7 @@ fn imply(prog: &mut Program) {
             if composable(&name) && !prog.compose.iter().any(have) && !implied.iter().any(have) {
                 implied.push(NameAt {
                     span: Span::NONE,
-                    name: name.clone(),
+                    name: names.intern(&name),
                 });
                 todo.push(name);
             }
@@ -1077,33 +1079,35 @@ fn imply(prog: &mut Program) {
             break;
         };
         if let Some(m) = module(&name) {
-            wanted.extend(m.requires.iter().map(|req| req.name.clone()));
+            wanted.extend(m.requires.iter().map(|req| req.name.to_string()));
             wanted.extend(m.refs.iter().cloned());
         }
     }
     let (mut plain, rest): (Vec<NameAt>, Vec<NameAt>) = std::mem::take(&mut prog.compose)
         .into_iter()
-        .partition(|u| !bound(&u.name));
-    prog.implied = implied.iter().map(|u| u.name.clone()).collect();
+        .partition(|u| !bound(&u.name.to_string()));
+    prog.implied = implied.iter().map(|u| u.name.to_string()).collect();
     plain.extend(implied);
     // Requirements first; among modules free to go, the first by name.
+    let text = |u: &NameAt| names.get(u.name);
     let mut ordered = Vec::new();
     while !plain.is_empty() {
         let ready = |u: &NameAt| {
-            module(&u.name).is_none_or(|m| {
+            let spelled = u.name.to_string();
+            module(&spelled).is_none_or(|m| {
                 m.requires
                     .iter()
-                    .map(|req| &req.name)
-                    .chain(&m.refs)
-                    .all(|dep| *dep == u.name || !plain.iter().any(|p| &p.name == dep))
+                    .map(|req| req.name.to_string())
+                    .chain(m.refs.iter().cloned())
+                    .all(|dep| dep == spelled || !plain.iter().any(|p| p.name == dep))
             })
         };
         let pick = (0..plain.len())
             .filter(|&i| ready(&plain[i]))
-            .min_by(|&a, &b| plain[a].name.cmp(&plain[b].name))
+            .min_by(|&a, &b| text(&plain[a]).cmp(&text(&plain[b])))
             .unwrap_or_else(|| {
                 (0..plain.len())
-                    .min_by(|&a, &b| plain[a].name.cmp(&plain[b].name))
+                    .min_by(|&a, &b| text(&plain[a]).cmp(&text(&plain[b])))
                     .expect("a module")
             });
         ordered.push(plain.remove(pick));
