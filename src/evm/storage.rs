@@ -463,6 +463,49 @@ fn named_storage_and_upgrade_migrate_once() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An upgrade may append cases to a variant with no payloads, which stays a `uint8` whose old
+/// cases keep their indexes, as a map key or a field; reordering, removing, or touching a variant
+/// with payloads still changes the layout.
+#[test]
+fn upgrade_appends_enum_cases() {
+    let dir = std::env::temp_dir().join(format!("lithe-enum-upgrade-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let src = "\
+type Kind is A | B | C
+type Shape is Dot | Line of uint
+storage is record {
+  byKind : map(Kind, address);
+  last : Kind;
+  shape : Shape;
+}
+external view function last() : Kind is storage.last
+";
+    let path = dir.join("old.lithe");
+    std::fs::write(&path, src).expect("old");
+    let diff_to = |name: &str, next_src: String| {
+        let next = dir.join(name);
+        std::fs::write(&next, next_src).expect("next");
+        crate::storage_diff(&Sources::disk(), &path, &next).expect("diff")
+    };
+    let appended = diff_to("appended.lithe", src.replace("A | B | C", "A | B | C | D"));
+    assert!(appended.contains("byKind unchanged"), "{appended}");
+    assert!(appended.contains("last unchanged"), "{appended}");
+    assert!(appended.ends_with("\ncompatible\n"), "{appended}");
+    for (name, next) in [
+        ("reordered.lithe", src.replace("A | B | C", "B | A | C")),
+        ("removed.lithe", src.replace("A | B | C", "A | B")),
+        ("inserted.lithe", src.replace("A | B | C", "A | D | B | C")),
+        (
+            "payload.lithe",
+            src.replace("Dot | Line of uint", "Dot | Line of uint | Box of uint"),
+        ),
+    ] {
+        let diff = diff_to(name, next);
+        assert!(diff.ends_with("\nincompatible\n"), "{name}: {diff}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A `bytes` or `string` of any length round-trips as a map value or a list element, laid
 /// out as Solidity lays it out, and a shorter value clears the data slots it no longer uses.
 #[test]

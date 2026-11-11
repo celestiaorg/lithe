@@ -2160,7 +2160,7 @@ fn format_diff(before: &[check::DomainLayout], after: &[check::DomainLayout]) ->
         for index in 0..shared {
             let (old_name, old_ty) = &old.fields[index];
             let (new_name, new_ty) = &domain.fields[index];
-            if old_name == new_name && old_ty == new_ty {
+            if old_name == new_name && same_storage(old_ty, new_ty) {
                 out.push_str(&format!("  {new_name} unchanged\n"));
             } else {
                 compatible = false;
@@ -2193,6 +2193,52 @@ fn format_diff(before: &[check::DomainLayout], after: &[check::DomainLayout]) ->
         "incompatible\n"
     });
     out
+}
+
+/// Whether a field of storage shape `old` reads the same as `new`: the same shape, or one where
+/// a variant with no payloads gains cases after its last. Such a variant is its case's index as a
+/// `uint8`, so the old cases keep their values and slots, as a map key or anywhere else.
+fn same_storage(old: &str, new: &str) -> bool {
+    const OPEN: &str = "variant(";
+    let (mut a, mut b) = (old, new);
+    loop {
+        match (a.find(OPEN), b.find(OPEN)) {
+            (Some(i), Some(j)) if a[..i] == b[..j] => {
+                let (a_rest, b_rest) = (&a[i + OPEN.len()..], &b[j + OPEN.len()..]);
+                let (Some(x), Some(y)) = (closing(a_rest), closing(b_rest)) else {
+                    return false;
+                };
+                let (old_cases, new_cases) = (&a_rest[..x], &b_rest[..y]);
+                let appended = !old_cases.contains(" of ")
+                    && !new_cases.contains(" of ")
+                    && new_cases
+                        .split(" | ")
+                        .collect::<Vec<_>>()
+                        .starts_with(&old_cases.split(" | ").collect::<Vec<_>>());
+                if old_cases != new_cases && !appended {
+                    return false;
+                }
+                a = &a_rest[x + 1..];
+                b = &b_rest[y + 1..];
+            }
+            (None, None) => return a == b,
+            _ => return false,
+        }
+    }
+}
+
+/// Where the `)` that closes an already open `(` is in `text`.
+fn closing(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(i),
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
 }
 
 fn parse_word(text: &str) -> Result<word::Word, Error> {
