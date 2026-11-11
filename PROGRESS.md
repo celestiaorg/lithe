@@ -62,7 +62,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **5.4** Fx hasher. Every std `HashMap`/`HashSet` in `check`, `gen`, `route`, `split` and `index` (and `asm.rs`'s last few) is now `asm::FxHashMap`/`FxHashSet`; the two whose order was seen are `BTreeMap`s (no `IndexMap`: no new dependency). Both snapshots unchanged; `check` −1.5–2 %. See `## S27 Fx hashing`.
 - [x] **5.5** Index-arena AST. **Measured and not taken (S32):** the flip is 1 378 errors in 41 files, and its payoff is 0.08 % of a Release build and 1.2–1.7 % of a Fast one — 3 `Program` clones per build (0.4–0.9 ms in total: 0.6–0.9 ms Fast, 0.4 ms Release), which a flat `Vec<Expr>` does not make cheaper (159 µs vs 142 µs on erc20_full, because the cost is `Program.modules`, not the expression tree). `Checked.source` cannot be removed by borrowing: it is the program *before* `compose` inlines modules, so it is a different value, not the same value held twice. See `## S32 5.5 closed: not taken`.
 - [x] **5.6** Parsed and checked module cache across `compile_dir` and `abi_dir`. **Parsed half landed; checked half is already shared per file.** `emit_dir` now holds one `ModuleCache` for the directory, so the `lib/` files 51 bench entries import are parsed once instead of once per importer (68 parses → 68, 43 of them hits). Byte-identical output and thread-count-independent. The directory build is 360 ms at one thread of which **loading is 20 ms and parsing 3.6 ms**; the 300 ms is codegen, which is why the number does not move beyond noise. The checked half has nothing to add: `check` runs per entry file on its own merged program, and two entries' programs are different types, so no entry reuses another's `Checked` — that memo already serves the LSP, where the same file checks twice. See `## 5.6`.
-- [x] **5.7** Lexer slices and statement-level parser recovery. First error unchanged. **Landed (S30):** the lexer already kept no identifier payload (a `Token` is a byte range and the parser slices it), so the slices half needed one fix: `ident()` interned the text and returned a `String` that every `Expr`/`TypeRef`/`NameAt` site then interned *again* through `sym()`. `ident()` now has an `ident_sym()` form that interns once, and the expression, type, dotted-name and call sites use it — **34 940 → 23 833** intern calls on erc20_full, **24 293 → 14 986** on uniswap_v2_pair, **24 276 → 15 220** on erc1155 (down 32–38 %). Declaration fields that hold a `String` still take the text. Statement-level recovery is new: a broken statement in a block reports its error, the parser skips to the next `;` or `}` and parses on, so a file reports every broken statement in file order with the first one unchanged. Both bytecode snapshots, the differential gate at 2 000 steps, and a 27 892-line diagnostic corpus over `bench/`+`examples/`+`fuzz/`+`std/` in both modes are byte-identical to the parent. The LSP diagnostics number did not move (6.91 vs 6.97 ms). See `## S30 5.7`.
+- [x] **5.7** Lexer slices and statement-level parser recovery. First error unchanged. **Landed (S30):** the lexer already kept no identifier payload (a `Token` is a byte range and the parser slices it), so the slices half needed one fix: `ident()` interned the text and returned a `String` that every `Expr`/`TypeRef`/`NameAt` site then interned *again* through `sym()`. `ident()` now has an `ident_sym()` form that interns once, and the expression, type, dotted-name and call sites use it — **34 940 → 23 833** intern calls on erc20_full, **24 293 → 14 986** on uniswap_v2_pair, **24 276 → 15 220** on erc1155 (down 32–38 %). Declaration fields that hold a `String` still take the text. Statement-level recovery is new: a broken statement in a block reports its error, the parser skips to the next `;` or `}` and parses on, so a file reports every broken statement in file order with the first one unchanged. Both bytecode snapshots, the differential gate at 2 000 steps, and a 27 892-line diagnostic corpus over `bench/`+`examples/`+`fuzz/`+`std/` in both modes are byte-identical to the parent. The LSP diagnostics number did not move (6.91 vs 6.97 ms). **S59** then made `skip_stmt` bracket-kind aware (S30's open finding): an unclosed `(`/`[` no longer eats the block's `}` and takes recovery past the declaration, so a second broken function reports its own error instead of a spurious end-of-file one. See `## S30 5.7` and `## S59 5.7 skip_stmt brackets`.
 
 ### Phase 6 — evaluate and take if they pay
 
@@ -95,6 +95,7 @@ This section is the single source of truth for what is open and what blocks what
 - **5.5 closed as not taken (S32).** No arena; the AST keeps boxed expressions. Measured before writing it: the flip is **1 378 errors in 41 files** (a whole-crate sweep, not a frontend-hygiene slice), and the two `Program` clones it was to remove are **3 clones per build, 0.4–0.9 ms in total — 0.08 % of a Release build and 1.2–1.7 % of a Fast one**. A flat `Vec<Expr>` cloned on its own is *slower* than the tree on erc20_full (159 µs vs 142 µs), because the cost is `Program.modules`, not the expression tree. And `Checked.source` is not removable by borrowing: it is the program *before* `compose` inlines modules and qualifies their names, so it is a different value from `checked.prog`, not the same one held twice — three readers (`split::facet`, `split::cache_key`, `index::template`) depend on exactly that. See `## S32 5.5 closed: not taken`.
 - **5.1a landed:** `Symbol`/`Names` and `Program.names`, one process-wide table threaded through `parse`, `parse_specs` and `load_in`, with a determinism test across files and parse orders. No field moved, so bytecode and diagnostics are unchanged. See `## 5.1a The table`.
 - **5.7 landed (S30):** the parser interns each identifier once (every expression, type, dotted-name and call site went through `ident()`'s `String` and `sym()`'s second intern) and recovers from a broken statement so a file reports all of them, the first unchanged. Interning calls fall 32–38 % per file; the LSP number does not move (6.91 vs 6.97 ms), because `parse` is 0.14 ms of a 6.2 ms frontend. Bytecode, diagnostics, snapshots and the differential gate unchanged. See `## S30 5.7`.
+- **S59 landed: 5.7 recovery is bracket-kind aware.** `skip_stmt` counted `{`, `[` and `(` in one depth, so an unclosed `(`/`[` above a statement made the block's own `}` look like a closer: it was consumed, recovery carried past the end of the declaration and the file reported a spurious ``expected `}`, found end of file`` in place of the next function's real error. It now tracks the three kinds separately, so a `}` with only parens/brackets open ends the statement *without* consuming it, and a closer with nothing of its kind open saturates at zero instead of underflowing. Two `parse::tests` regressions cover it; the diagnostic corpus (`abi`/`compile`/`specs`/`lint` + `errors`, 41 610 + 13 295 lines, plus S30's `abi`/`compile --release` shape at 38 123) is byte-identical to the parent, both snapshots unchanged, `make check` green. See `## S59 5.7 skip_stmt brackets`.
 - **5.1b landed (S58):** `NameAt.name`, `Expr::{Ident, Field, Call}` and `TypeRef::Name` hold a `Symbol`; every diagnostic reads its text through the table, `Symbol`'s `Debug`/`Display` print the text (never the number) so `Program`'s `Debug` cache keys are unchanged, and `modules::imply`'s order-by-name sorts on text. Both snapshots unchanged, both suites and VERIFY green, the differential gate green at 2 000 steps, and 36 369 lines of diagnostics byte-identical to `411bf45`. Two reviewer findings then fixed it: a call's module qualification read a name captured before the alias rename (a module calling `A.f` while declaring its own hook `f` ran its own hook), and `zero_value`'s `None` lost its name; both now have failing-first regression tests. `check` on erc20_full is 5.05 → 5.90 ms (min of 25, cache off): the lookup replaces an inline `String` 138 263 times per compile, which is 5.1c's number to invert. See `## 5.1b`.
 - **S43 and S44 landed:** one process-wide `LITHE_THREADS` budget, and per-build timing counters. See `## S43 One thread budget` and `## S44 Per-build counters`.
 - **S37/S45 landed:** build state no longer depends on how much of the thread budget was free. `parallel_map` releases a worker's unit as soon as the queue drains, workers start from the caller's byte weight, certifying and tracking, and the `LITHE_TIME` counters are thread-local, summed back by the pool. A parallel `compile_dir` now prints one `[time]` line per build, each with its own `emits`/`finishes`. See `## S37/S45 build state off the budget`.
@@ -1674,3 +1675,91 @@ The nested case (lines 8 and 9 are inside an `if` block) is why `block()` is the
 **`skip_stmt` resumed mid-statement and lost its bracket depth** (found by the corpus re-run for the fix above). It scanned forward *from where the statement failed*, so a statement like `emit Foo { indexed amount = 1 };` — which fails at `indexed` with the record's `{` already consumed — left the depth at 0 and stopped at the record's own `}`, one token short of the `;`. The block then saw `}` as its end and the enclosing declaration reported ``expected a declaration, found `}` ``. `examples/reject/event_indexed_emit.lithe` is exactly this shape, and it turned one error into two. `block()` now records the statement's first token and `skip_stmt(start)` rewinds to it before the scan, so the depth counts every bracket the statement opened. The corpus diff against `897f81f` is empty again (38 385 lines) and `event_indexed_emit.lithe` reports its one error. The ceiling of resuming at the statement's *first* token is unchanged: a statement missing its `;` still swallows the next one up to the next `;`.
 
 **What this deliberately does not do.** `skip_stmt` is a bracket-depth scan to the next `;`/`}`, not a "sync on a keyword that can start a statement" heuristic. The grammar has no reserved statement-start keyword (`ident` can begin an assignment, a call, or `delete`), so a keyword scan would resynchronise on identifiers and produce worse cascades than the plain separator scan. The ceiling: a statement missing its `;` swallows the following statement up to the next `;`, so one error becomes one error with a shifted place. A parser that re-parsed with an insertion repair would fix that; nothing in the tree needs it yet.
+
+## S59 5.7 skip_stmt brackets
+
+S30's open medium finding: `skip_stmt` kept **one** counter for `{`, `[` and `(` together, so the kinds were interchangeable and an unclosed paren read as an open brace.
+
+### The bug, traced
+
+Mid-typing state `foo(x;` inside a function body:
+
+1. the `(` sets the (single) depth to 1;
+2. the `;` is skipped, because depth ≠ 0;
+3. the block's own `}` brings depth back to 0 **and is consumed**;
+4. the scan is now past `f`'s closing brace and keeps going. It enters `g`'s params (`(` raises depth, `)` lowers it) and then `g`'s body, whose `{` raises depth again, so none of `g`'s `;` end the statement either. It reaches **`Eof`**. `block()`'s `while self.kind() != Kind::RBrace` therefore never sees an `RBrace`, and `want(Kind::RBrace)` fails at end of file.
+
+The first error is unchanged: the corpus asserts that. But the block ends in the wrong place, so everything after it is wrong — in the shape above the parent reports a spurious ``expected `}`, found end of file`` and loses the second function's real error entirely. That is the same failure class as `event_indexed_emit` (S30's earlier fix), and it defeats the point of 5.7 — the LSP underlines every broken statement, so a cascade is a visibly wrong file.
+
+### The fix
+
+`src/parse.rs::skip_stmt` holds three counters instead of one:
+
+- `}` at `braces == 0` ends the statement where it stands, **unconsumed**, whatever `(`/`[` are still open above it. That is exactly the mid-typing case: the block's `}` belongs to the block, not to the statement's unclosed paren.
+- `;` ends the statement only when all three are zero, so a `;` inside `f(a; b)` is still part of the statement.
+- `{`/`(`/`[` each increment their own counter; `)`/`]` **saturate** at zero (`saturating_sub`) because a mismatched closer must not underflow a `u32` and turn the statement into a scan to EOF. `}` decrements `braces` and is reached only when `braces > 0`.
+- `bump()` is still called at the bottom of every iteration except the exits, so a block always progresses and no loop is possible.
+
+Three counters rather than a stack: the nesting kinds are three and only `braces` gates the exit, so a stack would carry the same information with an allocation and a pop that never affects the decision.
+
+### What it changes in a file that is being typed
+
+```
+$ lithe abi bad_paren.lithe          # parent: the block's `}` is eaten, the file runs to EOF
+bad_paren.lithe:3:8: expected `)`, found `;`
+
+bad_paren.lithe:11:1: expected `}`, found end of file
+
+$ lithe abi bad_paren.lithe          # this tree: the statement ends at the block's `}` un-consumed
+bad_paren.lithe:3:8: expected `)`, found `;`
+
+bad_paren.lithe:8:19: expected an expression, found `;`
+```
+
+Line 3 is the first error and it is byte-identical to the parent. The difference is everything after it: the parent consumes the block's `}` as the paren's closer and the scan runs to end of file, so the whole rest of the file is never parsed as declarations and `g`'s real error never appears. With the fix the statement ends at the block's `}` un-consumed, `g` is parsed, and it reports its own error. The `[` case is identical with ``expected `]`, found `;` ``.
+
+The cascade into a following declaration is the same bug when the block's `}` is followed by a `;`:
+
+```
+$ lithe abi cascade.lithe             # parent
+cascade.lithe:3:8: expected `)`, found `;`
+
+cascade.lithe:4:5: expected a statement, found `external`
+
+cascade.lithe:7:1: expected `}`, found end of file
+
+$ lithe abi cascade.lithe             # this tree
+cascade.lithe:3:8: expected `)`, found `;`
+
+cascade.lithe:5:8: expected `)`, found `;`
+```
+
+(`cascade.lithe` is `f` with `bar(1;`, then the block's `}` followed by a stray `;`, then `external function g() is { bar(1; }`.) The parent's middle error names `external` as a statement — pure cascade — and its last is the end-of-file artifact. This tree reports each of the two broken functions exactly once.
+
+A `)` or `]` with nothing of its kind open (`bar(];`) and a stray `)` at statement start both parse to an ordinary diagnostic and do not panic — checked by hand against the built binary, which is what the `saturating_sub` is there for.
+
+### Tests added (`src/parse.rs`)
+
+- `an_unclosed_paren_does_not_swallow_the_block` — `bar(1;` then the block's `}`, then a second function with `var y : uint := ;`. Asserts exactly two errors: `(3, "expected `)`, found `;`")` and `(7, "expected an expression, found `;`")`, i.e. the first unchanged, the second reported, and no ``expected a declaration`` in the chain.
+- `an_unclosed_bracket_does_not_swallow_the_block` — the same with `a[0;` and ``expected `]`, found `;` ``.
+
+Both fail on the parent. For the paren test the parent's chain is `(3, "expected `)`, found `;`")` plus a spurious `(9, "expected `}`, found end of file")` — line 9 is the empty last line of the 8-line file, since the block's `}` was consumed as the paren's closer and the scan ran to `Eof` — and the second function's real error is missing entirely. `assert_eq!` on the two-element vector is the regression, not a message tweak.
+
+### Proof it changes nothing that was already observable
+
+| gate | result |
+|---|---|
+| diagnostic corpus: `abi` + `compile` + `specs` + `lint` over every `*.lithe` in `bench/`+`examples/`+`fuzz/`+`std/`, with the exit code, parent `4509901` vs this tree | **41 610 lines, `diff` empty** |
+| the same corpus with `errors` (the command that prints the whole chain) | **13 295 lines, `diff` empty** |
+| S30's shape, `abi` + `compile --release` over the same files | **38 123 lines, `diff` empty** |
+| `make check` (fmt, clippy, `cargo test --locked`, VERIFY, differential 2 000 steps, snapshots, bench gas, playground wasm) | green, exit 0 |
+| `cargo test --locked` | 571 + 27 + 1 passed, 2 ignored, 0 failed |
+| `cargo test --locked --lib evm::snapshot` | 2 passed — **both bytecode snapshots unchanged** |
+| `LITHE_VERIFY=1 cargo test --locked` | 571 passed, 2 ignored, 0 failed |
+| `LITHE_FUZZ_STEPS=2000 … evm::differential` | 5 passed |
+| LSP diagnostics, `did_change_coalesces_and_erc20_full_diagnostics_are_fast` (`cargo test --locked --bin lithe`, dev test profile, 3 runs each) | **8.14–8.50 ms** this tree vs **8.24–8.38 ms** parent — noise. Unchanged, as it must be: `parse` is 0.14 ms of the frontend (S30) and `skip_stmt` runs only on an already-broken statement, so no valid file reaches it. (S30 quoted 6.9 ms for this test; that was a release build, hence the offset.) |
+
+The corpus diff being empty is the load-bearing result: every file in the repo is either valid or broken in a way that does not reach this shape, so the fix adds errors only where the parent was *wrong* to suppress them. It cannot remove or reorder a first error, because `skip_stmt` runs only after `block()` has already pushed that error.
+
+**Ceiling, unchanged.** A statement missing its `;` still swallows the next statement up to the next `;`, and a `}` inside a `(`-group is now treated as the block's — which is right for the recovery we have (there is no block expression that a bare `}` can close inside parentheses) but would need a real expression end if the language ever grows one. Recorded rather than pre-built.
+
