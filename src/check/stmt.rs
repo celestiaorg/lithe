@@ -441,7 +441,7 @@ impl Checker {
                                 self.define(span, "$list", lsid)?;
                                 Expr::Ident {
                                     span,
-                                    name: "$list".to_string(),
+                                    name: Names::shared().intern("$list"),
                                     sym: None,
                                     builtin: None,
                                     ty: 0,
@@ -489,7 +489,7 @@ impl Checker {
                             self.define(span, &counter_name, sid)?;
                             let mut idx = Expr::Ident {
                                 span,
-                                name: counter_name.clone(),
+                                name: Names::shared().intern(&counter_name),
                                 sym: None,
                                 builtin: None,
                                 ty: 0,
@@ -499,7 +499,7 @@ impl Checker {
                                 *length = Some(Expr::Field {
                                     span,
                                     base: Box::new(base.clone()),
-                                    name: "length".to_string(),
+                                    name: Names::shared().intern("length"),
                                     root: Some(p.sym),
                                     leaf: p.leaf,
                                     ty: TY_UINT,
@@ -800,7 +800,7 @@ impl Checker {
         keys.push(Expr::Field {
             span,
             base: Box::new(list),
-            name: "length".into(),
+            name: Names::shared().intern("length"),
             root: None,
             leaf: 0,
             ty: 0,
@@ -1269,7 +1269,7 @@ fn place_of(
             place = Expr::Field {
                 span,
                 base: Box::new(place),
-                name: name.clone(),
+                name: Names::shared().intern(name),
                 root: None,
                 leaf: 0,
                 ty: 0,
@@ -1339,13 +1339,13 @@ fn is_list_call(expr: &Expr, method: &str) -> bool {
 /// `a.b`, the keys `i` and `j`, and the field `c` after one key.
 fn assign_parts(e: &Expr) -> Option<(Vec<String>, Vec<Expr>, Vec<(usize, String)>)> {
     match e {
-        Expr::Ident { name, .. } => Some((vec![name.clone()], Vec::new(), Vec::new())),
+        Expr::Ident { name, .. } => Some((vec![name.to_string()], Vec::new(), Vec::new())),
         Expr::Field { base, name, .. } => {
             let (mut path, keys, mut fields) = assign_parts(base)?;
             if keys.is_empty() {
-                path.push(name.clone());
+                path.push(name.to_string());
             } else {
-                fields.push((keys.len(), name.clone()));
+                fields.push((keys.len(), name.to_string()));
             }
             Some((path, keys, fields))
         }

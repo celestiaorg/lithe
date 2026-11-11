@@ -139,10 +139,10 @@ pub(crate) fn list_len(word: crate::word::Word, span: Span) -> Result<u32, Error
     Ok(word.0[0] as u32)
 }
 
-fn path_expr(span: Span, path: &[String]) -> Expr {
+fn path_expr(names: &Names, span: Span, path: &[String]) -> Expr {
     let mut expr = Expr::Ident {
         span,
-        name: path[0].clone(),
+        name: names.intern(&path[0]),
         sym: None,
         builtin: None,
         ty: 0,
@@ -151,7 +151,7 @@ fn path_expr(span: Span, path: &[String]) -> Expr {
         expr = Expr::Field {
             span,
             base: Box::new(expr),
-            name: name.clone(),
+            name: names.intern(name),
             root: None,
             leaf: 0,
             ty: 0,
@@ -321,9 +321,10 @@ impl<'a> Parser<'a> {
             }
         }
         for (name, blocks) in contract_specs {
+            let written = self.names.get(name.name);
             let Some(body) = explicit
                 .iter_mut()
-                .find(|body| body.name.as_deref() == Some(name.name.as_str()))
+                .find(|body| body.name.as_deref() == Some(&*written))
             else {
                 return Err(error(
                     name.span,
@@ -544,17 +545,15 @@ impl<'a> Parser<'a> {
                     return Ok(());
                 }
                 let module = names.into_iter().next().expect("a name").name;
+                let written = module.to_string();
                 if self.kind() == Kind::Ident && self.slice() == DELEGATED {
                     self.bump();
-                    body.facets.push(NameAt {
-                        span,
-                        name: module.clone(),
-                    });
+                    body.facets.push(NameAt { span, name: module });
                 }
                 if self.kind() == Kind::Ident && self.slice() == "exposing" {
                     self.bump();
-                    let exposed = self.use_exposing(span, module.clone())?;
-                    if body.exposes.iter().any(|have| have.module == module) {
+                    let exposed = self.use_exposing(span, written.clone())?;
+                    if body.exposes.iter().any(|have| have.module == written) {
                         return Err(error(
                             span,
                             format!(
@@ -565,7 +564,7 @@ impl<'a> Parser<'a> {
                     body.exposes.push(exposed);
                 }
                 if self.kind() == Kind::With {
-                    self.use_with(&module, body)?;
+                    self.use_with(&written, body)?;
                 } else if self.kind() == Kind::Semi {
                     self.bump();
                 }
@@ -624,10 +623,8 @@ impl<'a> Parser<'a> {
         let mut names = Vec::new();
         loop {
             let span = self.at();
-            names.push(NameAt {
-                span,
-                name: self.dotted()?,
-            });
+            let name = self.dotted()?;
+            names.push(self.name_at(span, &name));
             if self.kind() != Kind::Comma {
                 return Ok(names);
             }
@@ -699,7 +696,7 @@ impl<'a> Parser<'a> {
             self.bump();
             name = format!("{name}.{}", self.ident()?);
         }
-        Ok(NameAt { span, name })
+        Ok(self.name_at(span, &name))
     }
 
     fn module_decl(&mut self) -> Result<ModuleDecl, Error> {
@@ -922,7 +919,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.want(Kind::RBrace)?;
-        let require_names: Vec<String> = requires.iter().map(|s| s.name.clone()).collect();
+        let require_names: Vec<String> = requires.iter().map(|s| s.name.to_string()).collect();
         for func in funcs.iter_mut().chain(&mut guards).chain(&mut hooks) {
             func.module = Some(name.clone());
             func.requires = require_names.clone();
@@ -1124,10 +1121,8 @@ impl<'a> Parser<'a> {
         let target = if self.kind() == Kind::For {
             self.bump();
             let tspan = self.at();
-            Some(NameAt {
-                span: tspan,
-                name: self.ident()?,
-            })
+            let name = self.ident()?;
+            Some(self.name_at(tspan, &name))
         } else {
             None
         };
@@ -1187,7 +1182,8 @@ impl<'a> Parser<'a> {
             blocks.push(self.spec_block(module.then(|| name.clone()))?);
         }
         self.want(Kind::RBrace)?;
-        Ok((NameAt { span, name }, blocks))
+        let target = self.name_at(span, &name);
+        Ok((target, blocks))
     }
 
     /// One clause of a spec block, and the `;` that ends it.
@@ -1240,7 +1236,7 @@ impl<'a> Parser<'a> {
                 let espan = self.at();
                 let name = self.ident()?;
                 self.want_word("when")?;
-                ClauseKind::Raises(NameAt { span: espan, name })
+                ClauseKind::Raises(self.name_at(espan, &name))
             }
             "panics" => {
                 self.want_word("when")?;
@@ -1277,9 +1273,11 @@ impl<'a> Parser<'a> {
     /// block. `None` when the identifier ahead starts none of them.
     fn spec_form(&mut self) -> Result<Option<Expr>, Error> {
         let span = self.at();
-        let call = |name: &str, builtin: Builtin, args: Vec<Expr>| Expr::Call {
+        let names = self.names.clone();
+        let table = names.clone();
+        let call = move |name: &str, builtin: Builtin, args: Vec<Expr>| Expr::Call {
             span,
-            name: name.to_string(),
+            name: table.intern(name),
             args,
             base: None,
             callee: None,
@@ -1332,7 +1330,7 @@ impl<'a> Parser<'a> {
                 let body = self.expr()?;
                 let ident = |span: Span, name: String| Expr::Ident {
                     span,
-                    name,
+                    name: names.intern(&name),
                     sym: None,
                     builtin: None,
                     ty: 0,
@@ -1538,10 +1536,8 @@ impl<'a> Parser<'a> {
         }
         loop {
             let mspan = self.at();
-            members.push(NameAt {
-                span: mspan,
-                name: self.dotted()?,
-            });
+            let name = self.dotted()?;
+            members.push(self.name_at(mspan, &name));
             if self.kind() == Kind::Pipe {
                 self.bump();
                 continue;
@@ -1653,7 +1649,10 @@ impl<'a> Parser<'a> {
                         return self.generic(&name, span);
                     }
                 }
-                Ok(TypeRef::Name { span, name })
+                Ok(TypeRef::Name {
+                    span,
+                    name: self.sym(&name),
+                })
             }
             Kind::Unit => Err(self.err("expected type `unit`, found value `Unit`")),
             _ => Err(self.err(format!("expected a type, found {}", self.found()))),
@@ -2205,7 +2204,7 @@ impl<'a> Parser<'a> {
                     )));
                 }
                 let name = self.ident()?;
-                args.push(NameAt { span: aspan, name });
+                args.push(self.name_at(aspan, &name));
                 if self.kind() != Kind::Comma {
                     break;
                 }
@@ -2318,10 +2317,7 @@ impl<'a> Parser<'a> {
         }
         func.raises = raises;
         func.guard_of = Some(GuardOf {
-            module: NameAt {
-                span,
-                name: module.to_string(),
-            },
+            module: self.name_at(span, module),
             name: name.to_string(),
             via,
         });
@@ -2432,10 +2428,7 @@ impl<'a> Parser<'a> {
         };
         func.raises = raises;
         func.hook_of = Some(HookOf {
-            module: NameAt {
-                span,
-                name: module.to_string(),
-            },
+            module: self.name_at(span, module),
             name: name.to_string(),
             form,
         });
@@ -2449,11 +2442,10 @@ impl<'a> Parser<'a> {
         let mut pieces: Vec<&str> = path.split('.').collect();
         let last = pieces.pop().unwrap_or_default().to_string();
         let base = pieces.iter().fold(None, |base, piece| {
-            let name = piece.to_string();
             Some(match base {
                 None => Expr::Ident {
                     span: vspan,
-                    name,
+                    name: self.sym(piece),
                     sym: None,
                     builtin: None,
                     ty: 0,
@@ -2461,7 +2453,7 @@ impl<'a> Parser<'a> {
                 Some(base) => Expr::Field {
                     span: vspan,
                     base: Box::new(base),
-                    name,
+                    name: self.sym(piece),
                     root: None,
                     leaf: 0,
                     ty: 0,
@@ -2470,14 +2462,14 @@ impl<'a> Parser<'a> {
         });
         let stmts = vec![Stmt::Call {
             span: vspan,
-            expr: self.call(vspan, last, Vec::new(), base),
+            expr: self.call(vspan, self.sym(&last), Vec::new(), base),
         }];
         self.want(Kind::Semi)?;
         Ok((
             stmts,
             NameAt {
                 span: vspan,
-                name: path,
+                name: self.sym(&path),
             },
         ))
     }
@@ -2681,7 +2673,7 @@ impl<'a> Parser<'a> {
             if name == "none" {
                 return Err(error(pspan, "`none` cannot be combined with other errors"));
             }
-            parts.push(NameAt { span: pspan, name });
+            parts.push(self.name_at(pspan, &name));
             if self.kind() == Kind::Pipe {
                 self.bump();
                 continue;
@@ -3001,9 +2993,10 @@ impl<'a> Parser<'a> {
             self.bump();
             let cspan = self.at();
             let (name, kind) = if self.kind() == Kind::LParen {
-                ("create".to_string(), Builtin::RawCreate)
+                (self.sym("create"), Builtin::RawCreate)
             } else {
-                (self.ident()?, Builtin::Create)
+                let name = self.ident()?;
+                (self.sym(&name), Builtin::Create)
             };
             self.want(Kind::LParen)?;
             let args = self.args()?;
@@ -3201,7 +3194,7 @@ impl<'a> Parser<'a> {
             let args = self.args()?;
             return Ok(Stmt::Call {
                 span,
-                expr: self.call(span, name, args, None),
+                expr: self.call(span, self.sym(&name), args, None),
             });
         }
         let mut path = vec![name];
@@ -3215,10 +3208,10 @@ impl<'a> Parser<'a> {
             if self.kind() == Kind::LParen {
                 self.bump();
                 let args = self.args()?;
-                let base = path_expr(span, &path);
+                let base = path_expr(&self.names, span, &path);
                 return Ok(Stmt::Call {
                     span,
-                    expr: self.call(fspan, field, args, Some(base)),
+                    expr: self.call(fspan, self.sym(&field), args, Some(base)),
                 });
             }
             path.push(field);
@@ -3548,7 +3541,7 @@ impl<'a> Parser<'a> {
                 let name = self.ident()?;
                 self.postfix(Expr::Ident {
                     span,
-                    name,
+                    name: self.sym(&name),
                     sym: None,
                     builtin: None,
                     ty: 0,
@@ -3581,7 +3574,7 @@ impl<'a> Parser<'a> {
                     self.want(Kind::RBrack)?;
                     e = Expr::Call {
                         span: ispan,
-                        name: String::new(),
+                        name: Symbol::empty(),
                         args,
                         base: None,
                         callee: None,
@@ -3608,7 +3601,7 @@ impl<'a> Parser<'a> {
                 let Expr::Ident { name, span, .. } = &e else {
                     break;
                 };
-                let (name, span) = (name.clone(), *span);
+                let (name, span) = (*name, *span);
                 self.bump();
                 let args = self.args()?;
                 e = self.call(span, name, args, None);
@@ -3619,7 +3612,7 @@ impl<'a> Parser<'a> {
                 let Expr::Ident { name, span, .. } = &e else {
                     break;
                 };
-                let (name, span) = (name.clone(), *span);
+                let (name, span) = (*name, *span);
                 let rspan = self.at();
                 let payload = self.record_expr(rspan)?;
                 e = self.call(span, name, vec![payload], None);
@@ -3637,12 +3630,12 @@ impl<'a> Parser<'a> {
             if self.kind() == Kind::LParen {
                 self.bump();
                 let args = self.args()?;
-                e = self.call(fspan, name, args, Some(e));
+                e = self.call(fspan, self.sym(&name), args, Some(e));
             } else {
                 e = Expr::Field {
                     span: fspan,
                     base: Box::new(e),
-                    name,
+                    name: self.sym(&name),
                     root: None,
                     leaf: 0,
                     ty: 0,
@@ -3652,7 +3645,7 @@ impl<'a> Parser<'a> {
         Ok(e)
     }
 
-    fn call(&self, span: Span, name: String, args: Vec<Expr>, base: Option<Expr>) -> Expr {
+    fn call(&self, span: Span, name: Symbol, args: Vec<Expr>, base: Option<Expr>) -> Expr {
         Expr::Call {
             span,
             name,
@@ -3927,6 +3920,18 @@ impl<'a> Parser<'a> {
         Ok(name)
     }
 
+    /// The symbol for `text`, in this parser's table.
+    fn sym(&self, text: &str) -> Symbol {
+        self.names.intern(text)
+    }
+
+    /// `text` as a name written at `span`.
+    fn name_at(&self, span: Span, text: &str) -> NameAt {
+        NameAt {
+            span,
+            name: self.sym(text),
+        }
+    }
     /// A name, or one qualified by an import alias or a module: `E.Denied`.
     fn dotted(&mut self) -> Result<String, Error> {
         let mut name = self.ident()?;

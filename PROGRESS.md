@@ -56,7 +56,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 
 ### Phase 5 — frontend hygiene and caching
 
-- [ ] **5.1** Identifier interner. **Measured and split: not doable in one slice.** Adding `Symbol`/`Names` and flipping `NameAt.name` alone breaks 184 sites in 19 files, 12 of them outside this slice, and the table has to be shared across merged files before any field can move. Split into 5.1a (table + determinism proof, **landed**), 5.1b (AST fields, needs one owner for `check`/`gen`/`prove`/`evm`), 5.1c (the checker's maps, where the win is). See `## 5.1 Interning: scope measured` and `## 5.1a The table`.
+- [ ] **5.1** Identifier interner. **Measured and split: not doable in one slice.** Adding `Symbol`/`Names` and flipping `NameAt.name` alone breaks 184 sites in 19 files, 12 of them outside this slice, and the table has to be shared across merged files before any field can move. Split into 5.1a (table + determinism proof, **landed**), 5.1b (AST fields, **landed**), 5.1c (the checker's maps, where the win is). See `## 5.1 Interning: scope measured`, `## 5.1a The table` and `## 5.1b`.
 - [x] **5.2** `FileId` and byte `Span`. Diagnostics keep `line` and `column`. **Landed (S57, 5.2a):** every AST `line`/`col` pair is a `Span { lo, hi }` and every `origin: String` a `FileId` into one `SourceMap` per load; `Error` resolves at `in_file`/`placed`. Both snapshots unchanged, a 7 342-line diagnostic corpus byte-identical, erc20_full LSP diagnostics 6.28–6.87 → 6.23–6.26 ms (not moved beyond noise). See `## 5.2a`.
 - [ ] **5.3** Remove deep clones. Make `Plan` cheap. **Measured: `Plan` is not where the time is.** A Release `Plan` clone with 640 set members costs **3.0 µs**; `bench/erc20_full.lithe` Release runs 98 emits and 92 finishes totalling 1.66 s. The ~200 plan clones a search does are therefore ~0.6 ms, 0.04 % of the backend. Not taken on its own; the clones that matter are `Program`'s, which 5.1/5.2 already remove. See `## 5.3 Plan clones measured`.
 - [x] **5.4** Fx hasher. Every std `HashMap`/`HashSet` in `check`, `gen`, `route`, `split` and `index` (and `asm.rs`'s last few) is now `asm::FxHashMap`/`FxHashSet`; the two whose order was seen are `BTreeMap`s (no `IndexMap`: no new dependency). Both snapshots unchanged; `check` −1.5–2 %. See `## S27 Fx hashing`.
@@ -91,7 +91,8 @@ This section is the single source of truth for what is open and what blocks what
 
 - **5.1 measured, handoff: needs its own slice.** The interner was started and the exact cost measured before writing it. Details and the number that decides the split are in `## 5.1 Interning: scope measured`.
 - **5.2a landed (S57):** byte spans and `FileId`s across the crate, positions resolved from a per-load `SourceMap`; bytecode, diagnostics, warnings, lint and prover text unchanged. The LSP number did not move (6.2 ms), so the ≤ 5 ms target still rests on 5.1b/5.1c and 5.5. See `## 5.2a`.
-- **5.1a landed:** `Symbol`/`Names` and `Program.names`, one process-wide table threaded through `parse`, `parse_specs` and `load_in`, with a determinism test across files and parse orders. No field moved, so bytecode and diagnostics are unchanged. 5.1b and 5.1c remain open. See `## 5.1a The table`.
+- **5.1a landed:** `Symbol`/`Names` and `Program.names`, one process-wide table threaded through `parse`, `parse_specs` and `load_in`, with a determinism test across files and parse orders. No field moved, so bytecode and diagnostics are unchanged. See `## 5.1a The table`.
+- **5.1b landed (S58):** `NameAt.name`, `Expr::{Ident, Field, Call}` and `TypeRef::Name` hold a `Symbol`; every diagnostic reads its text through the table, `Symbol`'s `Debug`/`Display` print the text (never the number) so `Program`'s `Debug` cache keys are unchanged, and `modules::imply`'s order-by-name sorts on text. Both snapshots unchanged, both suites and VERIFY green, the differential gate green at 2 000 steps, and 36 369 lines of diagnostics byte-identical to `411bf45`. `check` on erc20_full is 5.05 → 5.90 ms (min of 25, cache off): the lookup replaces an inline `String` 138 263 times per compile, which is 5.1c's number to invert. See `## 5.1b`.
 - **S43 and S44 landed:** one process-wide `LITHE_THREADS` budget, and per-build timing counters. See `## S43 One thread budget` and `## S44 Per-build counters`.
 - **S37/S45 landed:** build state no longer depends on how much of the thread budget was free. `parallel_map` releases a worker's unit as soon as the queue drains, workers start from the caller's byte weight, certifying and tracking, and the `LITHE_TIME` counters are thread-local, summed back by the pool. A parallel `compile_dir` now prints one `[time]` line per build, each with its own `emits`/`finishes`. See `## S37/S45 build state off the budget`.
 - **S49 landed:** the `simplify:` list in `src/evm/bench_gas.rs` now matches `Meter`/`charge()` — the seed is EIP-2929's precompile set 1..=0x11, and the two addresses it leaves cold until first touched (`0x100` P256VERIFY, and anything `CREATE`/`CREATE2` made) are named. Doc-only; no gas total moved. See `## S49`.
@@ -1361,3 +1362,31 @@ Plan: replace every AST `line`/`col` with a byte `Span` and every `origin: Strin
 
 **Known edge, not reached by any test or the corpus.** An error raised after `check` from a span inside an imported module's function, with no `in_file` on its way out, used to print that module's line and column under the contract's name. It now reads the contract's own line table, because nothing on that path says which file the span is in. Every such site the corpus and suite reach either names its file or is in the contract's file.
 
+
+## 5.1b
+
+Plan: flip `NameAt.name`, `Expr::Ident`, `Expr::Field`, `Expr::Call` and `TypeRef::Name` from `String` to `Symbol` in one pass, reading every diagnostic string and every order-sensitive site through the interner, so output text and bytecode stay identical. Proof: both snapshots unchanged, the whole suite and VERIFY green, the differential gate at 2 000 steps, and a byte-diff of every diagnostic the CLI prints against the parent commit. Expected: bytecode and text unchanged; `check` is the number to record for 5.1c.
+
+**What changed (36 files, one shape).**
+- `Symbol`: `Copy`, `Ord`, `Hash`, and read through `Names`: `as_str` (the text), `Display`/`Debug` (the text, never the number), `PartialEq<str|&str|String>` both ways so `name == "length"` and `name.as_str()` both work, and `is_empty`/`empty` for the "no name of its own" sentinel that was `String::new()`. The stored texts are `&'static str` (`Box::leak` per distinct text, which the table never frees), so reading a name allocates nothing.
+- Interning happens once, in `Parser::ident`/`sym`/`name_at`, plus `path_expr`, `call`, and the spec-form builders. `parse` still returns `String` from `ident` for the declaration fields that stay `String` (`Func.name`, `Decl.name`, `Raised.name`, …) — only the five fields the step names moved.
+- `Names::Debug` is `Names(..)`. `Program`/`Stmt`/`Expr` `Debug` text is a cache key (`split`'s facet memo, `cache_key`) and the statement shape `gen::calls` compares, so printing the table would both recurse into the same mutex (`Symbol`'s `Debug` reads it) and put interning order into the key.
+- **Order-sensitive sites read text.** `modules::imply` sorts the composed modules by name, so its `min_by` compares `Names::get` text, not symbol ids (ids depend on intern order; text order does not). Every other sort in the crate sorts `String` keys that never moved.
+- `resolve` keeps its own tables (`Scope.names`, `decls`, …) as `String`, and reads a symbol's text in and interns the rewritten text out through `named_sym`/`module_ref_sym`, so canonical-name rewriting is unchanged. `check` likewise keeps its `String` maps: `Checked.named`, `domain_tys`, scopes. Those are 5.1c.
+
+**Found and fixed on the way.**
+- The `Debug`-as-cache-key design deadlocked `cargo test` at `asm::tests::incremental_analyses`: `Inner`'s derived `Debug` formatted `Symbol`s, whose `Debug` re-locked the same mutex. Making `Names::Debug` opaque fixed it; the backtrace is in the transcript.
+- `pick_overload` renames the call in place (`credit` → `credit@1`), so the checker must re-read the name after it returns. The first version captured the text before, and `examples/overloads.lithe` failed with `unknown function 'credit@1'`.
+
+**Gates.**
+
+| gate | result |
+|---|---|
+| `evm::snapshot` (Release and Fast, with and without VERIFY) | unchanged |
+| `cargo test --locked` | 562 lib + 25 bin + 1 doctest, 0 failed |
+| `LITHE_VERIFY=1 cargo test --locked --lib` | 562 passed, 0 failed |
+| `LITHE_FUZZ_STEPS=2000` differential | 5 passed |
+| `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` | clean |
+| diagnostic corpus: `compile`, `abi`, `errors`, `specs`, `lint` over `examples/`, `bench/`, `fuzz/` | 36 369 lines, `cmp` identical to `411bf45` |
+
+**Number (`check`, the one 5.1c is measured against).** `bench/erc20_full.lithe`, `--release`, `LITHE_CACHE_DIR=` (cache off), min of 25, load 1–2: parent `411bf45` **5.05 ms** → this tree **5.90 ms**. Interleaved A/B on one box: 5.02/5.35 median → 5.89/6.07 median, so about +0.9 ms over the 5.3–5.8 ms S57 recorded for `check`. That is the price of a table lookup where an inline `String` was: `erc20_full` makes **138 263** `as_str` calls per compile (counted with a temporary atomic), and each is a lock plus an index. Three read paths were measured and all landed within noise of each other — `Mutex<Vec>`, `RwLock<Vec>`, and fixed `OnceLock` chunks — so the cost is the lookup itself, not the lock. Removing the per-read `Arc::clone` (a `&'static Names`) and the per-identifier `to_string` in `check/place.rs`/`check/expr.rs` cut the gap from 1.8 ms to 0.9 ms. **This is the number 5.1c is measured against**, and it is expected to invert: 5.1c replaces `Checked.named`, `domain_tys` and the scope maps with symbol keys so `check` stops hashing strings at all, which is the win the 5.1a record predicted would not come from the AST fields alone.

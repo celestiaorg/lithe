@@ -1910,10 +1910,10 @@ impl<'a> Gen<'a> {
                     }
                     return Ok(buf);
                 }
-                let fields: Vec<(String, u32, usize)> = t
+                let fields: Vec<(Symbol, u32, usize)> = t
                     .fields
                     .iter()
-                    .map(|f| (f.name.clone(), f.slot, f.ty))
+                    .map(|f| (Names::shared().intern(&f.name), f.slot, f.ty))
                     .collect();
                 for (name, slot, fty) in fields {
                     let field = Expr::Field {

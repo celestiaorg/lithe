@@ -621,7 +621,7 @@ fn unused_modules(src: &str, label: &str, unit: &Program) -> Result<Vec<Finding>
                     unit.compose
                         .iter()
                         .find(|use_| lines.line_col(FileId::default(), use_.span) == at)
-                        .is_some_and(|use_| unused(&use_.name))
+                        .is_some_and(|use_| unused(&use_.name.to_string()))
                 })
                 .collect();
         for (k, &(start, end)) in u.names.iter().enumerate() {
@@ -856,7 +856,7 @@ fn collect(checked: &Checked, own: &str, acc: &mut Acc) {
     }
     for decl in &prog.error_sets {
         for member in &decl.members {
-            acc.errors.insert(member.name.clone());
+            acc.errors.insert(member.name.to_string());
         }
     }
     for decl in &prog.events {
@@ -941,7 +941,7 @@ fn scan_func(func: &Func, here: bool, acc: &mut Acc) {
     }
     if let Some(raises) = &func.raises {
         for part in &raises.parts {
-            acc.errors.insert(part.name.clone());
+            acc.errors.insert(part.name.to_string());
         }
     }
     for stmt in &func.stmts {
@@ -1285,7 +1285,7 @@ fn scan_expr(expr: &Expr, here: bool, acc: &mut Acc) {
 fn scan_ty(ty: &TypeRef, acc: &mut Acc) {
     match ty {
         TypeRef::Name { name, .. } => {
-            acc.types.insert(name.clone());
+            acc.types.insert(name.to_string());
         }
         TypeRef::Record { fields, .. } => {
             for field in fields {
@@ -1316,7 +1316,7 @@ fn scan_ty(ty: &TypeRef, acc: &mut Acc) {
             }
         }
         TypeRef::Apply { name, args, .. } => {
-            acc.types.insert(name.clone());
+            acc.types.insert(name.to_string());
             for arg in args {
                 scan_ty(arg, acc);
             }
@@ -1336,7 +1336,7 @@ fn scan_size(e: &Expr, acc: &mut Acc) {
         } => {
             acc.sizes.insert(match base.as_deref() {
                 Some(Expr::Ident { name: m, .. }) => format!("{m}.{name}"),
-                _ => name.clone(),
+                _ => name.to_string(),
             });
             for arg in args {
                 scan_size(arg, acc);

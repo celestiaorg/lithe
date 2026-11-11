@@ -442,7 +442,7 @@ impl<'a> Reader<'a> {
         };
         let Some(b) = builtin else {
             if let Some(f) = callee {
-                return self.function(m, *f, args, name);
+                return self.function(m, *f, args, &name.to_string());
             }
             return Err(format!("`{name}`"));
         };
@@ -693,7 +693,7 @@ impl<'a> Reader<'a> {
             match node {
                 Expr::Field { name, leaf: l, .. } => {
                     label.push('.');
-                    label.push_str(name);
+                    label.push_str(&name.to_string());
                     match &mut keyed {
                         None => leaf = Some(base + *l),
                         Some((_, _, at, ty, _)) => {
@@ -1126,14 +1126,14 @@ fn domain_label(e: &Expr) -> String {
     loop {
         match cur {
             Expr::Field { base, name, .. } => {
-                names.push(name.clone());
+                names.push(*name);
                 cur = base;
             }
             Expr::Index { base, .. } => {
                 names.clear();
                 cur = base;
             }
-            Expr::Ident { name, .. } => return name.clone(),
+            Expr::Ident { name, .. } => return name.to_string(),
             _ => return "storage".to_string(),
         }
     }

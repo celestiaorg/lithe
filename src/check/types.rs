@@ -288,9 +288,13 @@ impl Checker {
             }
             let mut members = Vec::new();
             for member in &set.members {
-                let Some(idx) = self.errors.iter().position(|e| e.name == member.name) else {
+                let Some(idx) = self
+                    .errors
+                    .iter()
+                    .position(|e| e.name == member.name.as_str())
+                else {
                     return Err(self
-                        .unknown(member.span, "error", &member.name)
+                        .unknown(member.span, "error", &member.name.to_string())
                         .in_file(set.file));
                 };
                 if members.contains(&idx) {
@@ -715,13 +719,18 @@ impl Checker {
     pub(super) fn build(&mut self, ty: &TypeRef) -> Result<usize, Error> {
         match ty {
             TypeRef::Name { name, span } => {
-                self.named.get(name).copied().map(Ok).unwrap_or_else(|| {
-                    if self.decls.contains_key(name) {
-                        self.resolve_decl(name)
-                    } else {
-                        Err(self.unknown(*span, "type", name))
-                    }
-                })
+                let spelled = name.to_string();
+                self.named
+                    .get(&spelled)
+                    .copied()
+                    .map(Ok)
+                    .unwrap_or_else(|| {
+                        if self.decls.contains_key(&spelled) {
+                            self.resolve_decl(&spelled)
+                        } else {
+                            Err(self.unknown(*span, "type", &spelled))
+                        }
+                    })
             }
             TypeRef::List {
                 elem,
@@ -894,7 +903,7 @@ impl Checker {
                 self.file,
                 TypeRef::Name {
                     span,
-                    name: name.to_string(),
+                    name: Names::shared().intern(name),
                 },
             ));
             *builtin = Some(Builtin::Cast);
@@ -1359,7 +1368,7 @@ pub(super) fn display_ty(types: &[RType], ty: usize) -> String {
 
 pub(crate) fn shape_ty(ty: &TypeRef) -> String {
     match ty {
-        TypeRef::Name { name, .. } => name.clone(),
+        TypeRef::Name { name, .. } => name.to_string(),
         TypeRef::Record { fields, .. } => {
             let inner = fields
                 .iter()

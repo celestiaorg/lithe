@@ -4,8 +4,79 @@ use std::sync::{Arc, Mutex};
 use crate::word::Word;
 
 /// An interned identifier: an index into a [`Names`] table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct Symbol(u32);
+
+impl Symbol {
+    /// The symbol for the empty text: a node with no name of its own holds this.
+    pub(crate) fn empty() -> Symbol {
+        static EMPTY: std::sync::OnceLock<Symbol> = std::sync::OnceLock::new();
+        *EMPTY.get_or_init(|| Names::global().intern(""))
+    }
+
+    pub(crate) fn is_empty(self) -> bool {
+        self.as_str().is_empty()
+    }
+
+    /// The text this symbol names. The table never frees an entry, so this borrows it.
+    #[inline]
+    pub(crate) fn as_str(self) -> &'static str {
+        Names::global().text(self)
+    }
+}
+
+/// A symbol reads as its text, never as its number: the number depends on the order the process
+/// interned identifiers, and `Program`/`Stmt`/`Expr` `Debug` text is a cache key (`split`'s facet
+/// memo and on-disk build cache) as well as the statement shape `gen::calls` compares.
+impl std::fmt::Debug for Symbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl std::fmt::Display for Symbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.as_str(), f)
+    }
+}
+
+/// A symbol compares equal to the text it was interned from. Comparisons order by [`Ord`] on the
+/// symbol, which is *not* text order, so a site that sorts names must sort on the text.
+impl PartialEq<str> for Symbol {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for Symbol {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for Symbol {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<Symbol> for str {
+    fn eq(&self, other: &Symbol) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<Symbol> for &str {
+    fn eq(&self, other: &Symbol) -> bool {
+        *self == other.as_str()
+    }
+}
+
+impl PartialEq<Symbol> for String {
+    fn eq(&self, other: &Symbol) -> bool {
+        self == other.as_str()
+    }
+}
 
 /// The table every `Symbol` a program holds indexes, one per process.
 ///
@@ -16,15 +87,25 @@ pub(crate) struct Symbol(u32);
 ///
 /// simplify: the table never shrinks, so a long language-server session keeps every identifier
 /// it has seen. Dropping entries on a content-hash miss is the upgrade if that ever matters.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct Names {
+    /// The text-to-symbol map, and the texts in symbol order.
     inner: Mutex<Inner>,
 }
 
-#[derive(Debug, Default)]
+/// `Program`'s `Debug` text is a cache key, so the table prints as nothing: its contents are
+/// what the symbols in the program already name, and printing them would both lock the table
+/// again (`Symbol`'s `Debug` reads it) and put interning order into the key.
+impl std::fmt::Debug for Names {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Names(..)")
+    }
+}
+
+#[derive(Default)]
 struct Inner {
     ids: HashMap<Box<str>, Symbol>,
-    text: Vec<Arc<str>>,
+    text: Vec<&'static str>,
 }
 
 impl Names {
@@ -34,8 +115,19 @@ impl Names {
 
     /// The table every build interns into.
     pub fn shared() -> Arc<Names> {
+        Self::slot().clone()
+    }
+
+    /// The one table, by reference: reading a name must not bump a refcount, because the
+    /// checker and the backend read names on nearly every node they visit.
+    #[inline]
+    fn global() -> &'static Names {
+        Self::slot()
+    }
+
+    fn slot() -> &'static Arc<Names> {
         static SHARED: std::sync::OnceLock<Arc<Names>> = std::sync::OnceLock::new();
-        SHARED.get_or_init(|| Arc::new(Names::new())).clone()
+        SHARED.get_or_init(|| Arc::new(Names::new()))
     }
 
     /// The symbol for `text`, interned once per process.
@@ -45,9 +137,11 @@ impl Names {
             return *sym;
         }
         let sym = Symbol(inner.text.len() as u32);
-        let arc: Arc<str> = Arc::from(text);
-        inner.ids.insert(arc.as_ref().into(), sym);
-        inner.text.push(arc);
+        // The table never frees an entry, so the text lives as long as the process and every
+        // read of a name is a plain borrow.
+        let leaked: &'static str = Box::leak(Box::from(text));
+        inner.ids.insert(leaked.into(), sym);
+        inner.text.push(leaked);
         sym
     }
 
@@ -59,10 +153,14 @@ impl Names {
     }
 
     /// The text of `sym`.
-    #[allow(dead_code)] // diagnostics read names back once 5.1b holds symbols in the AST
-    pub fn get(&self, sym: Symbol) -> Arc<str> {
+    fn text(&self, sym: Symbol) -> &'static str {
         let inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
-        inner.text[sym.0 as usize].clone()
+        inner.text[sym.0 as usize]
+    }
+
+    /// The text of `sym`.
+    pub fn get(&self, sym: Symbol) -> Arc<str> {
+        Arc::from(self.text(sym))
     }
 }
 
@@ -426,7 +524,7 @@ pub(crate) struct ErrorSetDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NameAt {
     pub span: Span,
-    pub name: String,
+    pub name: Symbol,
 }
 
 #[derive(Debug, Clone)]
@@ -483,7 +581,7 @@ pub(crate) enum Forward {
 pub(crate) enum TypeRef {
     Name {
         span: Span,
-        name: String,
+        name: Symbol,
     },
     Record {
         span: Span,
@@ -546,13 +644,16 @@ impl TypeRef {
 
 /// A list length as written, `M.n()` or `n() * 2`, with each name as declared.
 pub(crate) fn size_text(e: &Expr) -> String {
-    let short = |name: &str| name.rsplit("::").next().unwrap_or(name).to_string();
+    let short = |name: Symbol| {
+        let text = name.as_str();
+        text.rsplit("::").next().unwrap_or(text).to_string()
+    };
     match e {
         Expr::Lit {
             lit: Lit::Uint(w) | Lit::Int(w, _),
             ..
         } => w.0[0].to_string(),
-        Expr::Ident { name, .. } => short(name),
+        Expr::Ident { name, .. } => short(*name),
         Expr::Call {
             name, args, base, ..
         } => {
@@ -561,7 +662,7 @@ pub(crate) fn size_text(e: &Expr) -> String {
                 .as_deref()
                 .map(|b| format!("{}.", size_text(b)))
                 .unwrap_or_default();
-            format!("{base}{}({})", short(name), args.join(", "))
+            format!("{base}{}({})", short(*name), args.join(", "))
         }
         Expr::Binary {
             op, left, right, ..
@@ -1210,7 +1311,7 @@ pub(crate) enum Expr {
     },
     Ident {
         span: Span,
-        name: String,
+        name: Symbol,
         sym: Option<usize>,
         builtin: Option<Builtin>,
         ty: usize,
@@ -1218,7 +1319,7 @@ pub(crate) enum Expr {
     Field {
         span: Span,
         base: Box<Expr>,
-        name: String,
+        name: Symbol,
         root: Option<usize>,
         leaf: u32,
         ty: usize,
@@ -1233,7 +1334,7 @@ pub(crate) enum Expr {
     },
     Call {
         span: Span,
-        name: String,
+        name: Symbol,
         args: Vec<Expr>,
         base: Option<Box<Expr>>,
         callee: Option<usize>,

@@ -39,7 +39,7 @@ impl Checker {
         self.guard_label = f.guard_of.as_ref().map(|of| {
             format!(
                 "guard `{}.{}`",
-                crate::modules::shown(&of.module.name),
+                crate::modules::shown(&of.module.name.to_string()),
                 of.name
             )
         });
@@ -55,7 +55,7 @@ impl Checker {
                 };
                 format!(
                     "{effect}hook `{}.{}`",
-                    crate::modules::shown(&of.module.name),
+                    crate::modules::shown(&of.module.name.to_string()),
                     of.name
                 )
             });
@@ -244,8 +244,12 @@ impl Checker {
                 }
                 continue;
             }
-            let Some(idx) = self.errors.iter().position(|e| e.name == part.name) else {
-                return Err(self.unknown(part.span, "error", &part.name));
+            let Some(idx) = self
+                .errors
+                .iter()
+                .position(|e| e.name == part.name.as_str())
+            else {
+                return Err(self.unknown(part.span, "error", &part.name.to_string()));
             };
             push_unique(&mut out, idx);
         }
@@ -366,12 +370,12 @@ impl Checker {
             // `forward reason` reverts with exactly the bytes in `reason`, as a foreign
             // contract's revert data is passed on. It raises `forwarded`.
             let raw = self
-                .lookup(&raised.name)
+                .lookup(&raised.name.to_string())
                 .filter(|&sym| self.peel(self.syms[sym].ty) == self.named["bytes"]);
             if raw.is_some() {
                 let mut expr = Expr::Ident {
                     span: raised.span,
-                    name: raised.name.clone(),
+                    name: Names::shared().intern(&raised.name),
                     sym: None,
                     builtin: None,
                     ty: 0,

@@ -622,12 +622,12 @@ fn check_program(
         asks_interfaces: false,
         requires: Vec::new(),
         known_modules: prog.modules.iter().map(|m| m.name.clone()).collect(),
-        delegated: prog.facets.iter().map(|m| m.name.clone()).collect(),
+        delegated: prog.facets.iter().map(|m| m.name.to_string()).collect(),
         used_modules: prog
             .compose
             .iter()
-            .filter(|u| !prog.implied.contains(&u.name))
-            .map(|u| u.name.clone())
+            .filter(|u| !prog.implied.contains(&u.name.to_string()))
+            .map(|u| u.name.to_string())
             .collect(),
         modules: prog.modules.clone(),
         const_fns: const_fns(&prog),
@@ -1136,8 +1136,12 @@ fn check_program(
         let methods = prog
             .interfaces
             .iter()
-            .any(|iface| iface.name == named.name)
-            .then(|| c.named.get(&named.name).and_then(|id| c.ifaces.get(id)))
+            .any(|iface| iface.name == named.name.as_str())
+            .then(|| {
+                c.named
+                    .get(&named.name.to_string())
+                    .and_then(|id| c.ifaces.get(id))
+            })
             .flatten()
             .ok_or_else(|| error(named.span, format!("unknown interface `{}`", named.name)))?;
         let mut sigs = Vec::new();
@@ -1565,7 +1569,7 @@ fn mark_immutable_reads(
         fn read(e: Expr) -> Expr {
             Expr::Call {
                 span: e.span(),
-                name: "#immutable".to_string(),
+                name: Names::shared().intern("#immutable"),
                 ty: e.ty(),
                 args: vec![e],
                 base: None,
@@ -1732,7 +1736,7 @@ fn mark_immutable_reads(
                             });
                             let local = Expr::Ident {
                                 span: base.span(),
-                                name: "$list".to_string(),
+                                name: Names::shared().intern("$list"),
                                 sym: Some(sid),
                                 builtin: None,
                                 ty,

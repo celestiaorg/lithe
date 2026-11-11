@@ -779,12 +779,12 @@ impl<'a> Exec<'a> {
             match node {
                 Expr::Field { name, leaf: l, .. } => {
                     label.push('.');
-                    label.push_str(name);
+                    label.push_str(&name.to_string());
                     if keys.is_empty() {
                         leaf = Some(base + *l);
                     } else {
                         shape.push('.');
-                        shape.push_str(name);
+                        shape.push_str(&name.to_string());
                     }
                 }
                 Expr::Index {
@@ -1138,7 +1138,7 @@ impl<'a> Exec<'a> {
                             for (at, name) in fields {
                                 if *at == depth {
                                     shape.push('.');
-                                    shape.push_str(name);
+                                    shape.push_str(&name.to_string());
                                 }
                             }
                         }
@@ -2784,7 +2784,7 @@ fn domain_label(e: &Expr) -> String {
     loop {
         match cur {
             Expr::Field { base, name, .. } => {
-                names.push(name.clone());
+                names.push(*name);
                 cur = base;
             }
             Expr::Index { base, .. } => {
@@ -2792,7 +2792,7 @@ fn domain_label(e: &Expr) -> String {
                 cur = base;
             }
             Expr::Ident { name, .. } => {
-                return name.clone();
+                return name.to_string();
             }
             _ => return "storage".to_string(),
         }

@@ -241,7 +241,7 @@ fn guard_texts(stmts: &[Stmt]) -> Vec<String> {
             Stmt::Call {
                 expr: Expr::Call { name, args, .. },
                 ..
-            } => name.strip_suffix("#guard").map(|guard| {
+            } => name.to_string().strip_suffix("#guard").map(|guard| {
                 let guard = format!("guard {}", crate::modules::shown(guard));
                 if args.is_empty() {
                     return guard;
@@ -967,7 +967,7 @@ fn walk_arm(checked: &Checked, after: String, then: &Then, fx: &mut Effects<'_>)
 
 pub(crate) fn fmt_ty(ty: &TypeRef) -> String {
     match ty {
-        TypeRef::Name { name, .. } => name.clone(),
+        TypeRef::Name { name, .. } => name.to_string(),
         TypeRef::Tuple { elems, .. } => {
             let parts: Vec<String> = elems.iter().map(fmt_ty).collect();
             format!("({})", parts.join(", "))
@@ -1338,7 +1338,7 @@ fn op_label(e: &Expr) -> Option<String> {
             callee: None,
             ..
         } => Some(format!("{}.{}", fmt_expr(b), name)),
-        Expr::Ident { name, .. } => Some(name.clone()),
+        Expr::Ident { name, .. } => Some(name.to_string()),
         _ => None,
     }
 }
@@ -1380,14 +1380,14 @@ fn storage_label(expr: &Expr) -> String {
     match expr {
         Expr::Index { base, .. } => storage_label(base),
         Expr::Field { base, name, .. } => format!("{}.{}", storage_label(base), name),
-        Expr::Ident { name, .. } => name.clone(),
+        Expr::Ident { name, .. } => name.to_string(),
         other => fmt_expr(other),
     }
 }
 
 pub(crate) fn fmt_expr(e: &Expr) -> String {
     match e {
-        Expr::Ident { name, .. } => name.clone(),
+        Expr::Ident { name, .. } => name.to_string(),
         Expr::Call {
             builtin: Some(Builtin::Cast),
             name,
@@ -2280,7 +2280,7 @@ pub(crate) fn callback_sig(checked: &Checked, func: &Func) -> Result<String, Err
     }
     Ok(format!(
         "{}({})",
-        crate::check::callback_fn(&of.module.name, &of.name),
+        crate::check::callback_fn(&of.module.name.to_string(), &of.name),
         parts.join(",")
     ))
 }
@@ -2340,7 +2340,7 @@ fn render_errors_unplaced(checked: &Checked) -> Result<String, Error> {
         }
         let sig = format!(
             "guard {}.{}({})",
-            crate::modules::shown(&of.module.name),
+            crate::modules::shown(&of.module.name.to_string()),
             of.name,
             parts.join(",")
         );
@@ -2366,7 +2366,7 @@ fn render_errors_unplaced(checked: &Checked) -> Result<String, Error> {
         }
         let sig = format!(
             "hook {}.{}({})",
-            crate::modules::shown(&of.module.name),
+            crate::modules::shown(&of.module.name.to_string()),
             of.name,
             parts.join(",")
         );

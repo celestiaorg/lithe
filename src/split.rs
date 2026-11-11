@@ -402,8 +402,8 @@ fn marked(checked: &Checked, opts: &Options) -> Vec<String> {
     let prog = &checked.prog;
     prog.compose
         .iter()
-        .map(|module| module.name.clone())
-        .filter(|module| prog.facets.iter().any(|mark| &mark.name == module))
+        .map(|module| module.name.to_string())
+        .filter(|module| prog.facets.iter().any(|mark| mark.name.as_str() == module))
         .collect()
 }
 
@@ -858,10 +858,10 @@ pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing
     });
     prog.compose = order
         .into_iter()
-        .filter(|name| name != module)
+        .filter(|name| *name != module)
         .map(|name| NameAt {
             span: Span::NONE,
-            name,
+            name: crate::ast::Names::shared().intern(&name),
         })
         .collect();
     if let Some(decl) = prog.modules.iter().find(|decl| decl.name == module) {
@@ -869,7 +869,7 @@ pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing
         prog.contract_span = decl.span;
         prog.compose.push(NameAt {
             span: decl.span,
-            name: module.to_string(),
+            name: crate::ast::Names::shared().intern(module),
         });
         let externals: Vec<Func> = decl
             .funcs
@@ -935,13 +935,13 @@ fn across(module: &str, decl: &crate::ast::ModuleDecl, func: &Func, crossing: &C
     };
     let call = Expr::Call {
         span,
-        name: callee.clone(),
+        name: crate::ast::Names::shared().intern(&callee),
         args: func
             .params
             .iter()
             .map(|p| Expr::Ident {
                 span: p.span,
-                name: p.name.clone(),
+                name: crate::ast::Names::shared().intern(&p.name),
                 sym: None,
                 builtin: None,
                 ty: 0,
@@ -979,7 +979,7 @@ fn across(module: &str, decl: &crate::ast::ModuleDecl, func: &Func, crossing: &C
                 .iter()
                 .map(|name| NameAt {
                     span,
-                    name: name.clone(),
+                    name: crate::ast::Names::shared().intern(name),
                 })
                 .collect(),
         }),
@@ -997,7 +997,7 @@ fn across(module: &str, decl: &crate::ast::ModuleDecl, func: &Func, crossing: &C
         if entry.kind == ItemKind::View {
             entry.ret = Some(TypeRef::Name {
                 span,
-                name: "bool".to_string(),
+                name: crate::ast::Names::shared().intern("bool"),
             });
             entry.tail = Some(Expr::Lit {
                 span,
@@ -1035,11 +1035,11 @@ pub(crate) fn closure(modules: &[crate::ast::ModuleDecl], module: &str, out: &mu
     let Some(decl) = modules.iter().find(|decl| decl.name == module) else {
         return;
     };
-    let mut requires: Vec<&str> = decl
+    let mut requires: Vec<String> = decl
         .requires
         .iter()
-        .map(|r| r.name.as_str())
-        .chain(decl.refs.iter().map(String::as_str))
+        .map(|r| r.name.to_string())
+        .chain(decl.refs.iter().cloned())
         .filter(|name| {
             modules
                 .iter()
@@ -1049,7 +1049,7 @@ pub(crate) fn closure(modules: &[crate::ast::ModuleDecl], module: &str, out: &mu
     requires.sort_unstable();
     requires.dedup();
     for required in requires {
-        closure(modules, required, out);
+        closure(modules, &required, out);
     }
     if !out.iter().any(|name| name == module) {
         out.push(module.to_string());
@@ -1129,7 +1129,7 @@ fn module_crossings(
 fn groups(checked: &Checked, entries: &[Entrypoint]) -> Vec<(Group, Vec<usize>)> {
     let mut order = vec![Group::Upgrade, Group::Contract];
     for module in &checked.prog.compose {
-        order.push(Group::Module(module.name.clone()));
+        order.push(Group::Module(module.name.to_string()));
     }
     order
         .into_iter()
@@ -1181,7 +1181,7 @@ fn oversized(
         .prog
         .compose
         .iter()
-        .map(|m| m.name.clone())
+        .map(|m| m.name.to_string())
         .filter(|m| !marked.contains(m))
         .collect();
     enum Row {
@@ -1294,7 +1294,12 @@ fn marking_saves(
     }
     let crossing = [(module.to_string(), gen::crossable(checked, module))];
     marked.cross.extend(stand_ins(checked, &crossing));
-    let mut facets: Vec<String> = checked.prog.facets.iter().map(|m| m.name.clone()).collect();
+    let mut facets: Vec<String> = checked
+        .prog
+        .facets
+        .iter()
+        .map(|m| m.name.to_string())
+        .collect();
     facets.push(module.to_string());
     if let Ok((Some(stray), _)) = gen::stray_call(checked, &facets, &marked.cross) {
         let callee = display_name(&checked.prog.funcs[stray.callee].name);
@@ -1316,7 +1321,7 @@ fn facet_hint(checked: &Checked, marked: &[String]) -> String {
         .prog
         .compose
         .iter()
-        .filter(|m| !marked.contains(&m.name))
+        .filter(|m| !marked.contains(&m.name.to_string()))
         .map(|m| format!("`{}`", m.name))
         .collect();
     if unmarked.is_empty() {

@@ -21,15 +21,17 @@ impl Checker {
         else {
             return Ok(false);
         };
-        if !self.intrinsic_module(module) {
+        if !self.intrinsic_module(&module.to_string()) {
             return Ok(false);
         }
-        let Some(Tag::Call(kind)) = self.intrinsic(base_expr, name) else {
+        let Some(Tag::Call(kind)) = self.intrinsic(base_expr, Names::shared().intern(name)) else {
+            let module = module.to_string();
             return Err(self
-                .no_member(span, module, name, "a function")
+                .no_member(span, &module, name, "a function")
                 .unwrap_or_else(|| error(span, format!("unknown function `{module}.{name}`"))));
         };
-        let module = crate::modules::shown(module);
+        let written = module.to_string();
+        let module = crate::modules::shown(&written);
         self.check_builtin(span, kind, name, module, args, builtin, ty)?;
         Ok(true)
     }
@@ -42,7 +44,7 @@ impl Checker {
     }
 
     /// The intrinsic `module.member` names, when `module` is such a module.
-    pub(super) fn intrinsic(&self, module: &Expr, member: &str) -> Option<Tag> {
+    pub(super) fn intrinsic(&self, module: &Expr, member: Symbol) -> Option<Tag> {
         let Expr::Ident { name, .. } = module else {
             return None;
         };
@@ -325,7 +327,9 @@ impl Checker {
             Builtin::AbiEncodeCall => {
                 let target = match args.first() {
                     Some(Expr::Field { base, name, .. }) => match base.as_ref() {
-                        Expr::Ident { name: iface, .. } => Some((iface.clone(), name.clone())),
+                        Expr::Ident { name: iface, .. } => {
+                            Some((iface.to_string(), name.to_string()))
+                        }
                         _ => None,
                     },
                     _ => None,
@@ -424,12 +428,12 @@ impl Checker {
                         format!("`{call}` is for contract code: `{own}`'s facet is built from the module alone, which knows no other facet"),
                     ));
                 }
-                if !self.delegated.iter().any(|m| m == module) {
+                if !self.delegated.iter().any(|m| m == &module.to_string()) {
                     return Err(error(
                         args[0].span(),
                         format!(
                             "`{}` has no facet: the contract doesn't use it `{}`",
-                            crate::split::display_name(module),
+                            crate::split::display_name(&module.to_string()),
                             crate::parse::DELEGATED
                         ),
                     ));
@@ -722,7 +726,7 @@ impl Checker {
         };
         let span = *span;
         if !matches!(
-            self.intrinsic(base, name),
+            self.intrinsic(base, *name),
             Some(Tag::AbiSelector | Tag::AbiInterfaceId)
         ) {
             return Ok(None);
@@ -747,10 +751,12 @@ impl Checker {
                         "`Abi.selector` expects an interface method, like `Token.transfer`",
                     ));
                 };
-                let found: Vec<&IfaceMethod> = iface_methods(iface)
+                let iface = iface.to_string();
+                let method = method.to_string();
+                let found: Vec<&IfaceMethod> = iface_methods(&iface)
                     .into_iter()
                     .flatten()
-                    .filter(|m| &m.name == method)
+                    .filter(|m| m.name == method)
                     .collect();
                 match found.as_slice() {
                     [m] => sel(&m.sig),
@@ -778,7 +784,7 @@ impl Checker {
                 ));
             }
             ("interfaceId", [Expr::Ident { name: iface, .. }]) => {
-                let Some(methods) = iface_methods(iface) else {
+                let Some(methods) = iface_methods(&iface.to_string()) else {
                     return Err(error(span, format!("unknown interface `{iface}`")));
                 };
                 methods.iter().fold(0, |id, m| id ^ sel(&m.sig))
@@ -933,7 +939,7 @@ impl Checker {
                     "`Abi.decode` expects a type name, or a tuple of type names",
                 ));
             };
-            let Some(id) = c.named.get(name).copied() else {
+            let Some(id) = c.named.get(&name.to_string()).copied() else {
                 return Err(error(*span, format!("unknown type `{name}`")));
             };
             if !abi_value(&c.types, id) {

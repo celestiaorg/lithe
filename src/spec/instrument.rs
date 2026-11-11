@@ -406,7 +406,7 @@ fn instrument_unplaced(mut prog: Program, specs: &Specs) -> Result<Instrumented,
 
     for (module, funcs) in module_fns {
         if let Some(m) = prog.modules.iter_mut().find(|m| m.name == module) {
-            let requires: Vec<String> = m.requires.iter().map(|r| r.name.clone()).collect();
+            let requires: Vec<String> = m.requires.iter().map(|r| r.name.to_string()).collect();
             for mut f in funcs {
                 f.module = Some(module.clone());
                 f.requires = requires.clone();
@@ -419,8 +419,9 @@ fn instrument_unplaced(mut prog: Program, specs: &Specs) -> Result<Instrumented,
         match scope {
             None => prog.funcs.extend(exact_helpers(None)),
             Some(name) => {
-                if let Some(m) = prog.modules.iter_mut().find(|m| m.name == name) {
-                    let requires: Vec<String> = m.requires.iter().map(|r| r.name.clone()).collect();
+                if let Some(m) = prog.modules.iter_mut().find(|m| m.name == name.as_str()) {
+                    let requires: Vec<String> =
+                        m.requires.iter().map(|r| r.name.to_string()).collect();
                     m.funcs.extend(exact_helpers(Some((&name, &requires))));
                 }
             }
@@ -433,7 +434,7 @@ fn instrument_unplaced(mut prog: Program, specs: &Specs) -> Result<Instrumented,
         name: VIOLATION.to_string(),
         payload: Some(TypeRef::Name {
             span: Span::NONE,
-            name: "string".to_string(),
+            name: Names::shared().intern("string"),
         }),
     });
     Ok(Instrumented { prog, warnings })
@@ -537,7 +538,7 @@ impl Build<'_> {
                 *e = match state {
                     Some(state) => Expr::Call {
                         span,
-                        name: String::new(),
+                        name: Symbol::empty(),
                         args: vec![read],
                         base: None,
                         callee: None,
@@ -573,26 +574,27 @@ impl Build<'_> {
         };
         let (owner, domain) = match base.as_ref() {
             Expr::Ident { name, .. } => match scope {
-                None if name == "storage" => (None, name.clone()),
+                None if name == "storage" => (None, name.to_string()),
                 None => {
+                    let spelled = name.to_string();
                     if !self
                         .prog
                         .domains
                         .iter()
-                        .any(|d| &d.name == name && d.owner.is_none() && !d.transient)
+                        .any(|d| d.name == spelled && d.owner.is_none() && !d.transient)
                     {
                         return Err(unsupported());
                     }
-                    (None, name.clone())
+                    (None, spelled)
                 }
-                Some(module) => (Some(module.clone()), name.clone()),
+                Some(module) => (Some(module.clone()), name.to_string()),
             },
             Expr::Field {
                 base: module,
                 name: domain,
                 ..
             } => match module.as_ref() {
-                Expr::Ident { name: module, .. } => (Some(module.clone()), domain.clone()),
+                Expr::Ident { name: module, .. } => (Some(module.to_string()), domain.to_string()),
                 _ => return Err(unsupported()),
             },
             _ => return Err(unsupported()),
@@ -620,16 +622,18 @@ impl Build<'_> {
                 .modules
                 .iter()
                 .find(|module| &module.name == m)
-                .and_then(|module| module.domains.iter().find(|d| d.name == domain))
+                .and_then(|module| module.domains.iter().find(|d| d.name == *domain))
                 .filter(|d| !d.transient)
                 .map(|d| &d.ty),
         }
         .ok_or_else(unsupported)?;
-        let val = self.map_value(record, field).ok_or_else(unsupported)?;
+        let val = self
+            .map_value(record, &field.to_string())
+            .ok_or_else(unsupported)?;
         let ty = if count {
             TypeRef::Name {
                 span: Span::NONE,
-                name: "uint".to_string(),
+                name: Names::shared().intern("uint"),
             }
         } else {
             val
@@ -638,7 +642,7 @@ impl Build<'_> {
         self.ghosts.push(Ghost {
             owner,
             domain,
-            field: field.clone(),
+            field: field.to_string(),
             count,
             slot,
             ty,
@@ -857,8 +861,8 @@ impl Build<'_> {
                 args,
                 ..
             } => self.after(&args[0], pre, rename),
-            Expr::Ident { name, span, .. } if rename.contains_key(name) => {
-                ident(&rename[name], *span)
+            Expr::Ident { name, span, .. } if rename.contains_key(name.as_str()) => {
+                ident(&rename[name.as_str()], *span)
             }
             _ => {
                 let mut out = e.clone();
@@ -1211,7 +1215,9 @@ fn strip_states(e: &Expr) -> Expr {
 
 fn rename_idents(e: &Expr, names: &HashMap<String, String>) -> Expr {
     match e {
-        Expr::Ident { name, span, .. } if names.contains_key(name) => ident(&names[name], *span),
+        Expr::Ident { name, span, .. } if names.contains_key(name.as_str()) => {
+            ident(&names[name.as_str()], *span)
+        }
         _ => {
             let mut out = e.clone();
             each_child(&mut out, &mut |child| *child = rename_idents(child, names));
@@ -1225,7 +1231,7 @@ fn mentions(e: &Expr, names: &[String]) -> bool {
         return false;
     }
     if let Expr::Ident { name, .. } = e {
-        return names.contains(name);
+        return names.contains(&name.to_string());
     }
     let mut found = false;
     let mut e = e.clone();
@@ -1240,7 +1246,7 @@ fn view_fn(name: &str, span: Span, tail: Option<Expr>) -> Func {
 fn ident(name: &str, span: Span) -> Expr {
     Expr::Ident {
         span,
-        name: name.to_string(),
+        name: Names::shared().intern(name),
         sym: None,
         builtin: None,
         ty: 0,
@@ -1251,7 +1257,7 @@ fn field(base: Expr, name: &str) -> Expr {
     Expr::Field {
         span: base.span(),
         base: Box::new(base),
-        name: name.to_string(),
+        name: Names::shared().intern(name),
         root: None,
         leaf: 0,
         ty: 0,
@@ -1261,7 +1267,7 @@ fn field(base: Expr, name: &str) -> Expr {
 fn call_expr(name: &str, base: Option<Expr>, args: Vec<Expr>, span: Span) -> Expr {
     Expr::Call {
         span,
-        name: name.to_string(),
+        name: Names::shared().intern(name),
         args,
         base: base.map(Box::new),
         callee: None,
@@ -1310,7 +1316,7 @@ fn unit() -> Expr {
 fn bool_ty() -> TypeRef {
     TypeRef::Name {
         span: Span::NONE,
-        name: "bool".to_string(),
+        name: Names::shared().intern("bool"),
     }
 }
 
@@ -1575,7 +1581,7 @@ fn exact_stmt(s: &mut Stmt) {
 
 fn exact_names(e: &mut Expr) {
     if let Expr::Call { name, .. } = e {
-        *name = exact_name(name);
+        *name = Names::shared().intern(&exact_name(&name.to_string()));
     }
     each_child(e, &mut |child| exact_names(child));
 }
@@ -1615,7 +1621,7 @@ fn is_arith(e: &Expr, wide: &HashMap<String, String>) -> bool {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
         ),
         Expr::Unary { op: UnOp::Neg, .. } => true,
-        Expr::Ident { name, .. } => wide.contains_key(name),
+        Expr::Ident { name, .. } => wide.contains_key(&name.to_string()),
         _ => false,
     }
 }
@@ -1652,7 +1658,9 @@ fn exact_value(e: &Expr, signs: &Signs, wide: &HashMap<String, String>) -> Optio
                 vec![zero, exact_value(expr, signs, wide)?],
             ))
         }
-        Expr::Ident { name, .. } if wide.contains_key(name) => Some(ident(&wide[name], span)),
+        Expr::Ident { name, .. } if wide.contains_key(&name.to_string()) => {
+            Some(ident(&wide[&name.to_string()], span))
+        }
         _ => match signs.get(&span).copied().flatten()? {
             true => Some(helper(
                 "exactInt",
@@ -1669,7 +1677,7 @@ fn exact_value(e: &Expr, signs: &Signs, wide: &HashMap<String, String>) -> Optio
 
 fn calls_exact(e: &Expr) -> bool {
     if let Expr::Call { name, .. } = e {
-        if name.starts_with(&format!("{TAG}exact ")) {
+        if name.to_string().starts_with(&format!("{TAG}exact ")) {
             return true;
         }
     }

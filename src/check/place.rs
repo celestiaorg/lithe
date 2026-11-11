@@ -13,18 +13,21 @@ impl Checker {
             } => {
                 // A module's domain, named as the qualified name this rewrites it to below,
                 // when the place is checked again: a storage argument of a specialized call.
-                let id = match name.split_once('.') {
+                // A bare name takes no copy: it is the common case, and this runs per place.
+                let spelled = name.as_str();
+                let id = match spelled.split_once('.') {
                     Some((module, domain))
-                        if self.lookup(name).is_none() && self.known_modules.contains(module) =>
+                        if self.lookup(spelled).is_none()
+                            && self.known_modules.contains(module) =>
                     {
                         self.open_module_domain(*span, module, domain)?
                     }
-                    _ => self.resolve(*span, name)?,
+                    _ => self.resolve(*span, spelled)?,
                 };
                 if let Some(qualified) = self
                     .domain_syms
                     .iter()
-                    .find(|domain| domain.sym == id && domain.short == *name)
+                    .find(|domain| domain.sym == id && domain.short == spelled)
                     .and_then(|domain| {
                         domain
                             .owner
@@ -32,10 +35,9 @@ impl Checker {
                             .map(|owner| format!("{owner}.{}", domain.short))
                     })
                 {
-                    *name = qualified;
+                    *name = Names::shared().intern(&qualified);
                 }
-                let shown = name.clone();
-                self.across_phases(*span, &shown, id)?;
+                self.across_phases(*span, name.as_str(), id)?;
                 *sym = Some(id);
                 *ty = self.syms[id].ty;
                 Ok(Place {
@@ -58,7 +60,7 @@ impl Checker {
                         name: module,
                         span: mspan,
                         ..
-                    } if self.is_module(module) => Some((module.clone(), *mspan, name.clone())),
+                    } if self.is_module(&module.to_string()) => Some((*module, *mspan, *name)),
                     Expr::Field {
                         base: inner,
                         name: kind,
@@ -68,15 +70,16 @@ impl Checker {
                             name: module,
                             span: mspan,
                             ..
-                        } if self.is_module(module) => self
-                            .kind_domain(module, kind, name)
-                            .map(|domain| (module.clone(), *mspan, domain)),
+                        } if self.is_module(&module.to_string()) => self
+                            .kind_domain(&module.to_string(), &kind.to_string(), &name.to_string())
+                            .map(|domain| (*module, *mspan, Names::shared().intern(&domain))),
                         _ => None,
                     },
                     _ => None,
                 };
                 if let Some((module, mspan, domain)) = module_domain {
-                    let sym = self.open_module_domain(mspan, &module, &domain)?;
+                    let sym =
+                        self.open_module_domain(mspan, &module.to_string(), &domain.to_string())?;
                     let sty = self.syms[sym].ty;
                     *root = Some(sym);
                     *leaf = 0;
@@ -92,7 +95,7 @@ impl Checker {
                 let rec = &self.types[self.peel(p.ty)];
                 let dynamic =
                     rec.kind == TyKind::String || (rec.kind == TyKind::Bytes && rec.bits == 0);
-                if (rec.kind == TyKind::List || dynamic) && name == "length" {
+                if (rec.kind == TyKind::List || dynamic) && name.as_str() == "length" {
                     *root = Some(p.sym);
                     *leaf = p.leaf;
                     *ty = TY_UINT;
@@ -106,8 +109,8 @@ impl Checker {
                 if rec.kind != TyKind::Record {
                     return Err(error(*span, "field access on a non-record"));
                 }
-                let Some(f) = rec.fields.iter().find(|f| f.name == *name) else {
-                    return Err(self.no_field(*span, self.peel(p.ty), name));
+                let Some(f) = rec.fields.iter().find(|f| f.name == name.as_str()) else {
+                    return Err(self.no_field(*span, self.peel(p.ty), &name.to_string()));
                 };
                 // A field of a map's value is found from the value's slot, not a leaf.
                 let abs = if p.in_map { p.leaf } else { p.leaf + f.slot };
@@ -538,10 +541,10 @@ pub(super) fn place_keys(expr: &Expr) -> (Vec<Expr>, &Expr) {
 /// The names of a place written as a path, `a.b.c`, with no index.
 pub(super) fn place_path(expr: &Expr) -> Option<Vec<String>> {
     match expr {
-        Expr::Ident { name, .. } => Some(vec![name.clone()]),
+        Expr::Ident { name, .. } => Some(vec![name.to_string()]),
         Expr::Field { base, name, .. } => {
             let mut path = place_path(base)?;
-            path.push(name.clone());
+            path.push(name.to_string());
             Some(path)
         }
         _ => None,
@@ -551,7 +554,7 @@ pub(super) fn place_path(expr: &Expr) -> Option<Vec<String>> {
 pub(super) fn path_expr(span: Span, path: &[String]) -> Expr {
     let mut expr = Expr::Ident {
         span,
-        name: path[0].clone(),
+        name: Names::shared().intern(&path[0]),
         sym: None,
         builtin: None,
         ty: 0,
@@ -560,7 +563,7 @@ pub(super) fn path_expr(span: Span, path: &[String]) -> Expr {
         expr = Expr::Field {
             span,
             base: Box::new(expr),
-            name: name.clone(),
+            name: Names::shared().intern(name),
             root: None,
             leaf: 0,
             ty: 0,

@@ -1160,7 +1160,7 @@ impl<'a> Gen<'a> {
                 let address = self
                     .shape
                     .facet_at
-                    .get(name)
+                    .get(&name.to_string())
                     .copied()
                     .unwrap_or_else(|| crate::split::address_word([0xfa; 20]));
                 self.push_word(address);
@@ -2661,7 +2661,7 @@ impl<'a> Gen<'a> {
         Expr::Field {
             span: value.span(),
             base: Box::new(value.clone()),
-            name: TAG_FIELD.to_string(),
+            name: Names::shared().intern(TAG_FIELD),
             root,
             leaf,
             ty: self.checked.types[value.ty()].fields[0].ty,

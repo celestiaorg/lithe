@@ -308,7 +308,7 @@ pub(super) fn length_of(base: &Expr, like: &Expr) -> Expr {
     Expr::Field {
         span: base.span(),
         base: Box::new(base.clone()),
-        name: "length".to_string(),
+        name: Names::shared().intern("length"),
         root: None,
         leaf: 0,
         ty: like.ty(),
@@ -910,7 +910,7 @@ impl<'a> Gen<'a> {
             if !self.checked.syms[sym].storage && self.fixed(&args[1]) {
                 let x = Expr::Ident {
                     span: e.span(),
-                    name: String::new(),
+                    name: Symbol::empty(),
                     sym: Some(sym),
                     builtin: None,
                     ty: self.checked.syms[sym].ty,
@@ -932,7 +932,7 @@ impl<'a> Gen<'a> {
         }
         let x = Expr::Ident {
             span: e.span(),
-            name: String::new(),
+            name: Symbol::empty(),
             sym: Some(sym),
             builtin: None,
             ty: self.checked.syms[sym].ty,
