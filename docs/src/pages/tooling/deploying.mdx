@@ -1,6 +1,6 @@
 ---
 title: "Deploying"
-description: "Deploying a Lithe contract with cast, Foundry, or Hardhat, and a contract with delegated modules: its facets first, through the CREATE2 deployer, in the order its plan gives."
+description: "Deploying a Lithe contract with cast, Foundry, viem, ethers, or Hardhat, and a contract with delegated modules: its facets first, through the CREATE2 deployer, in the order its plan gives."
 ---
 
 # Deploying
@@ -112,6 +112,50 @@ vm.stopBroadcast();
 ```
 
 Forge's test chain has the CREATE2 deployer, so a test's `setUp` deploys a contract with facets the same way.
+
+### With viem
+
+Read the plan from the artifact, deploy the facets, then deploy the router as any contract:
+
+```ts
+import { readFileSync } from "node:fs";
+
+const artifact = JSON.parse(readFileSync("out/token.lithe/Token.json", "utf8"));
+
+for (const facet of artifact.plan?.facets ?? []) {
+  if (await publicClient.getCode({ address: facet.address })) continue;
+  const hash = await walletClient.sendTransaction({ to: facet.to, data: facet.data });
+  const { status } = await publicClient.waitForTransactionReceipt({ hash });
+  if (status !== "success") throw new Error(`deploying the facet ${facet.name} failed`);
+}
+
+const hash = await walletClient.deployContract({
+  abi: artifact.abi,
+  bytecode: artifact.bytecode.object,
+  args: [owner],
+});
+const { contractAddress } = await publicClient.waitForTransactionReceipt({ hash });
+```
+
+### With ethers
+
+```ts
+import { readFileSync } from "node:fs";
+import { ContractFactory } from "ethers";
+
+const artifact = JSON.parse(readFileSync("out/token.lithe/Token.json", "utf8"));
+
+for (const facet of artifact.plan?.facets ?? []) {
+  if ((await provider.getCode(facet.address)) !== "0x") continue;
+  const tx = await signer.sendTransaction({ to: facet.to, data: facet.data });
+  await tx.wait();
+}
+
+const token = await new ContractFactory(artifact.abi, artifact.bytecode, signer).deploy(owner);
+await token.waitForDeployment();
+```
+
+Against `anvil`, which mines each transaction at once, create the provider with `{ cacheTimeout: -1 }`. Otherwise ethers reuses the facet transaction's nonce for the contract.
 
 ### With Hardhat
 
