@@ -562,9 +562,10 @@ impl Checker {
                 }
                 if base.is_none() {
                     if let Some(module) = self.module_name.clone() {
+                        let spelled = name.as_str();
                         if !spelled.contains('.') {
                             let qualified = format!("{module}.{name}");
-                            let hook = hook_fn(&module, &spelled);
+                            let hook = hook_fn(&module, spelled);
                             if self.fn_names.iter().any(|n| n == &hook) {
                                 *name = Names::shared().intern(&hook);
                             } else if self.fn_names.iter().any(|n| n == &qualified) {
@@ -573,7 +574,7 @@ impl Checker {
                         }
                     }
                 }
-                if self.builtin_module(*span, &spelled, args, base, builtin, ty)? {
+                if self.builtin_module(*span, name.as_str(), args, base, builtin, ty)? {
                     return Ok(());
                 }
                 if let (Some(base), false) = (
@@ -1247,7 +1248,7 @@ impl Checker {
             },
             TyKind::Option => Expr::Ident {
                 span,
-                name: Symbol::empty(),
+                name: Names::shared().intern("None"),
                 sym: None,
                 builtin: Some(Builtin::None),
                 ty,

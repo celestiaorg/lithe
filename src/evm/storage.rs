@@ -1703,6 +1703,18 @@ fn delete_is_rejected_where_assignment_is() {
     compile(&format!("{base}{ok}")).expect("delete as a name");
 }
 
+/// What a `delete` writes is named `None`, not left anonymous: the editor index and every
+/// expression printer read that name.
+#[test]
+fn delete_of_an_option_names_none() {
+    use super::split::checked_src;
+    let checked = checked_src(
+        "storage is record { o : option(uint); }\nexternal function f() is { delete storage.o; }\n",
+    );
+    let body = format!("{:?}", checked.prog.funcs[0].stmts);
+    assert!(body.contains("\"None\""), "{body}");
+}
+
 /// Each compound operator acts and fails as its binary operator does, as the table in
 /// the statements docs says, and the docs' flags example sets, clears, and flips bits.
 #[test]
