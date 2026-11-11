@@ -2815,19 +2815,28 @@ impl<'a> Parser<'a> {
     /// the block's level. Scanning from the statement's first token, not from where it failed,
     /// is what makes the bracket depth right: a failure after `Foo {` must still count that `{`.
     /// Every other token is bumped, so a block always makes progress on a broken statement.
+    ///
+    /// Brackets are counted by kind, because a `}` with only `(`/`[` open above the statement's
+    /// own braces is the block's `}`, not a closer: `foo(x;` ends the statement there instead of
+    /// consuming the block's `}` and carrying recovery into the next declaration. A closer with
+    /// nothing of its kind open saturates at zero rather than underflowing.
     fn skip_stmt(&mut self, start: usize) {
         self.i = start;
-        let mut depth = 0i32;
+        let (mut braces, mut parens, mut brackets) = (0u32, 0u32, 0u32);
         loop {
             match self.kind() {
                 Kind::Eof => return,
-                Kind::RBrace if depth == 0 => return,
-                Kind::Semi if depth == 0 => {
+                Kind::RBrace if braces == 0 => return,
+                Kind::Semi if braces == 0 && parens == 0 && brackets == 0 => {
                     self.bump();
                     return;
                 }
-                Kind::LBrace | Kind::LBrack | Kind::LParen => depth += 1,
-                Kind::RBrace | Kind::RBrack | Kind::RParen if depth > 0 => depth -= 1,
+                Kind::LBrace => braces += 1,
+                Kind::LParen => parens += 1,
+                Kind::LBrack => brackets += 1,
+                Kind::RBrace => braces -= 1,
+                Kind::RParen => parens = parens.saturating_sub(1),
+                Kind::RBrack => brackets = brackets.saturating_sub(1),
                 _ => {}
             }
             self.bump();
@@ -4377,6 +4386,60 @@ external function go() is {\n\
             found,
             vec![(8, "`indexed` belongs on the event declaration".to_string())],
             "one error, and no cascade from the record's own `}}`"
+        );
+    }
+
+    /// A `}` with only `(` open above the statement's own braces is the block's `}`, not that
+    /// paren's closer: `bar(a;` ends the statement at the block's `}` without consuming it, so
+    /// the declaration after it is parsed and reports its own error instead of a cascade.
+    #[test]
+    fn an_unclosed_paren_does_not_swallow_the_block() {
+        let src = "storage is record { n : uint; }\n\
+external function f() : uint is {\n\
+  bar(1;\n\
+} with 0\n\
+\n\
+external function g() : uint is {\n\
+  var y : uint := ;\n\
+} with 0\n";
+        let err = parse(src).expect_err("broken statements");
+        let found: Vec<(u32, String)> = err
+            .chain()
+            .map(|err| (err.line, err.message.clone()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (3, "expected `)`, found `;`".to_string()),
+                (7, "expected an expression, found `;`".to_string()),
+            ],
+            "the first error unchanged, the second function's reported, no cascade"
+        );
+    }
+
+    /// The same for a `[`: the block's `}` closes the statement, not the index.
+    #[test]
+    fn an_unclosed_bracket_does_not_swallow_the_block() {
+        let src = "storage is record { n : uint; }\nexternal function f(const a : list(uint, 4)) : uint is {\n\
+  var z : uint := a[0;\n\
+  z := 1;\n\
+} with z\n\
+\n\
+external function g() : uint is {\n\
+  var y : uint := ;\n\
+} with 0\n";
+        let err = parse(src).expect_err("broken statements");
+        let found: Vec<(u32, String)> = err
+            .chain()
+            .map(|err| (err.line, err.message.clone()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (3, "expected `]`, found `;`".to_string()),
+                (8, "expected an expression, found `;`".to_string()),
+            ],
+            "the first error unchanged, the second function's reported, no cascade"
         );
     }
 
