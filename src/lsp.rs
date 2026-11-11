@@ -1571,6 +1571,27 @@ mod tests {
         );
     }
 
+    /// Every statement the parser recovered from is a diagnostic of its own, so a file with
+    /// three broken statements shows three, not one.
+    #[test]
+    fn publish_sends_one_diagnostic_per_recovered_error() {
+        let text = "storage is record { count : uint; }\n\
+external function f() : uint is {\n\
+  var x : uint := ;\n\
+  var y : uint := ;\n\
+  var z : uint := ;\n\
+  storage.count := 5;\n\
+} with 0\n";
+        let (_, bodies) = session(&[
+            open("file:///tmp/recovered.lithe", text),
+            frame(r#"{"jsonrpc":"2.0","method":"exit"}"#),
+        ]);
+        let errors = bodies[0]
+            .matches(r#""severity":1,"source":"lithe""#)
+            .count();
+        assert_eq!(errors, 3, "{}", bodies[0]);
+    }
+
     fn request(id: u32, method: &str, uri: &str, line: u32, character: u32) -> String {
         frame(&format!(
             r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/{method}","params":{{"textDocument":{{"uri":{}}},"position":{{"line":{line},"character":{character}}}}}}}"#,

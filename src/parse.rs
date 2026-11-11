@@ -76,28 +76,38 @@ fn spec_file(src: &str) -> Result<SpecFile, Error> {
         contracts: Vec::new(),
         modules: Vec::new(),
     };
-    while parser.kind() != Kind::Eof {
-        if parser.kind() == Kind::Semi {
-            parser.bump();
-            continue;
-        }
-        if !parser.spec_ahead() {
-            return Err(parser.err(format!(
-                "a spec file holds only spec blocks; found {}",
-                parser.found()
-            )));
-        }
-        match parser.peek_kind(2) {
-            Kind::Contract => {
-                let (name, blocks) = parser.spec_wrapper()?;
-                file.contracts.push((name, blocks));
+    let built = (|| -> Result<(), Error> {
+        while parser.kind() != Kind::Eof {
+            if parser.kind() == Kind::Semi {
+                parser.bump();
+                continue;
             }
-            Kind::Module => {
-                let (name, blocks) = parser.spec_wrapper()?;
-                file.modules.push((name, blocks));
+            if !parser.spec_ahead() {
+                return Err(parser.err(format!(
+                    "a spec file holds only spec blocks; found {}",
+                    parser.found()
+                )));
             }
-            _ => file.bare.push(parser.spec_block(None)?),
+            match parser.peek_kind(2) {
+                Kind::Contract => {
+                    let (name, blocks) = parser.spec_wrapper()?;
+                    file.contracts.push((name, blocks));
+                }
+                Kind::Module => {
+                    let (name, blocks) = parser.spec_wrapper()?;
+                    file.modules.push((name, blocks));
+                }
+                _ => file.bare.push(parser.spec_block(None)?),
+            }
         }
+        Ok(())
+    })();
+    // Statement errors recovered from inside a spec block are errors too, in file order.
+    if let Err(err) = built {
+        parser.errors.push(err);
+    }
+    if let Some(err) = parser.all_errors() {
+        return Err(err);
     }
     Ok(file)
 }
@@ -2785,6 +2795,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 continue;
             }
+            let start = self.i;
             match self.stmt() {
                 Ok(stmt) => stmts.push(stmt),
                 // Report the statement's error and carry on at the next one, so a file shows
@@ -2792,7 +2803,7 @@ impl<'a> Parser<'a> {
                 // dropped with the program when `parse` returns the first error.
                 Err(err) => {
                     self.errors.push(err);
-                    self.skip_stmt();
+                    self.skip_stmt(start);
                 }
             }
         }
@@ -2800,10 +2811,12 @@ impl<'a> Parser<'a> {
         Ok(stmts)
     }
 
-    /// Moves past the tokens of a broken statement to the next `;` or `}` outside any brackets.
-    /// Every other token is bumped, so a block always makes progress; an unmatched `)` or `]`
-    /// is simply skipped.
-    fn skip_stmt(&mut self) {
+    /// Moves past the tokens of the statement that began at `start` to the next `;` or `}` at
+    /// the block's level. Scanning from the statement's first token, not from where it failed,
+    /// is what makes the bracket depth right: a failure after `Foo {` must still count that `{`.
+    /// Every other token is bumped, so a block always makes progress on a broken statement.
+    fn skip_stmt(&mut self, start: usize) {
+        self.i = start;
         let mut depth = 0i32;
         loop {
             match self.kind() {
@@ -4339,5 +4352,46 @@ external function f() : uint is {\n\
         let err = parse(src).expect_err("broken statement");
         assert_eq!(err.chain().count(), 1);
         assert_eq!(err.line, 3);
+    }
+
+    /// The statement a failure happened in is skipped from its first token, so a `}` inside a
+    /// record literal it had already opened is not mistaken for the end of the block: the block
+    /// still ends where it does, and the file reports the one error it always did.
+    #[test]
+    fn skipping_a_broken_statement_counts_the_brackets_it_opened() {
+        let src = "event Foo of record {\n\
+  amount : uint;\n\
+}\n\
+storage is record {\n\
+  n : uint;\n\
+}\n\
+external function go() is {\n\
+  emit Foo { indexed amount = 1 };\n\
+}\n";
+        let err = parse(src).expect_err("indexed in an emit");
+        let found: Vec<(u32, String)> = err
+            .chain()
+            .map(|err| (err.line, err.message.clone()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![(8, "`indexed` belongs on the event declaration".to_string())],
+            "one error, and no cascade from the record's own `}}`"
+        );
+    }
+
+    /// A block a spec clause reaches recovers errors too, and a spec file with a broken
+    /// statement is rejected rather than accepted with the statement silently dropped.
+    #[test]
+    fn statement_errors_inside_a_spec_block_are_reported() {
+        let src = "spec for deposit is {\n\
+  ensures if true then { var y : uint := ; } with true else true;\n\
+}\n";
+        let err = match super::parse_specs(src) {
+            Ok(_) => panic!("a broken statement in a spec block must be an error"),
+            Err(err) => err,
+        };
+        assert_eq!(err.line, 2);
+        assert_eq!(err.message, "expected an expression, found `;`");
     }
 }
