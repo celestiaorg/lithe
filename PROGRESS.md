@@ -61,7 +61,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [ ] **5.3** Remove deep clones. Make `Plan` cheap. **Measured: `Plan` is not where the time is.** A Release `Plan` clone with 640 set members costs **3.0 µs**; `bench/erc20_full.lithe` Release runs 98 emits and 92 finishes totalling 1.66 s. The ~200 plan clones a search does are therefore ~0.6 ms, 0.04 % of the backend. Not taken on its own; the clones that matter are `Program`'s, which 5.1/5.2 already remove. See `## 5.3 Plan clones measured`.
 - [x] **5.4** Fx hasher. Every std `HashMap`/`HashSet` in `check`, `gen`, `route`, `split` and `index` (and `asm.rs`'s last few) is now `asm::FxHashMap`/`FxHashSet`; the two whose order was seen are `BTreeMap`s (no `IndexMap`: no new dependency). Both snapshots unchanged; `check` −1.5–2 %. See `## S27 Fx hashing`.
 - [ ] **5.5** Index-arena AST.
-- [ ] **5.6** Parsed and checked module cache across `compile_dir` and `abi_dir`.
+- [x] **5.6** Parsed and checked module cache across `compile_dir` and `abi_dir`. **Parsed half landed; checked half is already shared per file.** `emit_dir` now holds one `ModuleCache` for the directory, so the `lib/` files 51 bench entries import are parsed once instead of once per importer (68 parses → 68, 43 of them hits). Byte-identical output and thread-count-independent. The directory build is 360 ms at one thread of which **loading is 20 ms and parsing 3.6 ms**; the 300 ms is codegen, which is why the number does not move beyond noise. The checked half has nothing to add: `check` runs per entry file on its own merged program, and two entries' programs are different types, so no entry reuses another's `Checked` — that memo already serves the LSP, where the same file checks twice. See `## 5.6`.
 - [ ] **5.7** Lexer slices and statement-level parser recovery. First error unchanged.
 
 ### Phase 6 — evaluate and take if they pay
@@ -1426,3 +1426,48 @@ Plan: `Checked.named` and `domain_tys` become `FxHashMap<Symbol, usize>`, and so
 - **No measurement recorded** (medium): this record and the numbers above are the answer.
 - **`type_name` order change** (low): `.min()` on text instead of `.find()` on hash order. Deliberate: the parent's pick depended on interning order, which 5.1a's determinism test exists to forbid. Where a type has more than one name (two aliases of one map/list, a generic instantiation) the printed name is now the alphabetically first, and the 52 213-line corpus — which includes the alias and generic targets — is byte-identical to the parent, so no diagnostic in it reaches that difference.
 - **Files outside the owned set, and interner growth** (info): the signature changes to `lookup`/`define`/`resolve` force edits in `ast.rs` and `check/{builtins,expr,funcs,generic,place,spec_forms,stmt,types}.rs`; they are mechanical call-site changes, no logic. `define_str`/`resolve_str`/`intern(..)` do intern text the process never frees, which matters only for a long LSP session and is small (one entry per distinct identifier text, not per use). The table's lifetime is 5.1a's design, not this step's; a session-scoped table is the upgrade path if it ever matters.
+
+## 5.6
+
+Plan: thread one `ModuleCache` through `compile_dir`/`abi_dir` so the 51 files of `bench/` share parsed imports instead of each re-parsing `lib/`. Proof: the output tree byte-identical to the parent's, 1-thread and 8-thread trees identical, snapshots unchanged. Number to move: `lithe abi bench` at one thread, and `lithe compile --fast bench`.
+
+**What landed.** `emit_dir` makes one `ModuleCache` and passes it down through `emit_file` to `compile_cached` → `modules::load_cached`. `compile` is now `compile_cached(.., None)`, so every other caller is untouched. One new test, `modules::tests::files_of_one_directory_build_share_a_parsed_import`, asserts that two entry files importing the same `lib/` file leave three parsed programs in the cache, not four; it fails if the cache is dropped on the floor.
+
+**What the cache already covered, and what it did not.** `ModuleCache` keys parsed programs on `(path, content hash, EVM tag)` and `Checked` on `(path, fingerprint)` — `lib.rs`'s `analyze_in` has passed one since Phase 2. What was missing was that `compile_dir` passed `None`, so *directory mode* re-parsed each importer's imports. `std/` was already process-cached separately (`std_programs`), so the redundant work was the non-`std` files: over the 51 bench entries, 111 parse attempts for 68 distinct files — 43 re-parses, 41 of them the 17 `bench/lib/` files (1 705 lines, each imported 2–7 times) and 2 the factory's import of `uniswap_v2_pair`.
+
+**Why the number does not move.** Measured on `bench/` (51 entries, 68 loads including imports), `LITHE_THREADS=1`, `LITHE_CACHE_DIR=`:
+
+| phase | total | share of the 360 ms build |
+|---|---|---|
+| `modules::load` (canonicalize, read, parse, link, merge) | 20.3 ms | 5.6 % |
+| every `parse::parse`, all 306 attempts including `std/` | 8.0 ms | 2.2 % |
+| the 111 non-`std` attempts for 68 distinct files | 5.3 ms | 1.5 % |
+| the 43 redundant attempts this change removes | 2.2 ms | 0.6 % |
+| the 43 cache hits, each a `Program` clone | 0.48 ms | 0.13 % |
+
+So the whole of parse reuse is about **1.7 ms of 360 ms (0.5 %)** net, below this box's run-to-run spread at that granularity. The remaining ~300 ms is `check` 19.7 ms plus `gen`/backend 298 ms, which is Phase 1/3's, not this step's. Wall clock, interleaved A/B, 5 runs each, `LITHE_CACHE_DIR=` (build cache off), one thread:
+
+| command | parent `6ae833d` | this tree |
+|---|---|---|
+| `lithe abi bench` | 0.36–0.37 s | 0.35–0.37 s |
+| `lithe compile --fast bench` | 0.35–0.37 s | 0.37 s |
+| `lithe compile --release bench` | 4.86–4.90 s | 4.88–4.91 s |
+
+No resolvable change in any of the three, and the record says so rather than claiming one. Both directory modes pay it: the number the step names (`lithe compile bench/`) is the Release row.
+
+**The checked half has no directory-mode consumer.** `check::check` runs per entry on the merged `Program` of that entry — its own contract plus every file it imports flattened into it. Two entry files produce different merged programs, so no entry file can reuse another's `Checked`; there is nothing to share. The memo in `ModuleCache::with_checked` pays where the *same* file is checked twice, which is the LSP's `analyze_frontend`/`analyze_full` on an edit, and it is already wired there (`analyze_in`, `lib.rs:629`). Adding a directory path for it would be dead code.
+
+**Gates.**
+
+| gate | result |
+|---|---|
+| `cargo test --profile fast` | 565 lib (2 ignored) + 25 bin + 1 doctest, 0 failed |
+| `evm::snapshot` (Release and Fast) | unchanged, 2 passed |
+| `LITHE_CACHE_DIR= evm::differential` | 5 passed |
+| `cargo clippy --profile fast --all-targets`, `cargo fmt --check` | clean |
+| `compile --release --fast bench` output vs parent `6ae833d` | `diff -r` identical |
+| same, `LITHE_THREADS=1` vs `8` | `diff -r` identical |
+
+**Review findings.** None; this is the first pass.
+
+**What this leaves open.** 5.6's premise was that the module cache was unshared and worth building; the tree says the sharing was three lines of plumbing and the win is 0.6 %. The parsed cache and the checked memo are `std::HashMap` under a `Mutex` with `DefaultHasher`, so a directory build on many threads contends on one lock per lookup — not measured here because `load` is 20 ms of 360 ms total and would need a bigger denominator to show. If directory mode ever gets a frontend-only path where load dominates (a `lithe check` command, or the LSP linting a workspace), 5.4's `FxHash` applies to these two maps first.

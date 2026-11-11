@@ -218,7 +218,21 @@ impl From<Error> for Vec<Error> {
 /// Every contract an entry file defines, with the files it imports read from `sources`. Every
 /// contract is built, and the file fails with the errors of each that fails.
 pub fn compile(sources: &Sources, entry: &Path, opts: &Options) -> Result<Output, Vec<Error>> {
-    let mut prog = modules::load(sources, entry)?;
+    compile_cached(sources, entry, opts, None)
+}
+
+/// [`compile`], reusing the imports `cache` already parsed. A directory build passes one so
+/// the `lib/` modules its files share are parsed once.
+fn compile_cached(
+    sources: &Sources,
+    entry: &Path,
+    opts: &Options,
+    cache: Option<&ModuleCache>,
+) -> Result<Output, Vec<Error>> {
+    let mut prog = match cache {
+        Some(cache) => modules::load_cached(sources, entry, cache)?,
+        None => modules::load(sources, entry)?,
+    };
     if opts.check_specs {
         modules::load_specs(sources, entry, &mut prog)?;
     }
@@ -1452,13 +1466,16 @@ fn emit_dir(
 ) -> Result<DirOutput, Error> {
     let files = lithe_sources(dir)?;
     let workers = crate::gen::budget();
+    // One cache for the whole directory: the `std/` and `lib/` files many of these import are
+    // parsed once instead of once per importer.
+    let cache = ModuleCache::new();
     // Files compile independently, so they share the machine; the output keeps file order.
     let next = std::sync::atomic::AtomicUsize::new(0);
     let done = std::sync::Mutex::new(Vec::new());
     let run = || loop {
         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let Some(path) = files.get(i) else { break };
-        let out = emit_file(path, out_dir, artifact, opts);
+        let out = emit_file(path, out_dir, artifact, opts, &cache);
         done.lock()
             .unwrap_or_else(|e| e.into_inner())
             .push((i, out));
@@ -1606,6 +1623,7 @@ fn emit_file(
     out_dir: &Path,
     artifact: bool,
     opts: OptionsFor,
+    cache: &ModuleCache,
 ) -> (DirOutput, Vec<(PathBuf, String)>, Vec<(String, Facet)>) {
     let mut out = DirOutput::default();
     let mut writes = Vec::new();
@@ -1622,7 +1640,7 @@ fn emit_file(
             return (out, writes, facets);
         }
     };
-    let compiled = match compile(&Sources::disk(), path, &opts) {
+    let compiled = match compile_cached(&Sources::disk(), path, &opts, Some(cache)) {
         Ok(compiled) => compiled,
         Err(errors) if is_library(&Sources::disk(), path, &errors) => return (out, writes, facets),
         Err(errors) => {
