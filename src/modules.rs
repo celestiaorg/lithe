@@ -494,6 +494,24 @@ pub(crate) fn load(sources: &Sources, path: &Path) -> Result<Program, Error> {
     )
 }
 
+/// [`load`], reusing the parsed imports `cache` already holds: what a directory build
+/// shares between its files, so a `lib/` file is parsed once for all of them.
+pub(crate) fn load_cached(
+    sources: &Sources,
+    path: &Path,
+    cache: &ModuleCache,
+) -> Result<Program, Error> {
+    let mut touched = Vec::new();
+    load_in(
+        sources,
+        path,
+        None,
+        Some(cache),
+        EvmVersion::default(),
+        &mut touched,
+    )
+}
+
 /// Loads `path`, using `text` for that file when it is set, through `cache` when one is held.
 pub(crate) fn load_in(
     sources: &Sources,
@@ -1388,6 +1406,26 @@ mod tests {
         .unwrap();
         assert_eq!(std_ids(&edited), std_n);
         assert_eq!(cache.parsed_count(), parsed_n + 1);
+    }
+
+    /// A directory build shares one cache, so a `lib/` file two entry files import is parsed
+    /// once, not once per importer.
+    #[test]
+    fn files_of_one_directory_build_share_a_parsed_import() {
+        let lib = "storage is record { n : uint; }\nfunction bump() : uint is storage.n\n";
+        let one = "import \"./lib/shared\";\nexternal function a() is { }\n";
+        let two = "import \"./lib/shared\";\nexternal function b() is { }\n";
+        let sources = Sources::memory([
+            ("lib/shared.lithe", lib),
+            ("one.lithe", one),
+            ("two.lithe", two),
+        ]);
+        let cache = ModuleCache::new();
+        for entry in ["one.lithe", "two.lithe"] {
+            load_cached(&sources, Path::new(entry), &cache).unwrap();
+        }
+        // The shared import and the two entries, the first entry's share being a hit.
+        assert_eq!(cache.parsed_count(), 3);
     }
 
     /// A symbol must name the same text in every file and every build, whatever order files
