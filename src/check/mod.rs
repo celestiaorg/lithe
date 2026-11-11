@@ -247,9 +247,9 @@ pub(crate) struct Checked {
     /// Warnings the checker found, such as stale values captured by a continuation.
     pub warnings: Vec<Note>,
     /// Every type name in scope, and its type.
-    pub named: FxHashMap<String, usize>,
+    pub named: FxHashMap<Symbol, usize>,
     /// Each storage domain's record type, by qualified name: `Module.name` inside a module.
-    pub domain_tys: FxHashMap<String, usize>,
+    pub domain_tys: FxHashMap<Symbol, usize>,
     /// Each `list(T)(xs)` target and its file, which the built program no longer shows.
     pub conversions: Vec<(Option<FileId>, TypeRef)>,
     /// The program as it came in, before its modules were composed. A module's facet is
@@ -355,7 +355,7 @@ struct VisibleDomain {
 
 struct Scope {
     parent: Option<usize>,
-    vars: FxHashMap<String, usize>,
+    vars: FxHashMap<Symbol, usize>,
 }
 
 struct FnSig {
@@ -369,7 +369,7 @@ struct FnSig {
 struct Checker {
     evm: crate::EvmVersion,
     types: Vec<RType>,
-    named: FxHashMap<String, usize>,
+    named: FxHashMap<Symbol, usize>,
     decls: FxHashMap<String, TypeRef>,
     decl_at: FxHashMap<String, Span>,
     /// The file each type declaration is in.
@@ -454,7 +454,7 @@ struct Checker {
     /// Checking a module function's copy for storage paths passed in: where each starts,
     /// `storage` or another module, which the copy may then use.
     spec_places: Vec<String>,
-    domain_tys: FxHashMap<String, usize>,
+    domain_tys: FxHashMap<Symbol, usize>,
     /// Map parameters that hold their map's slot, and whether that map is transient.
     slot_syms: FxHashMap<usize, bool>,
     field_of: FxHashMap<usize, (usize, usize)>,
@@ -672,38 +672,38 @@ fn check_program(
         // filled below once ids are stable
         let _ = name;
     }
-    c.named.insert("unit".into(), TY_UNIT);
-    c.named.insert("bool".into(), TY_BOOL);
-    c.named.insert("uint".into(), TY_UINT);
-    c.named.insert("int".into(), TY_INT);
-    c.named.insert("address".into(), TY_ADDRESS);
-    c.named.insert("string".into(), TY_STRING);
-    c.named.insert("operation".into(), TY_OPERATION);
-    c.named.insert("wei".into(), TY_WEI);
-    c.named.insert("timestamp".into(), TY_TIMESTAMP);
-    c.named.insert("uint256".into(), TY_UINT);
-    c.named.insert("int256".into(), TY_INT);
+    c.named.insert(intern("unit"), TY_UNIT);
+    c.named.insert(intern("bool"), TY_BOOL);
+    c.named.insert(intern("uint"), TY_UINT);
+    c.named.insert(intern("int"), TY_INT);
+    c.named.insert(intern("address"), TY_ADDRESS);
+    c.named.insert(intern("string"), TY_STRING);
+    c.named.insert(intern("operation"), TY_OPERATION);
+    c.named.insert(intern("wei"), TY_WEI);
+    c.named.insert(intern("timestamp"), TY_TIMESTAMP);
+    c.named.insert(intern("uint256"), TY_UINT);
+    c.named.insert(intern("int256"), TY_INT);
     for bits in (8..256).step_by(8) {
         let uid = c.types.len();
         c.types.push(prim(TyKind::Uint, 1));
         c.types[uid].bits = bits as u16;
-        c.named.insert(format!("uint{bits}"), uid);
+        c.named.insert(intern(&format!("uint{bits}")), uid);
         let iid = c.types.len();
         c.types.push(prim(TyKind::Int, 1));
         c.types[iid].bits = bits as u16;
-        c.named.insert(format!("int{bits}"), iid);
+        c.named.insert(intern(&format!("int{bits}")), iid);
     }
     for n in 1..=32 {
         let id = c.types.len();
         c.types.push(prim(TyKind::Bytes, 1));
         c.types[id].bits = n;
-        c.named.insert(format!("bytes{n}"), id);
+        c.named.insert(intern(&format!("bytes{n}")), id);
     }
     let bytes_id = c.types.len();
     c.types.push(prim(TyKind::Bytes, 1));
     c.types[bytes_id].bits = 0;
-    c.named.insert("bytes".into(), bytes_id);
-    debug_assert!(c.named["uint8"] == TY_UINT8 && bytes_id == TY_BYTES);
+    c.named.insert(intern("bytes"), bytes_id);
+    debug_assert!(c.named[&intern("uint8")] == TY_UINT8 && bytes_id == TY_BYTES);
 
     let mut seen = FxHashSet::default();
     for d in &prog.types {
@@ -750,7 +750,7 @@ fn check_program(
             ));
         }
     }
-    let storage = if let Some(id) = c.named.get("storage").copied() {
+    let storage = if let Some(id) = c.named.get(&intern("storage")).copied() {
         if c.types[id].kind != TyKind::Record {
             let span = c.decl_at.get("storage").copied().unwrap_or_default();
             return Err(error(span, "`storage` must be a record"));
@@ -770,7 +770,7 @@ fn check_program(
             laid: true,
             flat: None,
         });
-        c.named.insert("storage".to_string(), id);
+        c.named.insert(intern("storage"), id);
         id
     };
     c.storage = storage;
@@ -841,7 +841,7 @@ fn check_program(
         }
         seen_ids.insert(decl.id.clone(), (label, qualified.clone(), shape));
         let ty = c.build(&decl.ty).map_err(|err| err.in_file(decl.file))?;
-        c.domain_tys.insert(qualified.clone(), ty);
+        c.domain_tys.insert(intern(&qualified), ty);
         if c.types[ty].kind != TyKind::Record {
             return Err(error(
                 decl.span,
@@ -955,7 +955,7 @@ fn check_program(
             );
         }
         let ty = c.build(&decl.ty).map_err(|err| err.in_file(decl.file))?;
-        c.domain_tys.insert(qualified.clone(), ty);
+        c.domain_tys.insert(intern(&qualified), ty);
         if c.types[ty].kind != TyKind::Record {
             return Err(error(decl.span, "transient storage must be a record").in_file(decl.file));
         }
@@ -1022,7 +1022,7 @@ fn check_program(
         };
         let record = match (&decl.owner, kind) {
             (None, "storage") => Some(c.storage),
-            _ => c.domain_tys.get(&qualify(kind)).copied(),
+            _ => c.domain_tys.get(&intern(&qualify(kind))).copied(),
         };
         if record.is_some_and(|ty| c.types[ty].fields.iter().any(|f| f.name == short)) {
             return Err(error(
@@ -1137,11 +1137,7 @@ fn check_program(
             .interfaces
             .iter()
             .any(|iface| iface.name == named.name.as_str())
-            .then(|| {
-                c.named
-                    .get(&named.name.to_string())
-                    .and_then(|id| c.ifaces.get(id))
-            })
+            .then(|| c.named.get(&named.name).and_then(|id| c.ifaces.get(id)))
             .flatten()
             .ok_or_else(|| error(named.span, format!("unknown interface `{}`", named.name)))?;
         let mut sigs = Vec::new();

@@ -96,7 +96,7 @@ impl Checker {
                     slot: 0,
                     span: 0,
                 });
-                self.define(*bspan, &name.to_string(), id)?;
+                self.define(*bspan, *name, id)?;
                 *sym = Some(id);
                 *bty = bound;
                 let expect = self.expect.take();

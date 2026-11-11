@@ -124,7 +124,7 @@ impl Checker {
                 self.slot_syms.insert(sym, transient);
             }
             p.sym = Some(sym);
-            self.define(p.span, &p.name, sym)?;
+            self.define_str(p.span, &p.name, sym)?;
         }
         let ret = match &f.ret {
             Some(ty) if f.ret_flat => {
@@ -159,7 +159,10 @@ impl Checker {
         if f.kind == ItemKind::Entry && f.ret.is_some() && !abi_value(&self.types, ret) {
             return Err(error(f.span, "an entry returns an ABI value"));
         }
-        if f.kind == ItemKind::Fallback && f.ret.is_some() && !self.same(ret, self.named["bytes"]) {
+        if f.kind == ItemKind::Fallback
+            && f.ret.is_some()
+            && !self.same(ret, self.named[&intern("bytes")])
+        {
             let span = f.ret.as_ref().map(|t| t.span()).unwrap_or(f.span);
             return Err(error(
                 span,
@@ -370,8 +373,8 @@ impl Checker {
             // `forward reason` reverts with exactly the bytes in `reason`, as a foreign
             // contract's revert data is passed on. It raises `forwarded`.
             let raw = self
-                .lookup(&raised.name.to_string())
-                .filter(|&sym| self.peel(self.syms[sym].ty) == self.named["bytes"]);
+                .lookup(intern(&raised.name))
+                .filter(|&sym| self.peel(self.syms[sym].ty) == self.named[&intern("bytes")]);
             if raw.is_some() {
                 let mut expr = Expr::Ident {
                     span: raised.span,
@@ -860,7 +863,7 @@ impl Checker {
                 .any(|bind| bind.owner.as_ref() == Some(module) && bind.short == "storage")
         });
         if (self.module_name.is_none() || (!self.spec_places.is_empty() && !own_storage))
-            && self.lookup("storage").is_none()
+            && self.lookup(intern("storage")).is_none()
         {
             let sym = self.add_sym(Sym {
                 ty: self.storage,
@@ -869,7 +872,7 @@ impl Checker {
                 slot: 0,
                 span: 0,
             });
-            self.define(span, "storage", sym)?;
+            self.define(span, intern("storage"), sym)?;
         }
         let binds = self.domain_binds.clone();
         for bind in binds {
@@ -893,9 +896,11 @@ impl Checker {
                 sym,
             });
             if visible && bind.short == "storage" {
-                self.scopes[self.scope].vars.insert(bind.short.clone(), sym);
+                self.scopes[self.scope]
+                    .vars
+                    .insert(intern(&bind.short), sym);
             } else if visible {
-                self.define(span, &bind.short, sym)?;
+                self.define_str(span, &bind.short, sym)?;
             }
         }
         Ok(())
@@ -942,7 +947,7 @@ impl Checker {
     pub(super) fn across_phases(
         &mut self,
         span: Span,
-        name: &str,
+        name: Symbol,
         sym: usize,
     ) -> Result<(), Error> {
         let Some(&floor) = self.phase_floors.last() else {
@@ -1074,7 +1079,7 @@ impl Checker {
             Expr::Call {
                 builtin: Some(Builtin::RawCall | Builtin::DelegateCall),
                 ..
-            } => Ok(self.named["bytes"]),
+            } => Ok(self.named[&intern("bytes")]),
             Expr::Call {
                 iface: Some(iface),
                 method: Some(method),

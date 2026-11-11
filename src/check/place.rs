@@ -13,21 +13,23 @@ impl Checker {
             } => {
                 // A module's domain, named as the qualified name this rewrites it to below,
                 // when the place is checked again: a storage argument of a specialized call.
-                // A bare name takes no copy: it is the common case, and this runs per place.
-                let spelled = name.as_str();
-                let id = match spelled.split_once('.') {
-                    Some((module, domain))
-                        if self.lookup(spelled).is_none()
-                            && self.known_modules.contains(module) =>
-                    {
+                // A bare name takes no lookup of its text: it is the common case, and this
+                // runs per place.
+                let id = if let Some(id) = self.lookup(*name) {
+                    id
+                } else if let Some((module, domain)) = name.as_str().split_once('.') {
+                    if self.known_modules.contains(module) {
                         self.open_module_domain(*span, module, domain)?
+                    } else {
+                        self.resolve(*span, *name)?
                     }
-                    _ => self.resolve(*span, spelled)?,
+                } else {
+                    self.resolve(*span, *name)?
                 };
                 if let Some(qualified) = self
                     .domain_syms
                     .iter()
-                    .find(|domain| domain.sym == id && domain.short == spelled)
+                    .find(|domain| domain.sym == id && domain.short == name.as_str())
                     .and_then(|domain| {
                         domain
                             .owner
@@ -37,7 +39,7 @@ impl Checker {
                 {
                     *name = Names::shared().intern(&qualified);
                 }
-                self.across_phases(*span, name.as_str(), id)?;
+                self.across_phases(*span, *name, id)?;
                 *sym = Some(id);
                 *ty = self.syms[id].ty;
                 Ok(Place {
@@ -60,7 +62,7 @@ impl Checker {
                         name: module,
                         span: mspan,
                         ..
-                    } if self.is_module(&module.to_string()) => Some((*module, *mspan, *name)),
+                    } if self.is_module(*module) => Some((*module, *mspan, *name)),
                     Expr::Field {
                         base: inner,
                         name: kind,
@@ -70,16 +72,15 @@ impl Checker {
                             name: module,
                             span: mspan,
                             ..
-                        } if self.is_module(&module.to_string()) => self
-                            .kind_domain(&module.to_string(), &kind.to_string(), &name.to_string())
+                        } if self.is_module(*module) => self
+                            .kind_domain(module.as_str(), kind.as_str(), name.as_str())
                             .map(|domain| (*module, *mspan, Names::shared().intern(&domain))),
                         _ => None,
                     },
                     _ => None,
                 };
                 if let Some((module, mspan, domain)) = module_domain {
-                    let sym =
-                        self.open_module_domain(mspan, &module.to_string(), &domain.to_string())?;
+                    let sym = self.open_module_domain(mspan, module.as_str(), domain.as_str())?;
                     let sty = self.syms[sym].ty;
                     *root = Some(sym);
                     *leaf = 0;
@@ -174,7 +175,8 @@ impl Checker {
         let Some(name) = path.first() else {
             return Err(error(span, "empty assignment"));
         };
-        if path.len() >= 2 && self.is_module(name) {
+        let head = intern(name);
+        if path.len() >= 2 && self.is_module(head) {
             let (domain, fields) = match path
                 .get(2)
                 .and_then(|d| self.kind_domain(name, &path[1], d))
@@ -191,7 +193,7 @@ impl Checker {
                 in_map: false,
             });
         }
-        let sym = self.resolve(span, name)?;
+        let sym = self.resolve_str(span, name)?;
         if self.phase_floors.last().is_some_and(|&floor| sym < floor)
             && self.syms[sym].mutable
             && !self.syms[sym].storage
@@ -251,8 +253,16 @@ impl Checker {
         id
     }
 
-    pub(super) fn resolve(&self, span: Span, name: &str) -> Result<usize, Error> {
-        self.lookup(name).ok_or_else(|| self.unbound(span, name))
+    pub(super) fn resolve(&self, span: Span, name: Symbol) -> Result<usize, Error> {
+        self.lookup(name)
+            .ok_or_else(|| self.unbound(span, name.as_str()))
+    }
+
+    /// `resolve` for a name the caller has only as text: the path of an assignment, which the
+    /// parser keeps as `String`.
+    pub(super) fn resolve_str(&self, span: Span, name: &str) -> Result<usize, Error> {
+        self.lookup(intern(name))
+            .ok_or_else(|| self.unbound(span, name))
     }
 
     pub(super) fn unbound(&self, span: Span, name: &str) -> Error {
@@ -428,8 +438,8 @@ impl Checker {
     }
 
     /// A module, not a value that shadows its name.
-    pub(super) fn is_module(&self, name: &str) -> bool {
-        self.lookup(name).is_none() && self.known_modules.contains(name)
+    pub(super) fn is_module(&self, name: Symbol) -> bool {
+        self.lookup(name).is_none() && self.known_modules.contains(name.as_str())
     }
 
     /// `M.storage.d`, as written past `M`: the domain `storage.d`, unless `M` has no such
@@ -488,21 +498,27 @@ impl Checker {
         Err(error(span, format!("unknown module `{module}`")))
     }
 
-    pub(super) fn define(&mut self, span: Span, name: &str, sym: usize) -> Result<(), Error> {
-        if name == "storage" && self.lookup("storage").is_some() {
+    pub(super) fn define(&mut self, span: Span, name: Symbol, sym: usize) -> Result<(), Error> {
+        if name == "storage" && self.lookup(name).is_some() {
             return Err(error(span, "`storage` names the contract storage"));
         }
-        if self.scopes[self.scope].vars.contains_key(name) {
+        if self.scopes[self.scope].vars.contains_key(&name) {
             return Err(error(span, format!("duplicate name `{name}`")));
         }
-        self.scopes[self.scope].vars.insert(name.to_string(), sym);
+        self.scopes[self.scope].vars.insert(name, sym);
         Ok(())
     }
 
-    pub(super) fn lookup(&self, name: &str) -> Option<usize> {
+    /// `define` for a name the caller has only as text: a module's parameter, which the parser
+    /// keeps as `String`.
+    pub(super) fn define_str(&mut self, span: Span, name: &str, sym: usize) -> Result<(), Error> {
+        self.define(span, intern(name), sym)
+    }
+
+    pub(super) fn lookup(&self, name: Symbol) -> Option<usize> {
         let mut s = Some(self.scope);
         while let Some(i) = s {
-            if let Some(&id) = self.scopes[i].vars.get(name) {
+            if let Some(&id) = self.scopes[i].vars.get(&name) {
                 return Some(id);
             }
             s = self.scopes[i].parent;

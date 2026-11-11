@@ -10,7 +10,8 @@ impl Checker {
     }
 
     fn resolve_named(&mut self, name: &str) -> Result<usize, Error> {
-        if let Some(&id) = self.named.get(name) {
+        let sym = intern(name);
+        if let Some(&id) = self.named.get(&sym) {
             if self.visiting.contains(name) {
                 let span = self.decl_at.get(name).copied().unwrap_or_default();
                 return Err(error(span, format!("recursive type `{name}`")));
@@ -45,20 +46,20 @@ impl Checker {
                     laid: false,
                     flat: None,
                 });
-                self.named.insert(name.to_string(), id);
+                self.named.insert(sym, id);
                 self.fill_nominal(id, &ty)?;
                 id
             }
             TypeRef::Apply { .. } => {
                 let id = self.instantiate_type(&ty)?;
-                self.named.insert(name.to_string(), id);
+                self.named.insert(sym, id);
                 id
             }
             // A named map or list is the collection itself: collections are never
             // converted, so a distinct nominal type would only block indexing.
             _ if matches!(ty, TypeRef::Map { .. } | TypeRef::List { .. }) => {
                 let id = self.build(&ty)?;
-                self.named.insert(name.to_string(), id);
+                self.named.insert(sym, id);
                 id
             }
             _ => {
@@ -78,7 +79,7 @@ impl Checker {
                     laid: true,
                     flat: None,
                 });
-                self.named.insert(name.to_string(), id);
+                self.named.insert(sym, id);
                 id
             }
         };
@@ -89,7 +90,8 @@ impl Checker {
     pub(super) fn register_interfaces(&mut self, prog: &Program) -> Result<(), Error> {
         let mut ids = Vec::new();
         for iface in &prog.interfaces {
-            if self.named.contains_key(&iface.name) || self.decls.contains_key(&iface.name) {
+            if self.named.contains_key(&intern(&iface.name)) || self.decls.contains_key(&iface.name)
+            {
                 return Err(
                     error(iface.span, format!("duplicate name `{}`", iface.name))
                         .in_file(iface.file),
@@ -108,7 +110,7 @@ impl Checker {
                 laid: true,
                 flat: None,
             });
-            self.named.insert(iface.name.clone(), id);
+            self.named.insert(intern(&iface.name), id);
             ids.push(id);
         }
         for (iface, id) in prog.interfaces.iter().zip(ids) {
@@ -170,7 +172,7 @@ impl Checker {
     pub(super) fn register_events(&mut self, prog: &Program) -> Result<(), Error> {
         let mut seen = FxHashSet::default();
         for ev in &prog.events {
-            if !seen.insert(ev.name.clone()) || self.named.contains_key(&ev.name) {
+            if !seen.insert(ev.name.clone()) || self.named.contains_key(&intern(&ev.name)) {
                 return Err(
                     error(ev.span, format!("duplicate name `{}`", ev.name)).in_file(ev.file)
                 );
@@ -511,7 +513,7 @@ impl Checker {
     /// shares a field only with the same type at the same position. Other cases leave a
     /// field zero, or empty. A payload that holds a map only shapes entrypoints.
     fn lower_variant(&mut self, id: usize, mut built: Vec<RVariant>) {
-        let uint8 = self.named["uint8"];
+        let uint8 = self.named[&intern("uint8")];
         let index = |variants: Vec<RVariant>| RType {
             elem: Some(uint8),
             bits: 8,
@@ -578,10 +580,10 @@ impl Checker {
             homes.push(home);
         }
         let scalar_ty = |width: Option<(u8, u8)>| match width {
-            Some((u, 0)) => self.named[&format!("uint{}", u32::from(u) * 8)],
+            Some((u, 0)) => self.named[&intern(&format!("uint{}", u32::from(u) * 8))],
             // An unsigned value fits a signed word one byte wider than itself.
             Some((u, s)) if s.max(u + 1) < 32 => {
-                self.named[&format!("int{}", u32::from(s.max(u + 1)) * 8)]
+                self.named[&intern(&format!("int{}", u32::from(s.max(u + 1)) * 8))]
             }
             _ => TY_UINT,
         };
@@ -656,20 +658,20 @@ impl Checker {
     /// The variant type and case index a constructor name refers to: a case of the type
     /// the context expects, or else of the one declared variant that has it.
     pub(super) fn ctor(&self, span: Span, name: &str) -> Result<Option<(usize, usize)>, Error> {
-        if self.lookup(name).is_some() {
+        if self.lookup(intern(name)).is_some() {
             return Ok(None);
         }
         let case_of = |ty: usize| self.types[ty].variants.iter().position(|v| v.name == name);
         if let Some(k) = self.expect.and_then(case_of) {
             return Ok(self.expect.map(|expect| (expect, k)));
         }
-        let mut owners: Vec<(&String, usize)> = self
+        let mut owners: Vec<(Symbol, usize)> = self
             .named
             .iter()
             .filter(|(_, &ty)| case_of(ty).is_some())
-            .map(|(n, &ty)| (n, ty))
+            .map(|(&n, &ty)| (n, ty))
             .collect();
-        owners.sort();
+        owners.sort_by_key(|(n, _)| n.as_str());
         owners.dedup_by_key(|(_, ty)| *ty);
         match owners.as_slice() {
             [] => Ok(None),
@@ -718,20 +720,16 @@ impl Checker {
 
     pub(super) fn build(&mut self, ty: &TypeRef) -> Result<usize, Error> {
         match ty {
-            TypeRef::Name { name, span } => {
-                let spelled = name.to_string();
-                self.named
-                    .get(&spelled)
-                    .copied()
-                    .map(Ok)
-                    .unwrap_or_else(|| {
-                        if self.decls.contains_key(&spelled) {
-                            self.resolve_decl(&spelled)
-                        } else {
-                            Err(self.unknown(*span, "type", &spelled))
-                        }
-                    })
-            }
+            TypeRef::Name { name, span } => self.named.get(name).copied().map_or_else(
+                || {
+                    if self.decls.contains_key(name.as_str()) {
+                        self.resolve_decl(name.as_str())
+                    } else {
+                        Err(self.unknown(*span, "type", name.as_str()))
+                    }
+                },
+                Ok,
+            ),
             TypeRef::List {
                 elem,
                 len,
@@ -891,21 +889,16 @@ impl Checker {
     pub(super) fn cast(
         &mut self,
         span: Span,
-        name: &str,
+        name: Symbol,
         args: &mut [Expr],
         builtin: &mut Option<Builtin>,
         ty: &mut usize,
     ) -> Result<(), Error> {
-        let target = self.named[name];
+        let target = self.named[&name];
         if self.types[target].kind == TyKind::List {
             self.list_cast(span, args, target)?;
-            self.conversions.push((
-                self.file,
-                TypeRef::Name {
-                    span,
-                    name: Names::shared().intern(name),
-                },
-            ));
+            self.conversions
+                .push((self.file, TypeRef::Name { span, name }));
             *builtin = Some(Builtin::Cast);
             *ty = target;
             return Ok(());
@@ -924,8 +917,8 @@ impl Checker {
                     lit: Lit::Int(..), ..
                 },
                 Some(bits),
-            ) => self.named[&format!("uint{bits}")],
-            _ if self.types[target].kind == TyKind::Interface => self.named["address"],
+            ) => self.named[&intern(&format!("uint{bits}"))],
+            _ if self.types[target].kind == TyKind::Interface => self.named[&intern("address")],
             // So a literal in `swad(x / 1000)` takes `x`'s type, `int`, as the operand of a
             // conversion from `int`.
             _ if self.types[target].kind == TyKind::Nominal
@@ -1071,9 +1064,10 @@ impl Checker {
         }
         self.named
             .iter()
-            .find(|(_, ty)| **ty == id)
-            .map(|(name, _)| name.clone())
-            .unwrap_or_else(|| self.repr_name(id))
+            .filter(|(_, ty)| **ty == id)
+            .map(|(name, _)| name.as_str())
+            .min()
+            .map_or_else(|| self.repr_name(id), str::to_string)
     }
 
     pub(super) fn repr_name(&self, id: usize) -> String {
@@ -1266,20 +1260,20 @@ impl Checker {
                 n => format!("list({elem}, {n})"),
             };
         }
-        let mut names: Vec<String> = self
+        let mut names: Vec<&str> = self
             .named
             .iter()
             .filter(|(_, ty)| **ty == id)
-            .map(|(name, _)| name.clone())
+            .map(|(name, _)| name.as_str())
             .collect();
-        names.sort();
+        names.sort_unstable();
         if let Some(name) = names.iter().find(|name| !builtin_type_name(name)) {
-            return name.clone();
+            return (*name).to_string();
         }
         names
             .into_iter()
             .next()
-            .unwrap_or_else(|| display_ty(&self.types, id))
+            .map_or_else(|| display_ty(&self.types, id), str::to_string)
     }
 }
 
