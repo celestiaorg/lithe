@@ -115,6 +115,50 @@ jobs:
           done
           exit $status
 
+  # `lithe compile` in its default Fast mode, at one thread, on `bench/erc20_full.lithe`: the
+  # contract phase 1's headline number is stated for. The recorded baseline is 59 ms of wall
+  # time (PROGRESS.md, `## 1.1`); twice that fails. Best of seven, because one slow run on a
+  # shared runner says nothing about the compiler, and the cache is off, or a hit would
+  # measure nothing.
+  # simplify: the limit is absolute, and a runner's cores are not the baseline's. On a runner
+  # 2x slower than the machine the baseline was taken on, this fails on hardware, not on code.
+  # Upgrade path: a self-hosted runner, or gating a ratio against a reference binary built
+  # from the baseline commit in the same job.
+  perf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release --locked
+      - name: erc20_full Fast compile stays within 2x its baseline
+        run: |
+          baseline_ms=59
+          limit_ms=$((baseline_ms * 2))
+          timings=$(mktemp)
+          best=0
+          for i in 1 2 3 4 5 6 7; do
+            started=$(date +%s%N)
+            LITHE_CACHE_DIR= LITHE_THREADS=1 \
+              target/release/lithe compile bench/erc20_full.lithe --fast --timings \
+              >/dev/null 2>"$timings"
+            ms=$(( ($(date +%s%N) - started) / 1000000 ))
+            grep -q '^\[time\]' "$timings" || { cat "$timings"; exit 1; }
+            echo "run $i: ${ms} ms: $(grep -m1 '^\[time\]' "$timings")"
+            if [ "$best" -eq 0 ] || [ "$ms" -lt "$best" ]; then best=$ms; fi
+          done
+          rm -f "$timings"
+          echo "erc20_full Fast: best ${best} ms, baseline ${baseline_ms} ms, limit ${limit_ms} ms"
+          if [ "$best" -gt "$limit_ms" ]; then
+            echo "::error file=bench/erc20_full.lithe::Fast compile took ${best} ms, over 2x the ${baseline_ms} ms baseline"
+            exit 1
+          fi
+
   docs:
     runs-on: ubuntu-24.04
     steps:
@@ -208,7 +252,7 @@ jobs:
   # tests the published release rather than the change.
   success:
     if: always()
-    needs: [lint, test, prove, docs, hardhat, playground]
+    needs: [lint, test, prove, perf, docs, hardhat, playground]
     runs-on: ubuntu-24.04
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')

@@ -16,6 +16,10 @@ fn main() {
         std::process::exit(2);
     }
     let cmd = args.remove(0);
+    // `--timings` is `LITHE_TIME=1` for this run; the counters read it once per process.
+    if take_timings(&mut args) {
+        std::env::set_var("LITHE_TIME", "1");
+    }
     if matches!(cmd.as_str(), "--version" | "-V") && args.is_empty() {
         println!("lithe {}", env!("LITHE_VERSION"));
         return;
@@ -263,6 +267,15 @@ fn fatal_text(errors: &[lithe::Error], file: Option<&Path>) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// Takes `--timings` out of `args`, and says whether it was there. The phases print to stderr
+/// when `LITHE_TIME` is set, so the caller sets it; the counters read it once per process, so
+/// this runs before any command does.
+fn take_timings(args: &mut Vec<String>) -> bool {
+    let found = args.iter().any(|arg| arg == "--timings");
+    args.retain(|arg| arg != "--timings");
+    found
 }
 
 /// Takes each `--key value` build flag, and `--check-specs`, out of `args`.
@@ -636,6 +649,10 @@ compile, abi, facets, abi-tree, footprint, prove, upgrade, and upgrade-check als
        --fast, -O0                   build the contract once; the default
        --release, -O2                search for the cheapest plan
 
+any command also takes
+       --timings                     print the compiler's phase timings to stderr
+                                     (the same as LITHE_TIME=1)
+
 prove proves the specs of the bytecode the build emits, and shows the source's verdict
 where it explains one; it also takes
        --source                      prove the source alone, a quick first pass
@@ -762,6 +779,20 @@ mod tests {
         );
         assert_eq!(args, ["x.lithe"]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `--timings` is taken anywhere after the command, and leaves the rest of the arguments
+    /// alone.
+    #[test]
+    fn timings_flag_is_taken_from_anywhere() {
+        let mut args = ["erc20_full.lithe", "--timings", "--fast"]
+            .map(String::from)
+            .to_vec();
+        assert!(take_timings(&mut args));
+        assert_eq!(args, ["erc20_full.lithe", "--fast"]);
+        let mut args = ["--release", "in"].map(String::from).to_vec();
+        assert!(!take_timings(&mut args));
+        assert_eq!(args, ["--release", "in"]);
     }
 
     /// The CLI prints every statement a file broke, not only the first, and names the file it
