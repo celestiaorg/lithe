@@ -62,7 +62,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **5.4** Fx hasher. Every std `HashMap`/`HashSet` in `check`, `gen`, `route`, `split` and `index` (and `asm.rs`'s last few) is now `asm::FxHashMap`/`FxHashSet`; the two whose order was seen are `BTreeMap`s (no `IndexMap`: no new dependency). Both snapshots unchanged; `check` −1.5–2 %. See `## S27 Fx hashing`.
 - [x] **5.5** Index-arena AST. **Measured and not taken (S32):** the flip is 1 378 errors in 41 files, and its payoff is 0.08 % of a Release build and 1.2–1.7 % of a Fast one — 3 `Program` clones per build (0.4–0.9 ms in total: 0.6–0.9 ms Fast, 0.4 ms Release), which a flat `Vec<Expr>` does not make cheaper (159 µs vs 142 µs on erc20_full, because the cost is `Program.modules`, not the expression tree). `Checked.source` cannot be removed by borrowing: it is the program *before* `compose` inlines modules, so it is a different value, not the same value held twice. See `## S32 5.5 closed: not taken`.
 - [x] **5.6** Parsed and checked module cache across `compile_dir` and `abi_dir`. **Parsed half landed; checked half is already shared per file.** `emit_dir` now holds one `ModuleCache` for the directory, so the `lib/` files 51 bench entries import are parsed once instead of once per importer (68 parses → 68, 43 of them hits). Byte-identical output and thread-count-independent. The directory build is 360 ms at one thread of which **loading is 20 ms and parsing 3.6 ms**; the 300 ms is codegen, which is why the number does not move beyond noise. The checked half has nothing to add: `check` runs per entry file on its own merged program, and two entries' programs are different types, so no entry reuses another's `Checked` — that memo already serves the LSP, where the same file checks twice. See `## 5.6`.
-- [ ] **5.7** Lexer slices and statement-level parser recovery. First error unchanged.
+- [x] **5.7** Lexer slices and statement-level parser recovery. First error unchanged. **Landed (S30):** the lexer already kept no identifier payload (a `Token` is a byte range and the parser slices it), so the slices half needed one fix: `ident()` interned the text and returned a `String` that every `Expr`/`TypeRef`/`NameAt` site then interned *again* through `sym()`. `ident()` now has an `ident_sym()` form that interns once, and the expression, type, dotted-name and call sites use it — **34 940 → 23 833** intern calls on erc20_full, **24 293 → 14 986** on uniswap_v2_pair, **24 276 → 15 220** on erc1155 (down 32–38 %). Declaration fields that hold a `String` still take the text. Statement-level recovery is new: a broken statement in a block reports its error, the parser skips to the next `;` or `}` and parses on, so a file reports every broken statement in file order with the first one unchanged. Both bytecode snapshots, the differential gate at 2 000 steps, and a 27 892-line diagnostic corpus over `bench/`+`examples/`+`fuzz/`+`std/` in both modes are byte-identical to the parent. The LSP diagnostics number did not move (6.91 vs 6.97 ms). See `## S30 5.7`.
 
 ### Phase 6 — evaluate and take if they pay
 
@@ -94,6 +94,7 @@ This section is the single source of truth for what is open and what blocks what
 - **5.2a landed (S57):** byte spans and `FileId`s across the crate, positions resolved from a per-load `SourceMap`; bytecode, diagnostics, warnings, lint and prover text unchanged. The LSP number did not move (6.2 ms), so the ≤ 5 ms target still rests on 5.1b/5.1c and 5.5. See `## 5.2a`.
 - **5.5 closed as not taken (S32).** No arena; the AST keeps boxed expressions. Measured before writing it: the flip is **1 378 errors in 41 files** (a whole-crate sweep, not a frontend-hygiene slice), and the two `Program` clones it was to remove are **3 clones per build, 0.4–0.9 ms in total — 0.08 % of a Release build and 1.2–1.7 % of a Fast one**. A flat `Vec<Expr>` cloned on its own is *slower* than the tree on erc20_full (159 µs vs 142 µs), because the cost is `Program.modules`, not the expression tree. And `Checked.source` is not removable by borrowing: it is the program *before* `compose` inlines modules and qualifies their names, so it is a different value from `checked.prog`, not the same one held twice — three readers (`split::facet`, `split::cache_key`, `index::template`) depend on exactly that. See `## S32 5.5 closed: not taken`.
 - **5.1a landed:** `Symbol`/`Names` and `Program.names`, one process-wide table threaded through `parse`, `parse_specs` and `load_in`, with a determinism test across files and parse orders. No field moved, so bytecode and diagnostics are unchanged. See `## 5.1a The table`.
+- **5.7 landed (S30):** the parser interns each identifier once (every expression, type, dotted-name and call site went through `ident()`'s `String` and `sym()`'s second intern) and recovers from a broken statement so a file reports all of them, the first unchanged. Interning calls fall 32–38 % per file; the LSP number does not move (6.91 vs 6.97 ms), because `parse` is 0.14 ms of a 6.2 ms frontend. Bytecode, diagnostics, snapshots and the differential gate unchanged. See `## S30 5.7`.
 - **5.1b landed (S58):** `NameAt.name`, `Expr::{Ident, Field, Call}` and `TypeRef::Name` hold a `Symbol`; every diagnostic reads its text through the table, `Symbol`'s `Debug`/`Display` print the text (never the number) so `Program`'s `Debug` cache keys are unchanged, and `modules::imply`'s order-by-name sorts on text. Both snapshots unchanged, both suites and VERIFY green, the differential gate green at 2 000 steps, and 36 369 lines of diagnostics byte-identical to `411bf45`. Two reviewer findings then fixed it: a call's module qualification read a name captured before the alias rename (a module calling `A.f` while declaring its own hook `f` ran its own hook), and `zero_value`'s `None` lost its name; both now have failing-first regression tests. `check` on erc20_full is 5.05 → 5.90 ms (min of 25, cache off): the lookup replaces an inline `String` 138 263 times per compile, which is 5.1c's number to invert. See `## 5.1b`.
 - **S43 and S44 landed:** one process-wide `LITHE_THREADS` budget, and per-build timing counters. See `## S43 One thread budget` and `## S44 Per-build counters`.
 - **S37/S45 landed:** build state no longer depends on how much of the thread budget was free. `parallel_map` releases a worker's unit as soon as the queue drains, workers start from the caller's byte weight, certifying and tracking, and the `LITHE_TIME` counters are thread-local, summed back by the pool. A parallel `compile_dir` now prints one `[time]` line per build, each with its own `emits`/`finishes`. See `## S37/S45 build state off the budget`.
@@ -1573,3 +1574,103 @@ external function go(const x : uint) : uint is M.twice(x)
 | `git status` | only `PROGRESS.md` modified |
 
 **What would reopen it.** A measured frontend bottleneck where expressions dominate a clone or a `Debug` key: `check` on a contract an order of magnitude larger than any in `bench/`, where the 2 098 expressions become ~20 000 and `Program.clone` becomes the difference between 12 ms and 5 ms of LSP latency. §4's 5 ms LSP target is currently `check` at 5.1–7.0 ms (`## 2.6`), and the clones are 0.4–0.9 ms of a 54 ms Fast build, so they are not that bottleneck on today's targets. If a later slice makes `check` cheap enough for the clones to become the floor, the cheaper fix is `compose::supports_interface`'s two clones, not the AST's representation.
+
+## S30 5.7
+
+Two halves: identifier slices + interning in the lexer path, and statement-level parser recovery that reports all errors with the first unchanged.
+
+### The lexer half was already done, and the waste was one level up
+
+The step prescribes "stop materializing `String` token payloads for identifiers (slice + intern)". The lexer already does not: `Token` (`src/lex.rs:570`) is `{kind, start, end, word, string}`, and `string` is set only by `Raw::Number(Num::Bytes)` and `Raw::String` — never by `Raw::Ident`. Identifiers are a byte range, and the parser slices `src[start..end]`. So there was no `String` payload to delete.
+
+The `String` that was being materialized is in the **parser**:
+
+```rust
+fn ident(&mut self) -> Result<String, Error> {
+    let name = self.lexeme().to_string();
+    self.names.intern(&name);          // intern #1, result discarded
+    self.bump();
+    Ok(name)
+}
+```
+
+and then every expression, type and name site interned the same text a second time: `name: self.sym(&name)` in `Expr::Ident`/`Expr::Field`/`Expr::Call`/`TypeRef::Name`, `self.name_at(span, &self.dotted()?)` (which also allocates a `String` and splits/joins it), `path_expr` interning a `Vec<String>` the caller had just built from interned pieces.
+
+The fix is `ident_sym()` (intern once, return `Symbol`) with `ident()` kept as `ident_sym()?.to_string()` for the declaration fields that genuinely hold a `String` (`TypeDecl.name`, `Func.name`, `ModuleDecl.name`, …) — those are 5.1b/5.1c's territory, not this slice's. `member_name_sym`, `dotted_at`, and `named_at` are the symbol forms of the three helpers that allocated; the `Expr`/`TypeRef`/`Stmt::Call`/`delete` sites now use them.
+
+**Measurement (intern calls, `Names::intern` instrumented with an atomic, counted per compile with `--profile fast`, `LITHE_CACHE_DIR=`):**
+
+| contract | before | after | change |
+|---|---|---|---|
+| `bench/erc20_full.lithe` | 34 940 | 23 833 | −31.8 % |
+| `bench/uniswap_v2_pair.lithe` | 24 293 | 14 986 | −38.3 % |
+| `bench/erc1155.lithe` | 24 276 | 15 220 | −37.3 % |
+
+**The number this does not move, and why.** `parse` on `bench/erc20_full.lithe` is **0.14–0.16 ms** of which `lex` is 0.035–0.043 ms (probe in a scratch test, `cargo test --release`, 3 runs after warmup; 999 tokens, 365 of them identifiers). The frontend is 6.2 ms, and `check` is 5.7 of it (`[time] frontend load=0.9ms check=5.7ms lint=0.4ms`). The LSP diagnostics test is **6.97 ms before, 6.91 ms after** (best of 5, release) — noise. So this half is hygiene, as §5 predicted ("a feature gap, not a speed item"), and it is recorded as such rather than claimed as a win.
+
+### Statement-level recovery
+
+`block()` no longer propagates a statement's error out of the parse. It records the error and skips to the next `;` or `}` outside brackets (`skip_stmt`), then parses on, so every statement of every block is attempted. A declaration-level error still ends the parse, as before — that is not statement-level, and recovering from it would mean guessing where the next declaration starts.
+
+`Error` carries the rest: `pub(crate) more: Vec<Error>`, exposed as `Error::chain()`. `parse` assembles it:
+
+- the first error is `errors[0]`, which is the earliest error in the file because a block's statements are parsed in order and a declaration error can only follow a complete block;
+- the error that ends the parse is pushed **last**, so it never becomes the first error;
+- `placed`/`in_path`/`in_file` run over the chain, so every recovered error gets its file, line and column from the same `SourceMap`.
+
+Because the first error is unchanged, every existing caller keeps its behaviour: `compile`, `abi`, `analyze`, `lint` and the LSP all still see the same `Error` they saw before, and the extra ones are only visible to a caller that asks for them.
+
+**Who asks for them.** Two places, and they are the point of the step: `main.rs::fail` prints `err.chain()` (every command that reports a diagnostic), and `lsp.rs::publish` turns every error of the chain into its own diagnostic, so an editor underlines every broken statement instead of only the first.
+
+### Proof it changes nothing that was observable
+
+| gate | result |
+|---|---|
+| diagnostic corpus: `abi` + `compile --release` over `bench/`+`examples/`+`fuzz/`+`std/`, parent `897f81f` vs this tree, stdout+stderr+exit code | **27 892 lines, `diff` empty** |
+| spec-file corpus (**review fix**): `abi` + `compile` + `specs` over every `*.lithe` in `bench/`+`examples/`+`fuzz/`+`std/` (a `specs` run wherever a `.spec.lithe` sits beside it), parent `897f81f` vs fixed | **38 385 lines, `diff` empty** |
+| spec-block fuzz (**review fix**): 600 mutated inputs whose statements are real statements from `examples/`, placed inside a spec clause's `then { … }` block (where `spec_file` reaches `block()`), parent `897f81f` vs fixed | **600/600 same first error and exit code**; also **31/300** earlier inputs that the recovery-only tree *accepted* are rejected again, matching the parent |
+| `skip_stmt` rewind: every `examples/reject/*.lithe` and the whole corpus above, parent vs fixed | **diff empty**; without the rewind `event_indexed_emit.lithe` gained a spurious ``expected a declaration, found `}` `` (see below) |
+| fuzz: 620 mutated inputs (random deletions, insertions from a token list including `.`/`A.`/`A.B.`/`interface I is {`/`supports A`/`spec for f is {`/`raises A.`, truncations) over `bench/`+`examples/`+`std/`, parent binary vs this tree | **0 mismatches** in the first error and the exit code |
+| `cargo test --locked` | 569 + 27 + 1 passed, 2 ignored, 0 failed |
+| `cargo test --profile fast --locked --lib evm::snapshot` | 2 passed — both bytecode snapshots unchanged |
+| `LITHE_FUZZ_STEPS=2000 … evm::differential` | 5 passed |
+| `LITHE_VERIFY=1 cargo test --locked --lib` | 569 passed, 2 ignored, 0 failed |
+| `cargo clippy --all-targets -- -D warnings` | clean |
+| `cargo fmt --check` (crate and `playground`) | clean |
+| `playground` `cargo build --release --locked` (wasm) | builds |
+| LSP diagnostics, `did_change_coalesces_and_erc20_full_diagnostics_are_fast` | 6.97 → 6.91 ms, limit 20 ms |
+
+The corpus is the strongest evidence here because it is the one the change could break: recovery changes *how many* errors a bad file produces, and it produces **exactly one** on every file in the repo, broken or not. That is what "first error unchanged" has to mean in practice.
+
+**Where recovery is visible, and that the first error is identical** (`/tmp` scratch files, parent binary vs this tree):
+
+```
+$ lithe abi bad2.lithe        # parent
+bad2.lithe:5:8: expected an expression, found `;`
+
+$ lithe abi bad2.lithe        # this tree
+bad2.lithe:5:8: expected an expression, found `;`
+
+bad2.lithe:6:19: expected an expression, found `;`
+
+bad2.lithe:8:10: expected an expression, found `;`
+
+bad2.lithe:9:24: expected an expression, found `;`
+```
+
+The nested case (lines 8 and 9 are inside an `if` block) is why `block()` is the recovery point rather than the function body: each nesting level recovers its own statements.
+
+### Tests added (`src/parse.rs`)
+
+- `statement_errors_are_all_reported_in_file_order` — three broken statements, one of them nested, come back in file order with their exact messages.
+- `one_broken_statement_is_one_error` — the case the corpus covers programmatically: one broken statement is still exactly one error, at the line it always was.
+- `statement_errors_inside_a_spec_block_are_reported` — `spec_file` finishes through `all_errors()` too, so a broken statement inside an `ensures if … then { … }` block rejects the spec file instead of being silently dropped (see below).
+- `skipping_a_broken_statement_counts_the_brackets_it_opened` — the cascade the corpus caught: a failure inside a record literal does not make its `}` end the block.
+- `publish_sends_one_diagnostic_per_recovered_error` (`src/lsp.rs`) — the LSP consumer, not just `Error::chain()`: three broken statements in one file become three `severity:1` diagnostics in one `publishDiagnostics`.
+- `a_broken_file_prints_every_recovered_statement_error` (`src/main.rs`) — the CLI consumer: `main.rs::fail` printed `err.chain()` but nothing asserted it, and `fail` calls `process::exit`, so it cannot be unit-tested in place. Its body is now `fatal_text(errors, file) -> String` (the same joining and per-error `file` placement, `fail` is `eprintln!` + `exit`), and the test drives a real `lithe::compile` of a file with two broken statements through it: two message lines, both naming the file. This is the first consumer-side test of the chain.
+
+**`spec_file` was swallowing the recovered errors** (review finding `find_mjnfhv9f`, high). `parse` assembled its `Error` chain from `parser.errors` plus the terminal error, but `spec_file` built a `Parser` and returned `Ok` while `parser.errors` held errors recovered from a statement inside a spec block — a spec clause reaches `block()` through `if_expr`/`case` → `arm_body`. So `spec for deposit is { ensures if true then { var y : uint := ; } with true else true; }` was **accepted**, with the broken statement dropped, where before recovery it was rejected. That is on the verification path (`lithe specs` / `prove` / `--check-specs`), and it meant the LSP test above would have passed while the spec path still lied. `spec_file` now runs its loop in a closure, pushes the error that ends it, and finishes through `parser.all_errors()` like `parse`, so the same first error is reported (`vault.spec.lithe:2:42: expected an expression, found \`;\``, exit 1) and every subsequent one follows it. The spec-file corpus is small (five `examples/verification/*.spec.lithe`): all still print, `lithe specs` exit 0. The fuzz gate missed this because it ran `abi`/`compile`, which never parse `.spec.lithe` with a broken block; the new `parse.rs` test is the case that gate lacks.
+
+**`skip_stmt` resumed mid-statement and lost its bracket depth** (found by the corpus re-run for the fix above). It scanned forward *from where the statement failed*, so a statement like `emit Foo { indexed amount = 1 };` — which fails at `indexed` with the record's `{` already consumed — left the depth at 0 and stopped at the record's own `}`, one token short of the `;`. The block then saw `}` as its end and the enclosing declaration reported ``expected a declaration, found `}` ``. `examples/reject/event_indexed_emit.lithe` is exactly this shape, and it turned one error into two. `block()` now records the statement's first token and `skip_stmt(start)` rewinds to it before the scan, so the depth counts every bracket the statement opened. The corpus diff against `897f81f` is empty again (38 385 lines) and `event_indexed_emit.lithe` reports its one error. The ceiling of resuming at the statement's *first* token is unchanged: a statement missing its `;` still swallows the next one up to the next `;`.
+
+**What this deliberately does not do.** `skip_stmt` is a bracket-depth scan to the next `;`/`}`, not a "sync on a keyword that can start a statement" heuristic. The grammar has no reserved statement-start keyword (`ident` can begin an assignment, a call, or `delete`), so a keyword scan would resynchronise on identifiers and produce worse cascades than the plain separator scan. The ceiling: a statement missing its `;` swallows the following statement up to the next `;`, so one error becomes one error with a shifted place. A parser that re-parsed with an insertion repair would fix that; nothing in the tree needs it yet.

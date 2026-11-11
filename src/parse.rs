@@ -12,16 +12,28 @@ pub(crate) const FLAT_ONLY: &str = "`flat` goes only on an external function's o
 
 pub(crate) fn parse(src: &str, names: &std::sync::Arc<Names>) -> Result<Program, Error> {
     let files = std::sync::Arc::new(SourceMap::of("", src));
-    let mut prog = Parser {
+    let mut parser = Parser {
         src,
         toks: lex::tokenize(src)?,
         names: names.clone(),
         i: 0,
         declaring: false,
         in_spec: false,
+        errors: Vec::new(),
+    };
+    let prog = match parser.program() {
+        Ok(prog) => Some(prog),
+        // Whatever ended the parse joins the errors already recovered from, so the error the
+        // caller sees first is the earliest one in the file, as it was before recovery existed.
+        Err(err) => {
+            parser.errors.push(err);
+            None
+        }
+    };
+    if let Some(err) = parser.all_errors() {
+        return Err(err.placed(&files, FileId::default()));
     }
-    .program()
-    .map_err(|err| err.placed(&files, FileId::default()))?;
+    let mut prog = prog.expect("a parse with no error builds a program");
     prog.share_files(&files);
     Ok(prog)
 }
@@ -57,34 +69,45 @@ fn spec_file(src: &str) -> Result<SpecFile, Error> {
         i: 0,
         declaring: false,
         in_spec: false,
+        errors: Vec::new(),
     };
     let mut file = SpecFile {
         bare: Vec::new(),
         contracts: Vec::new(),
         modules: Vec::new(),
     };
-    while parser.kind() != Kind::Eof {
-        if parser.kind() == Kind::Semi {
-            parser.bump();
-            continue;
-        }
-        if !parser.spec_ahead() {
-            return Err(parser.err(format!(
-                "a spec file holds only spec blocks; found {}",
-                parser.found()
-            )));
-        }
-        match parser.peek_kind(2) {
-            Kind::Contract => {
-                let (name, blocks) = parser.spec_wrapper()?;
-                file.contracts.push((name, blocks));
+    let built = (|| -> Result<(), Error> {
+        while parser.kind() != Kind::Eof {
+            if parser.kind() == Kind::Semi {
+                parser.bump();
+                continue;
             }
-            Kind::Module => {
-                let (name, blocks) = parser.spec_wrapper()?;
-                file.modules.push((name, blocks));
+            if !parser.spec_ahead() {
+                return Err(parser.err(format!(
+                    "a spec file holds only spec blocks; found {}",
+                    parser.found()
+                )));
             }
-            _ => file.bare.push(parser.spec_block(None)?),
+            match parser.peek_kind(2) {
+                Kind::Contract => {
+                    let (name, blocks) = parser.spec_wrapper()?;
+                    file.contracts.push((name, blocks));
+                }
+                Kind::Module => {
+                    let (name, blocks) = parser.spec_wrapper()?;
+                    file.modules.push((name, blocks));
+                }
+                _ => file.bare.push(parser.spec_block(None)?),
+            }
         }
+        Ok(())
+    })();
+    // Statement errors recovered from inside a spec block are errors too, in file order.
+    if let Err(err) = built {
+        parser.errors.push(err);
+    }
+    if let Some(err) = parser.all_errors() {
+        return Err(err);
     }
     Ok(file)
 }
@@ -129,6 +152,19 @@ struct Parser<'a> {
     declaring: bool,
     /// Inside a spec block, where `old.`, `new.`, `sum`, `count`, and `forall` are spec forms.
     in_spec: bool,
+    /// Errors recovered from at the statement level, after the one that ends the parse.
+    errors: Vec<Error>,
+}
+
+impl Parser<'_> {
+    /// The parse's first error, with the statement-level ones it recovered from after it.
+    fn all_errors(&mut self) -> Option<Error> {
+        let mut errors = std::mem::take(&mut self.errors);
+        if errors.len() > 1 {
+            errors[0].more = errors.split_off(1);
+        }
+        errors.into_iter().next()
+    }
 }
 
 /// A fixed list's length, which must be from 1 to 1024.
@@ -623,8 +659,8 @@ impl<'a> Parser<'a> {
         let mut names = Vec::new();
         loop {
             let span = self.at();
-            let name = self.dotted()?;
-            names.push(self.name_at(span, &name));
+            let name = self.dotted_at(span)?;
+            names.push(name);
             if self.kind() != Kind::Comma {
                 return Ok(names);
             }
@@ -691,12 +727,13 @@ impl<'a> Parser<'a> {
 
     fn interface_name(&mut self) -> Result<NameAt, Error> {
         let span = self.at();
-        let mut name = self.ident()?;
+        let mut name = self.ident_sym()?;
         while self.kind() == Kind::Dot {
             self.bump();
-            name = format!("{name}.{}", self.ident()?);
+            let rest = self.ident_sym()?;
+            name = self.sym(&format!("{name}.{rest}"));
         }
-        Ok(self.name_at(span, &name))
+        Ok(Self::named_at(span, name))
     }
 
     fn module_decl(&mut self) -> Result<ModuleDecl, Error> {
@@ -1121,8 +1158,8 @@ impl<'a> Parser<'a> {
         let target = if self.kind() == Kind::For {
             self.bump();
             let tspan = self.at();
-            let name = self.ident()?;
-            Some(self.name_at(tspan, &name))
+            let name = self.ident_sym()?;
+            Some(Self::named_at(tspan, name))
         } else {
             None
         };
@@ -1164,7 +1201,7 @@ impl<'a> Parser<'a> {
         let module = self.kind() == Kind::Module;
         self.bump();
         let span = self.at();
-        let name = self.ident()?;
+        let name = self.ident_sym()?;
         self.want(Kind::Is)?;
         self.want(Kind::LBrace)?;
         let mut blocks = Vec::new();
@@ -1179,11 +1216,10 @@ impl<'a> Parser<'a> {
                     self.found()
                 )));
             }
-            blocks.push(self.spec_block(module.then(|| name.clone()))?);
+            blocks.push(self.spec_block(module.then(|| name.to_string()))?);
         }
         self.want(Kind::RBrace)?;
-        let target = self.name_at(span, &name);
-        Ok((target, blocks))
+        Ok((Self::named_at(span, name), blocks))
     }
 
     /// One clause of a spec block, and the `;` that ends it.
@@ -1234,9 +1270,9 @@ impl<'a> Parser<'a> {
             }
             "raises" => {
                 let espan = self.at();
-                let name = self.ident()?;
+                let name = self.ident_sym()?;
                 self.want_word("when")?;
-                ClauseKind::Raises(self.name_at(espan, &name))
+                ClauseKind::Raises(Self::named_at(espan, name))
             }
             "panics" => {
                 self.want_word("when")?;
@@ -1536,8 +1572,8 @@ impl<'a> Parser<'a> {
         }
         loop {
             let mspan = self.at();
-            let name = self.dotted()?;
-            members.push(self.name_at(mspan, &name));
+            let name = self.dotted_at(mspan)?;
+            members.push(name);
             if self.kind() == Kind::Pipe {
                 self.bump();
                 continue;
@@ -1637,22 +1673,23 @@ impl<'a> Parser<'a> {
             Kind::Ident if self.at_flat() => Err(self.err(FLAT_ONLY)),
             Kind::Pipe => self.variant_ty(),
             Kind::Ident => {
-                let mut name = self.ident()?;
+                let name = self.ident_sym()?;
                 if self.kind() == Kind::LParen {
-                    return self.generic(&name, span);
+                    return self.generic(name.as_str(), span);
                 }
                 if self.kind() == Kind::Dot {
                     self.bump();
-                    let rest = self.ident()?;
-                    name = format!("{name}.{rest}");
+                    let rest = self.ident_sym()?;
+                    let qualified = format!("{name}.{rest}");
                     if self.kind() == Kind::LParen {
-                        return self.generic(&name, span);
+                        return self.generic(&qualified, span);
                     }
+                    return Ok(TypeRef::Name {
+                        span,
+                        name: self.sym(&qualified),
+                    });
                 }
-                Ok(TypeRef::Name {
-                    span,
-                    name: self.sym(&name),
-                })
+                Ok(TypeRef::Name { span, name })
             }
             Kind::Unit => Err(self.err("expected type `unit`, found value `Unit`")),
             _ => Err(self.err(format!("expected a type, found {}", self.found()))),
@@ -2203,8 +2240,8 @@ impl<'a> Parser<'a> {
                         self.found()
                     )));
                 }
-                let name = self.ident()?;
-                args.push(self.name_at(aspan, &name));
+                let name = self.ident_sym()?;
+                args.push(Self::named_at(aspan, name));
                 if self.kind() != Kind::Comma {
                     break;
                 }
@@ -2669,11 +2706,11 @@ impl<'a> Parser<'a> {
         let mut parts = Vec::new();
         loop {
             let pspan = self.at();
-            let name = self.dotted()?;
-            if name == "none" {
+            let name = self.dotted_at(pspan)?;
+            if name.name == "none" {
                 return Err(error(pspan, "`none` cannot be combined with other errors"));
             }
-            parts.push(self.name_at(pspan, &name));
+            parts.push(name);
             if self.kind() == Kind::Pipe {
                 self.bump();
                 continue;
@@ -2758,10 +2795,43 @@ impl<'a> Parser<'a> {
                 self.bump();
                 continue;
             }
-            stmts.push(self.stmt()?);
+            let start = self.i;
+            match self.stmt() {
+                Ok(stmt) => stmts.push(stmt),
+                // Report the statement's error and carry on at the next one, so a file shows
+                // every broken statement, not only the first. The statements around it are
+                // dropped with the program when `parse` returns the first error.
+                Err(err) => {
+                    self.errors.push(err);
+                    self.skip_stmt(start);
+                }
+            }
         }
         self.want(Kind::RBrace)?;
         Ok(stmts)
+    }
+
+    /// Moves past the tokens of the statement that began at `start` to the next `;` or `}` at
+    /// the block's level. Scanning from the statement's first token, not from where it failed,
+    /// is what makes the bracket depth right: a failure after `Foo {` must still count that `{`.
+    /// Every other token is bumped, so a block always makes progress on a broken statement.
+    fn skip_stmt(&mut self, start: usize) {
+        self.i = start;
+        let mut depth = 0i32;
+        loop {
+            match self.kind() {
+                Kind::Eof => return,
+                Kind::RBrace if depth == 0 => return,
+                Kind::Semi if depth == 0 => {
+                    self.bump();
+                    return;
+                }
+                Kind::LBrace | Kind::LBrack | Kind::LParen => depth += 1,
+                Kind::RBrace | Kind::RBrack | Kind::RParen if depth > 0 => depth -= 1,
+                _ => {}
+            }
+            self.bump();
+        }
     }
 
     fn stmt(&mut self) -> Result<Stmt, Error> {
@@ -2995,8 +3065,8 @@ impl<'a> Parser<'a> {
             let (name, kind) = if self.kind() == Kind::LParen {
                 (self.sym("create"), Builtin::RawCreate)
             } else {
-                let name = self.ident()?;
-                (self.sym(&name), Builtin::Create)
+                let name = self.ident_sym()?;
+                (name, Builtin::Create)
             };
             self.want(Kind::LParen)?;
             let args = self.args()?;
@@ -3185,7 +3255,7 @@ impl<'a> Parser<'a> {
 
     /// `place := expr;`, `f(...);`, or with `delete`, `delete place;`.
     fn assign_or_call(&mut self, span: Span, delete: bool) -> Result<Stmt, Error> {
-        let name = self.ident()?;
+        let name = self.ident_sym()?;
         if self.kind() == Kind::LParen && delete {
             return Err(self.err("`delete` takes a place, not a call"));
         }
@@ -3194,14 +3264,14 @@ impl<'a> Parser<'a> {
             let args = self.args()?;
             return Ok(Stmt::Call {
                 span,
-                expr: self.call(span, self.sym(&name), args, None),
+                expr: self.call(span, name, args, None),
             });
         }
-        let mut path = vec![name];
+        let mut path = vec![name.to_string()];
         while self.kind() == Kind::Dot {
             self.bump();
             let fspan = self.at();
-            let field = self.member_name()?;
+            let field = self.member_name_sym()?;
             if self.kind() == Kind::LParen && delete {
                 return Err(self.err("`delete` takes a place, not a call"));
             }
@@ -3211,10 +3281,10 @@ impl<'a> Parser<'a> {
                 let base = path_expr(&self.names, span, &path);
                 return Ok(Stmt::Call {
                     span,
-                    expr: self.call(fspan, self.sym(&field), args, Some(base)),
+                    expr: self.call(fspan, field, args, Some(base)),
                 });
             }
-            path.push(field);
+            path.push(field.to_string());
         }
         let mut keys = Vec::new();
         let mut fields = Vec::new();
@@ -3538,10 +3608,10 @@ impl<'a> Parser<'a> {
                         return Ok(form);
                     }
                 }
-                let name = self.ident()?;
+                let name = self.ident_sym()?;
                 self.postfix(Expr::Ident {
                     span,
-                    name: self.sym(&name),
+                    name,
                     sym: None,
                     builtin: None,
                     ty: 0,
@@ -3626,16 +3696,16 @@ impl<'a> Parser<'a> {
             }
             self.bump();
             let fspan = self.at();
-            let name = self.member_name()?;
+            let name = self.member_name_sym()?;
             if self.kind() == Kind::LParen {
                 self.bump();
                 let args = self.args()?;
-                e = self.call(fspan, self.sym(&name), args, Some(e));
+                e = self.call(fspan, name, args, Some(e));
             } else {
                 e = Expr::Field {
                     span: fspan,
                     base: Box::new(e),
-                    name: self.sym(&name),
+                    name,
                     root: None,
                     leaf: 0,
                     ty: 0,
@@ -3899,23 +3969,35 @@ impl<'a> Parser<'a> {
     /// A function's name, or a member's after `.`: an identifier, or `create`, which
     /// Solidity ABIs use for factories' functions.
     fn member_name(&mut self) -> Result<String, Error> {
-        if self.kind() == Kind::Create {
-            self.bump();
-            return Ok("create".to_string());
-        }
-        self.ident()
+        Ok(self.member_name_sym()?.to_string())
     }
 
+    fn member_name_sym(&mut self) -> Result<Symbol, Error> {
+        if self.kind() == Kind::Create {
+            self.bump();
+            return Ok(self.sym("create"));
+        }
+        self.ident_sym()
+    }
+
+    /// The identifier at the cursor, as its text. The token carries only its bytes, so the
+    /// `String` is built here, for the declaration fields that hold one; a caller that wants a
+    /// `Symbol` interns the text once, through [`Parser::sym`].
     fn ident(&mut self) -> Result<String, Error> {
+        Ok(self.ident_sym()?.to_string())
+    }
+
+    /// The identifier at the cursor, interned: the form every expression, type, and name site
+    /// needs, with no `String` in between.
+    fn ident_sym(&mut self) -> Result<Symbol, Error> {
         if self.kind() == Kind::AtKw {
             self.bump();
-            return Ok("at".to_string());
+            return Ok(self.sym("at"));
         }
         if self.kind() != Kind::Ident {
             return Err(self.err(format!("expected identifier, found {}", self.found())));
         }
-        let name = self.lexeme().to_string();
-        self.names.intern(&name);
+        let name = self.sym(self.lexeme());
         self.bump();
         Ok(name)
     }
@@ -3932,12 +4014,33 @@ impl<'a> Parser<'a> {
             name: self.sym(text),
         }
     }
-    /// A name, or one qualified by an import alias or a module: `E.Denied`.
-    fn dotted(&mut self) -> Result<String, Error> {
-        let mut name = self.ident()?;
+
+    /// `name` as a name written at `span`, with the symbol it already has.
+    fn named_at(span: Span, name: Symbol) -> NameAt {
+        NameAt { span, name }
+    }
+
+    /// A dotted name written at `span`, interned: one intern for `M`, none for `M.E`, which
+    /// has to join the two texts into one symbol.
+    fn dotted_at(&mut self, span: Span) -> Result<NameAt, Error> {
+        let first = self.ident_sym()?;
+        if self.kind() != Kind::Dot || self.peek_kind(1) != Kind::Ident {
+            return Ok(Self::named_at(span, first));
+        }
+        let mut path = first.to_string();
         while self.kind() == Kind::Dot && self.peek_kind(1) == Kind::Ident {
             self.bump();
-            name = format!("{name}.{}", self.ident()?);
+            path = format!("{path}.{}", self.ident_sym()?);
+        }
+        Ok(Self::named_at(span, self.sym(&path)))
+    }
+
+    /// A name, or one qualified by an import alias or a module: `E.Denied`.
+    fn dotted(&mut self) -> Result<String, Error> {
+        let mut name = self.ident_sym()?.to_string();
+        while self.kind() == Kind::Dot && self.peek_kind(1) == Kind::Ident {
+            self.bump();
+            name = format!("{name}.{}", self.ident_sym()?);
         }
         Ok(name)
     }
@@ -4204,5 +4307,91 @@ mod tests {
                 .contains("expected type `unit`, found value `Unit`"),
             "{err}"
         );
+    }
+
+    /// A broken statement does not hide the ones after it: every statement of every block is
+    /// parsed, and each broken one adds its error. The first is the one the parse would have
+    /// reported had it stopped there, so a diagnostic that names one error names the same one.
+    #[test]
+    fn statement_errors_are_all_reported_in_file_order() {
+        let src = "storage is record { count : uint; }\n\
+external function f(const a : uint) : uint is {\n\
+  var x : uint := 1;\n\
+  x := ;\n\
+  if x > 0 then {\n\
+    var q : uint := a +;\n\
+  }\n\
+  var z : uint := ;\n\
+  storage.count := x;\n\
+} with x\n";
+        let err = parse(src).expect_err("broken statements");
+        let found: Vec<(u32, String)> = err
+            .chain()
+            .map(|err| (err.line, err.message.clone()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (4, "expected an expression, found `;`".to_string()),
+                (6, "expected an expression, found `;`".to_string()),
+                (8, "expected an expression, found `;`".to_string()),
+            ],
+            "every broken statement, in file order"
+        );
+    }
+
+    /// A file with one broken statement reports exactly the one error it always did: recovery
+    /// adds errors, it never changes or drops the first.
+    #[test]
+    fn one_broken_statement_is_one_error() {
+        let src = "storage is record { count : uint; }\n\
+external function f() : uint is {\n\
+  var x : uint := ;\n\
+  storage.count := 5;\n\
+} with 0\n";
+        let err = parse(src).expect_err("broken statement");
+        assert_eq!(err.chain().count(), 1);
+        assert_eq!(err.line, 3);
+    }
+
+    /// The statement a failure happened in is skipped from its first token, so a `}` inside a
+    /// record literal it had already opened is not mistaken for the end of the block: the block
+    /// still ends where it does, and the file reports the one error it always did.
+    #[test]
+    fn skipping_a_broken_statement_counts_the_brackets_it_opened() {
+        let src = "event Foo of record {\n\
+  amount : uint;\n\
+}\n\
+storage is record {\n\
+  n : uint;\n\
+}\n\
+external function go() is {\n\
+  emit Foo { indexed amount = 1 };\n\
+}\n";
+        let err = parse(src).expect_err("indexed in an emit");
+        let found: Vec<(u32, String)> = err
+            .chain()
+            .map(|err| (err.line, err.message.clone()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![(8, "`indexed` belongs on the event declaration".to_string())],
+            "one error, and no cascade from the record's own `}}`"
+        );
+    }
+
+    /// A block a spec clause reaches recovers errors too, and a spec file with a broken
+    /// statement is rejected rather than accepted with the statement silently dropped.
+    #[test]
+    fn statement_errors_inside_a_spec_block_are_reported() {
+        let src = "spec for deposit is {\n\
+  ensures if true then { var y : uint := ; } with true else true;\n\
+}\n";
+        let err = match super::parse_specs(src) {
+            Ok(_) => panic!("a broken statement in a spec block must be an error"),
+            Err(err) => err,
+        };
+        assert_eq!(err.line, 2);
+        assert_eq!(err.message, "expected an expression, found `;`");
     }
 }
