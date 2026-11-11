@@ -47,7 +47,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **3.2c** Fewer `merge_tails` calls: a block whose best partner is taken now takes its next-best free pair in the same call. Codegen change, gated and recorded in `## 3.2c`. `optimize` erc20_full Release 382.0 → 301.3 ms, ladder 128 Fast 251.1 → 31.0 ms (min of 7, load 2.0), and the pre-3.1 floor 3.2b(ii) owed is re-measured at load 1.6–2.1: erc20_full 340.4 → 306.3 ms, goal met; uniswap_v2_pair 57.8 → 62.4 ms, still 4 % over. Runtime bytes +0.072 % over 304 target-modes, transaction gas +0.0012 %, every step status unchanged. See below.
 - [x] **3.3** Per-function stack scheduler. Spill to the memory home past DUP16/SWAP16. Differential at `LITHE_FUZZ_STEPS=5000`, prove tests, snapshot regenerated, gas outcomes unchanged and totals within 1%. Split into 3.3a–c. **The value-numbering scheduler itself is not taken (S48):** `promote` is 8.9 % of the Fast backend over all 51 `bench/` and 3–4 % on the ladder, so it moves no open target; see `## S48 3.3 closed: not taken`. **3.3b(ii) landed: promotion now plans every word's region once and applies every non-conflicting one per round, so rounds are 4 at every ladder size (was 34/130/258), `promote` is 49.6 → 12.0 ms on ladder 128, and runtime size is −0.027 % over the 272 target-modes (−0.153 % creation + runtime over the 13 whose code changes; the `Fast` increases are the batched start plan's price, not a search result). It is a plan knob (`Plan::batch`, on in the start plan, priced against off by the search).** 3.3a landed in part; 3.3b(i) was measured and not taken (+4.1 %/+4.6 % size). 3.3c was measured and not taken: batch loses to the greedy path on 22 of 1 140 Release on/off pairs, reproduced from the tree with `LITHE_PRICE_BATCH` (see `## S40 3.3c priced`).
 - [x] **3.4** `outline` without its quadratic terms. What moved: call sites are written in one pass instead of one splice each (3.4), and the exact-copy pass now takes every non-conflicting run per round, as the parameterised pass already did (3.4b), so a pass runs a handful of rounds, not one per distinct run. What did not: `outline` itself stays on the flat stream, not on `Blocks`; `flow`/prefix sizes are still recomputed each round, measured at 10–12% of the `outline_once` loop and not worth an incremental cache. Final bytes unchanged in both modes; the exact pass's own output does differ on some targets (see 3.4b). Re-verified at `3a670f0`. See the measurements below.
-- [ ] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×. **`promote` now scales flat** (12.0/12.0 ms at N = 64/128, rounds constant at 4). The bar is still missed because `optimize` is the superlinear term; that is 3.2b territory and S38's re-measurement, not `promote`.
+- [x] **3.5** Ladder: per-line `promote`+`optimize` cost from 439 to 1735 lines ≤ 1.5×. **Met at 1.5×-or-better in both modes: 0.63× Fast, 0.90× Release** (min of 5; medians 0.59× and 0.87×). No new cut was needed — 3.2c and 3.3b(ii) landed the work after this table was written, and re-measuring on this tree shows the 1735-line rung 3.5–4.8× cheaper per line than when it was recorded at 42.9 (Fast) and 69.3 (Release) µs/line. The bar is met with margin while the superlinear term is not gone, only pushed out of the measured range: past 1735 lines Release still costs 1.30× and 1.81× more per line at 3463 and 6919. See `## S50 3.5 closed`.
 
 ### Phase 4 — parallelism inside one build
 
@@ -86,7 +86,7 @@ This section is the single source of truth for what is open and what blocks what
 - **3.3 closed as not taken (S48).** The value-numbering scheduler is not built. `promote` is 8.9 % of the Fast backend over `bench/` and 3–4 % on the ladder, so the rewrite moves no open target. The record also covers what 3.3 owed beyond compile time. Size and gas are within budget: runtime −0.027 % and deploy-inclusive gas −0.018 %, but transaction gas is +0.0002 %, so §5's expected gas improvement is not delivered. The stack-too-deep guarantee comes from memory homes plus the `< 16` reach checks in `hold`/`plan_region`/`walk_alias`/`abandon_walk` and the outliner, with no spilling. See `## S48 3.3 closed: not taken`.
 - **4.1 closed as not taken (S23).** Per-body emission, the only per-function unit before `resolve`, is 9.1 % of the Fast backend and 8.2 % of Release (50 `bench/` files, `LITHE_THREADS=1`). The `[time]` line now reports it as `body`. Unlimited threads would give at most 1.10×, and the join would have to rebuild each body's shared emitter state. `parallel_map` still parallelises plan candidates only. Release output is byte-identical at 1 and 16 threads over all 51 `bench/` files and ladder 128. The command and digests for erc20_full, ladder 128 and factory, in both modes, are recorded there (S55). See `## S23 4.1 closed: not taken`.
 - **4.2 landed (S24).** Sibling units build on the pool, in declaration order. They are byte-identical at 1 and 16 threads, and no benchmark moves because only `examples/factory.lithe` has two units. See `## S24 4.2`.
-- **3.5 open, `promote` half done**: `promote` is now flat in the function count, so what is left of the 2.23×/2.01× per-line ratio is `optimize`. Re-measure once 3.2b's successor and 3.3c land.
+- **3.5 met, closed (S50).** The ≤ 1.5× per-line bar from 439 to 1735 lines is met on this tree with no new code: **Fast 0.63×, Release 0.90×** (min of 5 runs; medians 0.59× / 0.87×). The step that closed it was already-landed 3.2c (`merge_tails` takes its next-best free pair) plus 3.3b(ii) (batched promotion); the 3.5 table was written before both. What remains is a much weaker superlinear term that starts past the measured range (Release 1735→3463 is 1.30×, 3463→6919 1.81×). Measurement, method and the residual in `## S50 3.5 closed`.
 - **Final comparison table** below is a mid-branch snapshot; regenerate it once the steps above land.
 
 - **5.1 measured, handoff: needs its own slice.** The interner was started and the exact cost measured before writing it. Details and the number that decides the split are in `## 5.1 Interning: scope measured`.
@@ -787,7 +787,7 @@ for n in 16 64 128; do python3 scripts/gen_scaling.py $n > /tmp/ladder$n.lithe; 
 
 - **erc20_full Fast ≤ 15 ms (§4, after Phase 3).** At load 2.0 the backend is 40.3 ms with `promote` 5.1 ms (`## 3.2c`). Deleting `promote` outright leaves 35.2 ms, still 2.3× the target; the rest is `optimize` (12.6 ms) and `outline+` (9.9 ms). The S48 share, 11 % of erc20_full and 8.9 % over all 51 `bench/` Fast, says the same.
 - **Synthetic 1 735-line build ≤ 25 ms (§4).** That is ladder 64: backend 43.5 ms with `promote` 1.9 ms at load 2.0 (`## 3.2c`). Without `promote` it is 41.6 ms, still over.
-- **3.5 (ladder linearity).** `promote` is flat at 4 rounds per emit and 3–4 % of the backend; the superlinear term is `optimize` (`## 3.5 Ladder after 3.4b`).
+- **3.5 (ladder linearity).** Closed: the 439→1735 per-line bar is met at 0.63× Fast and 0.90× Release. `promote` runs 4 rounds per emit on the ladder and is 3.6–4.5 % of the Fast backend there (11–17 % in Release, where the search pays it once per candidate); what is still superlinear above 1735 lines is `optimize`. See `## S50 3.5 closed`.
 - **Release** has no compile-time target in §4. Its 29 % `promote` share is real, but it is paid per candidate at 17 rounds per emit (58 on erc20_full), so the lever is the round count, not a new algorithm (see "What would reopen it").
 
 **2. Size and gas, the ≤ 1 % budget and its "expect improvement".** The codegen 3.3 landed is 3.3a (byte-identical) and 3.3b(ii); its gate is `## 3.3b(ii)`:
@@ -1238,7 +1238,7 @@ Making `flow` free would save 10–12% of a loop that is itself a small part of 
 | 128 | 3463 | 20.1 | 352.1 | 107.5 | 200.6 | 355.0 | 160.4 |
 | 256 | 6919 | 73.2 | 2208.2 | 329.7 | 727.9 | 2249.0 | 430.3 |
 
-Per-line `promote`+`optimize` ratio, Fast: 439→1735 **2.23×**, 1735→3463 **2.51×**, 3463→6919 3.07×. Release: 2.01×, 2.31×, 2.68×. **The 1.5× bar is not met.** The 1.37× quoted in the comparison below is per-line *wall* time (Fast wall 22.1 → 115.5 ms is 1.32× now), not `promote`+`optimize`. Fast `promote` is close to linear (2.1 → 3.7 µs/line from 439 to 1735); `optimize` is the superlinear term (17 → 20 → 39 → 102 → 319 µs/line from N = 16 to 256), and its largest pass is `merge_tails` recomputing `heat` per call (3.2b, sibling workspace). 3.4b does not move these numbers: `outline` is 10 ms of ladder 64 and 27 ms of ladder 128. Re-run this table once 3.2b and 3.3b land.
+Per-line `promote`+`optimize` ratio, Fast: 439→1735 **2.23×**, 1735→3463 **2.51×**, 3463→6919 3.07×. Release: 2.01×, 2.31×, 2.68×. **The 1.5× bar is not met** *on this tree*. The 1.37× quoted in the comparison below is per-line *wall* time (Fast wall 22.1 → 115.5 ms is 1.32× now), not `promote`+`optimize`. Fast `promote` is close to linear (2.1 → 3.7 µs/line from 439 to 1735); `optimize` is the superlinear term (17 → 20 → 39 → 102 → 319 µs/line from N = 16 to 256), and its largest pass is `merge_tails` recomputing `heat` per call (3.2b, sibling workspace). 3.4b does not move these numbers: `outline` is 10 ms of ladder 64 and 27 ms of ladder 128. **Superseded: 3.2b and 3.3b landed after this table and the tree now meets the bar at 0.63× Fast and 0.90× Release. See `## S50 3.5 closed` for the re-run; this table is kept because it is the "before" of that record.**
 
 ## Comparison with baseline.json
 
@@ -1808,3 +1808,68 @@ Lowering `baseline_ms` to 20 and rerunning the same extracted script failed as i
 | the CI step's script, extracted from the workflow and run locally | passes at 50 ms; fails at exit 1 with the `::error` line when the baseline is lowered to 20 ms |
 | `actionlint` / `zizmor` on the workflow | **not run here**: actionlint needs Docker, and no Docker daemon is running in this workspace. The YAML parses (`yaml.safe_load`, nine jobs), the script passes `bash -n`, and the job copies the shapes of the existing ones (pinned action hashes, `persist-credentials: false`, `timeout-minutes`) |
 | bytecode | unchanged by construction: the change reads no code path that emits, and no source outside `main`'s argument handling (plus docs) differs |
+
+## S50 3.5 closed: met, no new cut
+
+**Obligation.** §5 3.5 asks that per-line `promote`+`optimize` cost from 439 to 1735 ladder lines be ≤ 1.5×. S50 offers two exits: land a cut, or record the step not-taken with the measurement that closes it. There is a third, and it is the one that holds: **the bar was already met by the time this step ran**, by 3.2c and 3.3b(ii), whose numbers were never fed back into the `## 3.5 Ladder after 3.4b` table. That table was taken on a tree the record itself says excluded 3.2b and 3.3b; it says "Re-run this table once 3.2b and 3.3b land", and no step did. Re-running it is the whole of this step.
+
+### Method
+
+`scripts/bench_compile.py --skip-gas --threads 1` over the ladder, cache off (`LITHE_CACHE_DIR` empty), `LITHE_THREADS=1`, 16 cores, one contract per process. Fast is the same script with `--bin` pointed at a wrapper that rewrites `--release` to `--fast`, which is how the original table was taken and keeps the CLI's own default out of the comparison. Five full rounds of the whole ladder per mode; each figure below is the best of the five, and the median is quoted beside the ratio to show the result is not a best-case artifact. Load average 1.4–1.8 at 16 cores, recorded before and after the five rounds.
+
+The direct-command form is the same measurement and is what a reviewer should re-run, from the repo root:
+
+```text
+mkdir -p /tmp/ladder && cd /tmp/ladder
+for n in 16 64; do python3 /path/to/lithe/scripts/gen_scaling.py $n > n$n.lithe; done
+BIN=/path/to/lithe/target/release/lithe
+for f in n16 n64; do LITHE_CACHE_DIR= LITHE_TIME=1 LITHE_THREADS=1 "$BIN" compile --fast $f.lithe; done
+```
+
+`--fast` and `--release` give the two columns; the `[time]` line's `promote` and `optimize` terms are the numerator. Taking the *minimum* of several runs matters here: one round of this ladder taken at load 13 on the same box and the same binary read the 1735-line rung at 30.3 ms best / 48.1 ms median instead of 15.4 / 15.7, which is enough to invert the conclusion.
+
+### The table
+
+`sum` is `promote`+`optimize`; `µs/line` is `sum` over the line count, min / median of five. `p/emit` is `promote` divided by `emits`.
+
+| N | lines | mode | promote ms | p/emit ms | optimize ms | µs/line min / med | emits/finishes | promote rounds |
+|---:|---:|---|---:|---:|---:|---:|---:|---:|
+| 16 | 439 | Fast | 0.44 | 0.44 | 5.75 | **14.12 / 15.32** | 1/2 | 4 |
+| 32 | 871 | Fast | 0.83 | 0.83 | 7.85 | 9.96 / 10.12 | 1/2 | 4 |
+| 64 | 1735 | Fast | 1.72 | 1.72 | 13.79 | **8.95 / 9.03** | 1/2 | 4 |
+| 128 | 3463 | Fast | 4.91 | 4.91 | 28.12 | 9.54 / 9.61 | 1/2 | 4 |
+| 256 | 6919 | Fast | 14.94 | 7.47 | 64.49 | 11.50 / 11.57 | 2/4 | 5 |
+| 16 | 439 | Release | 3.81 | 0.35 | 5.80 | **21.90 / 23.27** | 11/2 | 75 |
+| 32 | 871 | Release | 8.27 | 0.75 | 7.92 | 18.61 / 18.79 | 11/2 | 107 |
+| 64 | 1735 | Release | 20.37 | 1.85 | 13.85 | **19.74 / 20.18** | 11/2 | 171 |
+| 128 | 3463 | Release | 61.23 | 5.57 | 27.89 | 25.88 / 26.09 | 11/2 | 299 |
+| 256 | 6919 | Release | 222.64 | 10.12 | 99.13 | 46.53 / 47.14 | 22/5 | 553 |
+
+| 439 → 1735 | min | median | bound |
+|---|---:|---:|---:|
+| Fast | **0.63×** | 0.59× | 1.50× |
+| Release | **0.90×** | 0.87× | 1.50× |
+
+Against the recorded 42.9 µs/line (Fast) and 69.3 µs/line (Release) at 1735 lines, this rung is **4.8× and 3.5× cheaper per line**. The 439-line rung moved much less (19.2 → 14.1 and 34.5 → 21.9, so 1.36× and 1.58×): it pays a fixed per-build cost the bigger file amortises, and 3.2c and 3.3b(ii) barely touch it. The ratio fell because the 439 rung's denominator is small, not because that rung regressed.
+
+**Why the ratio is below 1, and how much of that is fixed cost.** The 439-line rung pays per-build constants the 1735-line file amortises: process start, the `std/evm` load, one `emit` and two `finish`es in Fast. Taking the constant and slope from the first gap alone (439→871) gives **Fast ≈ 3.7 ms fixed + 5.76 µs/line** and **Release ≈ 2.9 ms + 15.2 µs/line**; holding each slope flat to 1735 lines, fixed cost alone predicts a **0.56×** ratio in Fast and **0.77×** in Release. The measured ratios are *higher* in both — 0.63× and 0.90× — and the difference is exactly the slope rising over that span (5.76 → 7.91 µs/line in Fast, 15.2 → 20.9 in Release). So the bar is passed on amortisation, not on linearity: Fast clears it on a fixed constant with room to spare, Release clears it by 0.10× while its own slope is growing.
+
+The per-line *marginal* cost, which is what 3.5's bar stands in for, is therefore not flat in either mode, and keeps rising above the bar's range — Fast **5.76 → 7.91 → 10.14 → 13.43** µs/line and Release **15.2 → 20.9 → 31.8 → 67.3** across the four gaps from 439 to 6919. 3.5's literal 439→1735 window is met, largely on Fast's fixed constant; it is not evidence that the passes are linear, and the rungs above 1735 say so.
+
+### What closed it, and what is left
+
+- **3.2c** (`merge_tails` takes its next-best free pair in the same call) cut `optimize`'s largest term by removing the round a lost pairing used to cost. Ladder 64 Fast `optimize` was 56.2 ms before it and is 13.79 ms here.
+- **3.3b(ii)** (batched promotion) cut `promote`'s rounds to 4 at every ladder size and made `promote` per-emit flat: Fast `p/emit` is 0.44 / 0.83 / 1.72 / 4.91 ms at 439 / 871 / 1735 / 3463 lines, so ≈ 1.0 µs per line per emit at each of the first three rungs (0.95–1.00) and 1.42 at 3463. Release `p/emit` climbs faster (0.35 → 1.85 ms, 0.79 → 1.07 µs per line per emit) and its `emits` is 11 rather than 1, so Release pays 11 growing `promote` runs where Fast pays one; that is search cost per candidate, not a superlinear pass, and it is why Release's ratio is 0.90× rather than Fast's 0.63×.
+- **Residual, recorded not fixed.** Release is 1.30× per line from 1735 → 3463 and 1.81× from 3463 → 6919, and Fast 1.07× and 1.20×. That is the same `optimize` term 3.2b/3.2c have been chipping at, now pushed above 1735 lines. Nothing in §5 is blocked on it: the 1735-line rung 3.5 names is also §4's "synthetic 1 735-line build ≤ 25 ms", and that target is measured here at **40.0 ms backend / 52.0–53.5 ms wall** (min of 5, Fast) against 43.5 ms backend in `## 3.2c` — flat, still missed, and owned by §4. Closing the residual would need one of 3.2b(ii)'s rejected options (a per-round incremental `flow`, measured at 10–12 % of a loop that is a small part of `outline+`) or a `merge_tails` that merges more per call still. Neither is in scope for a step whose bar is met; they are 6.4 territory.
+
+### Gates
+
+Nothing in this step changes source, so the gates are here to prove the tree the numbers were taken on is the committed tree, not a scratch build.
+
+| gate | result |
+|---|---|
+| `make check` (fmt, clippy, `cargo test --locked`, `LITHE_VERIFY=1`, differential 2 000 steps, both bytecode snapshots, bench gas, playground wasm) | **green, exit 0** |
+| `cargo test --locked` | 571 passed, 2 ignored, 0 failed |
+| `cargo test --locked --lib evm::snapshot` | 2 passed — **both bytecode snapshots unchanged** |
+| `LITHE_FUZZ_STEPS=2000 … evm::differential` | 5 passed, `fast_matches_release` included |
+| `git status` | clean before this edit; the only diff this step adds is `PROGRESS.md` — this record plus the four summary lines it brings into line (the 3.5 task line, the State bullet, the `## S48` obligation list, and a "superseded" note on the old ladder table) |
