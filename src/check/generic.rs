@@ -358,7 +358,7 @@ impl Checker {
                         .any(|d| d.owner.as_ref() == Some(module) && &d.short == first)
                     {
                         let alias = format!("{first}#{sym}");
-                        self.scopes[self.scope].vars.insert(alias.clone(), sym);
+                        self.scopes[self.scope].vars.insert(intern(&alias), sym);
                         path[0] = Seg::Field(alias);
                     }
                 }

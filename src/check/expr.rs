@@ -61,7 +61,7 @@ impl Checker {
                 Ok(())
             }
             Expr::Lit { lit, ty, span } => {
-                let bytes = self.named["bytes"];
+                let bytes = self.named[&intern("bytes")];
                 let wants_bytes = self.expect.is_some_and(|t| self.peel(t) == bytes);
                 // A word of hex digits is also a `bytes` too long to pack in a word.
                 if let (Lit::Int(w, Some(64)), true) = (&*lit, wants_bytes) {
@@ -99,15 +99,15 @@ impl Checker {
                 ty,
                 span,
             } => {
-                let spelled = name.as_str();
-                if let Some(id) = self.lookup(spelled) {
+                if let Some(id) = self.lookup(*name) {
                     *builtin = None;
                     *sym = Some(id);
                     *ty = self.syms[id].ty;
                     self.pure_storage(*span, id)?;
-                    self.across_phases(*span, spelled, id)?;
+                    self.across_phases(*span, *name, id)?;
                     return Ok(());
                 }
+                let spelled = name.as_str();
                 if let Some(repl) = retired_builtin(spelled) {
                     return Err(error(
                         *span,
@@ -492,12 +492,12 @@ impl Checker {
                 {
                     if let Expr::Ident { name: module, .. } = module.as_ref() {
                         if let Some(domain) = self
-                            .is_module(&module.to_string())
+                            .is_module(*module)
                             .then(|| {
                                 self.kind_domain(
-                                    &module.to_string(),
-                                    &kind.to_string(),
-                                    &name.to_string(),
+                                    module.as_str(),
+                                    kind.as_str(),
+                                    name.as_str(),
                                 )
                             })
                             .flatten()
@@ -530,7 +530,7 @@ impl Checker {
                             *name = Names::shared().intern(&hook);
                             *base = None;
                         } else if self.fn_names.iter().any(|n| n == &qualified)
-                            || self.named.contains_key(&qualified)
+                            || self.named.contains_key(&intern(&qualified))
                         {
                             *name = Names::shared().intern(&qualified);
                             *base = None;
@@ -546,7 +546,7 @@ impl Checker {
                                 ),
                             ));
                         } else if builtin.is_none()
-                            && self.lookup(&alias.to_string()).is_none()
+                            && self.lookup(*alias).is_none()
                             && !self.intrinsic_module(&alias.to_string())
                         {
                             if let Some(err) = self.no_member(
@@ -759,9 +759,9 @@ impl Checker {
                 if base.is_none()
                     && args.len() == 1
                     && !self.fn_names.iter().any(|n| n == name.as_str())
-                    && self.named.contains_key(name.as_str())
+                    && self.named.contains_key(name)
                 {
-                    return self.cast(*span, name.as_str(), args, builtin, ty);
+                    return self.cast(*span, *name, args, builtin, ty);
                 }
                 if name.as_str() == "Some" && base.is_none() && args.len() == 1 {
                     let opt = match self
@@ -901,7 +901,7 @@ impl Checker {
                 let variants: Vec<(String, Option<usize>)> = if outcome {
                     vec![
                         ("Ok".to_string(), Some(sty)),
-                        ("Error".to_string(), Some(self.named["bytes"])),
+                        ("Error".to_string(), Some(self.named[&intern("bytes")])),
                     ]
                 } else if self.types[sty].kind == TyKind::Option {
                     vec![
@@ -1021,7 +1021,7 @@ impl Checker {
                                 self.field_of.insert(sym, (whole, i));
                                 arm.tuple_syms.push(sym);
                                 arm.tuple_at.push(i);
-                                self.define(arm.span, name, sym)?;
+                                self.define_str(arm.span, name, sym)?;
                             }
                         }
                     } else {
@@ -1046,7 +1046,7 @@ impl Checker {
                                     span: 0,
                                 });
                                 arm.bind_sym = Some(sym);
-                                self.define(arm.span, name, sym)?;
+                                self.define_str(arm.span, name, sym)?;
                             }
                         }
                     }
@@ -1294,7 +1294,7 @@ impl Checker {
         if spelled == if bare { "None" } else { "Some" } {
             return true;
         }
-        self.lookup(&spelled).is_none()
+        self.lookup(*name).is_none()
             && (bare || !self.fn_names.iter().any(|n| n == &spelled))
             && self
                 .named

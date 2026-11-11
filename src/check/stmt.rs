@@ -72,7 +72,7 @@ impl Checker {
                     self.state_syms.insert(sid);
                 }
                 if name != "_" {
-                    self.define(*span, name, sid)?;
+                    self.define_str(*span, name, sid)?;
                 }
                 Ok(())
             }
@@ -105,7 +105,7 @@ impl Checker {
                     span: 0,
                 });
                 *sym = Some(sid);
-                self.define(*span, name, sid)?;
+                self.define_str(*span, name, sid)?;
                 Ok(())
             }
             Stmt::Assign {
@@ -373,7 +373,7 @@ impl Checker {
                                 self.state_syms.insert(sid);
                             }
                             *counter = Some(sid);
-                            self.define(span, &counter_name, sid)?;
+                            self.define_str(span, &counter_name, sid)?;
                             *limit = Some(self.add_sym(Sym {
                                 ty: declared_ty,
                                 mutable: false,
@@ -438,7 +438,7 @@ impl Checker {
                                     self.state_syms.insert(lsid);
                                 }
                                 *list = Some(lsid);
-                                self.define(span, "$list", lsid)?;
+                                self.define(span, intern("$list"), lsid)?;
                                 Expr::Ident {
                                     span,
                                     name: Names::shared().intern("$list"),
@@ -486,7 +486,7 @@ impl Checker {
                                 span: 0,
                             });
                             *counter = Some(sid);
-                            self.define(span, &counter_name, sid)?;
+                            self.define_str(span, &counter_name, sid)?;
                             let mut idx = Expr::Ident {
                                 span,
                                 name: Names::shared().intern(&counter_name),
@@ -527,7 +527,7 @@ impl Checker {
                             *elem = Some(esid);
                             *elem_init = Some(init);
                             if name != "_" {
-                                self.define(span, name, esid)?;
+                                self.define_str(span, name, esid)?;
                             }
                             *limit = Some(self.add_sym(Sym {
                                 ty: TY_UINT,
@@ -583,8 +583,8 @@ impl Checker {
             } => {
                 let mut elems = Vec::new();
                 for name in names.iter() {
-                    let sym = self.resolve(*span, name)?;
-                    self.across_phases(*span, name, sym)?;
+                    let sym = self.resolve_str(*span, name)?;
+                    self.across_phases(*span, intern(name), sym)?;
                     if self.syms[sym].storage {
                         return Err(error(*span, "a tuple assignment writes locals"));
                     }
@@ -667,7 +667,7 @@ impl Checker {
                     then.ret = self.op_return(*span, expr)?;
                     self.check_then(then)?;
                     if let Some(failed) = &mut then.error {
-                        failed.ret = self.named["bytes"];
+                        failed.ret = self.named[&intern("bytes")];
                         self.check_then(failed)?;
                     }
                 }
@@ -728,7 +728,7 @@ impl Checker {
                         span: 0,
                     });
                     then.syms.push(sid);
-                    self.define(span, name, sid)?;
+                    self.define_str(span, name, sid)?;
                 }
             }
             for s in &mut then.stmts {
@@ -1397,7 +1397,7 @@ impl Checker {
                 self.state_syms.insert(sid);
             }
             if name != "_" {
-                self.define(span, name, sid)?;
+                self.define_str(span, name, sid)?;
             }
         }
         Ok(())

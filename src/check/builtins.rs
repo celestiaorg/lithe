@@ -342,7 +342,7 @@ impl Checker {
                 };
                 let found = self
                     .named
-                    .get(&iface)
+                    .get(&intern(&iface))
                     .copied()
                     .filter(|&id| self.types[id].kind == TyKind::Interface)
                     .and_then(|id| self.ifaces.get(&id))
@@ -456,7 +456,7 @@ impl Checker {
             // `Bytes.concat` joins `bytes` and fixed `bytesN` values; `String.concat` strings.
             Builtin::BytesConcat | Builtin::StringConcat => {
                 let string = kind == Builtin::StringConcat;
-                let bytes = self.named["bytes"];
+                let bytes = self.named[&intern("bytes")];
                 for arg in args.iter_mut() {
                     self.check_expr_as(arg, Some(if string { TY_STRING } else { bytes }))?;
                     let t = &self.types[self.peel(arg.ty())];
@@ -733,7 +733,7 @@ impl Checker {
         }
         let iface_methods = |iface: &str| {
             self.named
-                .get(iface)
+                .get(&intern(&iface))
                 .filter(|&&id| self.types[id].kind == TyKind::Interface)
                 .and_then(|id| self.ifaces.get(id))
         };
@@ -822,12 +822,12 @@ impl Checker {
         } else {
             return self
                 .named
-                .get(&format!("bytes{n}"))
+                .get(&intern(&format!("bytes{n}")))
                 .copied()
                 .ok_or_else(|| error_at(1, 1, format!("internal: missing `bytes{n}`")));
         };
         self.named
-            .get(name)
+            .get(&intern(name))
             .copied()
             .ok_or_else(|| error_at(1, 1, "internal: missing `bytes`"))
     }
@@ -841,7 +841,7 @@ impl Checker {
                 ..
             }
         );
-        let bytes = self.named["bytes"];
+        let bytes = self.named[&intern("bytes")];
         self.check_expr_as(arg, if hex { Some(bytes) } else { self.expect })
     }
 
@@ -881,7 +881,7 @@ impl Checker {
                 (vec![self.list_of(pair, 0)], TY_BOOL)
             }
             Pre::Blake2f => {
-                let rounds = self.named["uint32"];
+                let rounds = self.named[&intern("uint32")];
                 let (h, m) = (self.list_of(b32, 2), self.list_of(b32, 4));
                 (vec![rounds, h, m, self.bytes_n(16)?, TY_BOOL], h)
             }
@@ -939,7 +939,7 @@ impl Checker {
                     "`Abi.decode` expects a type name, or a tuple of type names",
                 ));
             };
-            let Some(id) = c.named.get(&name.to_string()).copied() else {
+            let Some(id) = c.named.get(name).copied() else {
                 return Err(error(*span, format!("unknown type `{name}`")));
             };
             if !abi_value(&c.types, id) {

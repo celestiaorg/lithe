@@ -681,10 +681,12 @@ impl<'a> Builder<'a> {
         self.names.clear();
         self.syms.clear();
         self.type_names.clear();
-        let mut named: Vec<(&String, &usize)> = c.named.iter().collect();
-        named.sort_by_key(|(name, _)| (name.len(), name.as_str()));
+        let mut named: Vec<(&Symbol, &usize)> = c.named.iter().collect();
+        named.sort_by_key(|(name, _)| (name.as_str().len(), name.as_str()));
         for (name, &ty) in named {
-            self.type_names.entry(ty).or_insert_with(|| name.clone());
+            self.type_names
+                .entry(ty)
+                .or_insert_with(|| name.as_str().to_string());
         }
         self.declare();
         self.walk();
@@ -906,7 +908,7 @@ impl<'a> Builder<'a> {
             let file = self.file_of(decl.file);
             let written = short(&decl.name);
             let at = self.span(file, self.locate_at(file, decl.span, written), written);
-            let ty = c.named.get(&decl.name).copied();
+            let ty = c.named.get(&intern(&decl.name)).copied();
             let methods = ty.and_then(|ty| c.ifaces.get(&ty));
             let mut lines = Vec::new();
             let mut sels = Vec::new();
@@ -1005,7 +1007,7 @@ impl<'a> Builder<'a> {
             let file = self.file_of(decl.file);
             let written = short(&decl.name);
             let at = self.span(file, self.locate_at(file, decl.span, written), written);
-            let ty = c.named.get(&decl.name).copied();
+            let ty = c.named.get(&intern(&decl.name)).copied();
             let storage = decl.name == "storage";
             let text = if storage {
                 format!("storage is {}", ty_ref_long(&decl.ty))
@@ -1048,7 +1050,7 @@ impl<'a> Builder<'a> {
                 Some(module) => format!("{module}.{}", decl.name),
                 None => decl.name.clone(),
             };
-            let ty = c.domain_tys.get(&qualified).copied();
+            let ty = c.domain_tys.get(&intern(&qualified)).copied();
             let named = decl.name.contains('.').then_some(written);
             let text = match (decl.transient, decl.immutable, named) {
                 (true, _, Some(name)) => format!("transient storage {name} is"),

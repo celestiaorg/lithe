@@ -164,6 +164,12 @@ impl Names {
     }
 }
 
+/// The symbol for `text` in the process-wide table, without taking a reference count: the key
+/// the checker's name maps use.
+pub(crate) fn intern(text: &str) -> Symbol {
+    Names::global().intern(text)
+}
+
 /// Where a node is in its file: the bytes of the token it starts at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub(crate) struct Span {

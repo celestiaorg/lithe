@@ -1879,12 +1879,12 @@ impl<'a> InternalNames<'a> {
         let prog = &checked.prog;
         let contract =
             crate::artifact_contract_name(prog, std::path::Path::new(prog.files.path(prog.file)));
-        let mut named: Vec<(&String, &usize)> = checked.named.iter().collect();
-        named.sort();
+        let mut named: Vec<(&Symbol, &usize)> = checked.named.iter().collect();
+        named.sort_by_key(|(name, _)| name.as_str());
         let mut names = FxHashMap::default();
         for (name, &id) in named {
             let t = &checked.types[id];
-            let shown = crate::modules::shown(name);
+            let shown = crate::modules::shown(name.as_str());
             let kind = match t.kind {
                 TyKind::Record => "struct",
                 TyKind::Nominal if !t.variants.is_empty() => "enum",
