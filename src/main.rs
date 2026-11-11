@@ -241,9 +241,11 @@ fn usage_exit(msg: &str) -> ! {
 }
 
 /// Prints `errors`, placing one with a line but no file in `file`, the file the command reads.
+/// A parse error that recovered from later ones prints all of them, in file order.
 fn fail(errors: &[lithe::Error], file: Option<&Path>) -> ! {
-    let errors: Vec<String> = errors
+    let placed: Vec<String> = errors
         .iter()
+        .flat_map(|err| err.chain())
         .map(|err| match file {
             Some(file) if err.file.is_none() && err.line > 0 => {
                 let mut err = err.clone();
@@ -253,7 +255,7 @@ fn fail(errors: &[lithe::Error], file: Option<&Path>) -> ! {
             _ => err.to_string(),
         })
         .collect();
-    eprintln!("{}", errors.join("\n\n"));
+    eprintln!("{}", placed.join("\n\n"));
     std::process::exit(1);
 }
 

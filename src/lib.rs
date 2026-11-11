@@ -110,6 +110,9 @@ pub struct Error {
     pub line: u32,
     pub column: u32,
     pub message: String,
+    /// The errors of the same file the parser found after this one, which it recovered from.
+    /// Empty for an error that is the only one.
+    pub(crate) more: Vec<Error>,
     /// Where the error is until [`Error::placed`] reads `line` and `column` from a source map.
     pub(crate) span: Option<ast::Span>,
     /// The file [`Error::in_file`] named, until [`Error::placed`] writes its path to `file`.
@@ -126,6 +129,9 @@ impl Error {
     pub(crate) fn in_file(mut self, file: ast::FileId) -> Self {
         if self.file.is_none() && self.at.is_none() && file != ast::FileId::NONE {
             self.at = Some(file);
+            for err in &mut self.more {
+                err.at.get_or_insert(file);
+            }
         }
         self
     }
@@ -134,13 +140,30 @@ impl Error {
     pub(crate) fn in_path(mut self, path: &str) -> Self {
         if self.file.is_none() && self.at.is_none() && !path.is_empty() {
             self.file = Some(path.to_string());
+            for err in &mut self.more {
+                if err.file.is_none() && err.at.is_none() {
+                    err.file = Some(path.to_string());
+                }
+            }
         }
         self
+    }
+
+    /// This error, and the ones the parser recovered from after it.
+    pub fn chain(&self) -> impl Iterator<Item = &Error> {
+        std::iter::once(self).chain(self.more.iter())
     }
 
     /// The error with its file, line, and column read from `files`: a place in no file
     /// [`Error::in_file`] named is in `own`, which names no file for it.
     pub(crate) fn placed(mut self, files: &ast::SourceMap, own: ast::FileId) -> Self {
+        self.place(files, own);
+        let more = std::mem::take(&mut self.more);
+        self.more = more.into_iter().map(|err| err.placed(files, own)).collect();
+        self
+    }
+
+    fn place(&mut self, files: &ast::SourceMap, own: ast::FileId) {
         let at = self.at.take();
         if let (None, Some(id)) = (&self.file, at) {
             let path = files.path(id);
@@ -154,7 +177,6 @@ impl Error {
                 .unwrap_or(own);
             (self.line, self.column) = files.line_col(id, span);
         }
-        self
     }
 }
 
@@ -2247,6 +2269,7 @@ pub(crate) fn error_at(line: u32, column: u32, message: impl Into<String>) -> Er
         line,
         column,
         message: message.into(),
+        more: Vec::new(),
         span: None,
         at: None,
     }

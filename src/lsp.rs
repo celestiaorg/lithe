@@ -1102,6 +1102,8 @@ fn publish<W: Write + Send>(output: &Mutex<W>, uri: &str, doc: &Doc) {
         doc.error
             .as_ref()
             .or(doc.codegen.as_ref())
+            .into_iter()
+            .flat_map(|err| err.chain())
             .map(|err| error_diagnostic(&doc.text, err)),
     );
     notify_diagnostics(&mut *output.lock().unwrap(), uri, &items);
