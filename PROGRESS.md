@@ -60,7 +60,7 @@ Measured speed work on this branch. Security and bytecode invariants in the prog
 - [x] **5.2** `FileId` and byte `Span`. Diagnostics keep `line` and `column`. **Landed (S57, 5.2a):** every AST `line`/`col` pair is a `Span { lo, hi }` and every `origin: String` a `FileId` into one `SourceMap` per load; `Error` resolves at `in_file`/`placed`. Both snapshots unchanged, a 7 342-line diagnostic corpus byte-identical, erc20_full LSP diagnostics 6.28–6.87 → 6.23–6.26 ms (not moved beyond noise). See `## 5.2a`.
 - [ ] **5.3** Remove deep clones. Make `Plan` cheap. **Measured: `Plan` is not where the time is.** A Release `Plan` clone with 640 set members costs **3.0 µs**; `bench/erc20_full.lithe` Release runs 98 emits and 92 finishes totalling 1.66 s. The ~200 plan clones a search does are therefore ~0.6 ms, 0.04 % of the backend. Not taken on its own; the clones that matter are `Program`'s, which 5.1/5.2 already remove. See `## 5.3 Plan clones measured`.
 - [x] **5.4** Fx hasher. Every std `HashMap`/`HashSet` in `check`, `gen`, `route`, `split` and `index` (and `asm.rs`'s last few) is now `asm::FxHashMap`/`FxHashSet`; the two whose order was seen are `BTreeMap`s (no `IndexMap`: no new dependency). Both snapshots unchanged; `check` −1.5–2 %. See `## S27 Fx hashing`.
-- [ ] **5.5** Index-arena AST.
+- [x] **5.5** Index-arena AST. **Measured and not taken (S32):** the flip is 1 378 errors in 41 files, and its payoff is 0.08 % of a Release build and 1.2–1.7 % of a Fast one — 3 `Program` clones per build (0.4–0.9 ms in total: 0.6–0.9 ms Fast, 0.4 ms Release), which a flat `Vec<Expr>` does not make cheaper (159 µs vs 142 µs on erc20_full, because the cost is `Program.modules`, not the expression tree). `Checked.source` cannot be removed by borrowing: it is the program *before* `compose` inlines modules, so it is a different value, not the same value held twice. See `## S32 5.5 closed: not taken`.
 - [x] **5.6** Parsed and checked module cache across `compile_dir` and `abi_dir`. **Parsed half landed; checked half is already shared per file.** `emit_dir` now holds one `ModuleCache` for the directory, so the `lib/` files 51 bench entries import are parsed once instead of once per importer (68 parses → 68, 43 of them hits). Byte-identical output and thread-count-independent. The directory build is 360 ms at one thread of which **loading is 20 ms and parsing 3.6 ms**; the 300 ms is codegen, which is why the number does not move beyond noise. The checked half has nothing to add: `check` runs per entry file on its own merged program, and two entries' programs are different types, so no entry reuses another's `Checked` — that memo already serves the LSP, where the same file checks twice. See `## 5.6`.
 - [ ] **5.7** Lexer slices and statement-level parser recovery. First error unchanged.
 
@@ -92,6 +92,7 @@ This section is the single source of truth for what is open and what blocks what
 - **5.1 measured, handoff: needs its own slice.** The interner was started and the exact cost measured before writing it. Details and the number that decides the split are in `## 5.1 Interning: scope measured`.
 - **5.1c landed (S29):** `Checker.named`/`domain_tys`, `Scope.vars` and `Checked.named`/`domain_tys` are `FxHashMap<Symbol, _>`; `route::InternalNames` and `index`'s type-name table sort on `Names::get` text so ABI `internalType` and hover names keep their parent order; `type_name` picks the alphabetically smallest of a type's names where the parent picked a hash-order one (deterministic now, no corpus diagnostic moved). `check` on erc20_full 5.83 → 5.67 ms (min of 25, interleaved A/B); both snapshots and a 52 213-line, 1 225-invocation diagnostic corpus byte-identical. See `## 5.1c`.
 - **5.2a landed (S57):** byte spans and `FileId`s across the crate, positions resolved from a per-load `SourceMap`; bytecode, diagnostics, warnings, lint and prover text unchanged. The LSP number did not move (6.2 ms), so the ≤ 5 ms target still rests on 5.1b/5.1c and 5.5. See `## 5.2a`.
+- **5.5 closed as not taken (S32).** No arena; the AST keeps boxed expressions. Measured before writing it: the flip is **1 378 errors in 41 files** (a whole-crate sweep, not a frontend-hygiene slice), and the two `Program` clones it was to remove are **3 clones per build, 0.4–0.9 ms in total — 0.08 % of a Release build and 1.2–1.7 % of a Fast one**. A flat `Vec<Expr>` cloned on its own is *slower* than the tree on erc20_full (159 µs vs 142 µs), because the cost is `Program.modules`, not the expression tree. And `Checked.source` is not removable by borrowing: it is the program *before* `compose` inlines modules and qualifies their names, so it is a different value from `checked.prog`, not the same one held twice — three readers (`split::facet`, `split::cache_key`, `index::template`) depend on exactly that. See `## S32 5.5 closed: not taken`.
 - **5.1a landed:** `Symbol`/`Names` and `Program.names`, one process-wide table threaded through `parse`, `parse_specs` and `load_in`, with a determinism test across files and parse orders. No field moved, so bytecode and diagnostics are unchanged. See `## 5.1a The table`.
 - **5.1b landed (S58):** `NameAt.name`, `Expr::{Ident, Field, Call}` and `TypeRef::Name` hold a `Symbol`; every diagnostic reads its text through the table, `Symbol`'s `Debug`/`Display` print the text (never the number) so `Program`'s `Debug` cache keys are unchanged, and `modules::imply`'s order-by-name sorts on text. Both snapshots unchanged, both suites and VERIFY green, the differential gate green at 2 000 steps, and 36 369 lines of diagnostics byte-identical to `411bf45`. Two reviewer findings then fixed it: a call's module qualification read a name captured before the alias rename (a module calling `A.f` while declaring its own hook `f` ran its own hook), and `zero_value`'s `None` lost its name; both now have failing-first regression tests. `check` on erc20_full is 5.05 → 5.90 ms (min of 25, cache off): the lookup replaces an inline `String` 138 263 times per compile, which is 5.1c's number to invert. See `## 5.1b`.
 - **S43 and S44 landed:** one process-wide `LITHE_THREADS` budget, and per-build timing counters. See `## S43 One thread budget` and `## S44 Per-build counters`.
@@ -1326,13 +1327,13 @@ The step asks for one slice that flips `NameAt`/`Expr::{Ident, Field, Call}`/`Ty
 
 Five of those files are this slice's. The rest are `check/*`, `gen/*`, `prove/*`, `evm/*` (the differential gate's harnesses), `split.rs`, `spec/*`, `modules.rs` and `index.rs`, which sibling steps were editing concurrently. The design for lazy line/col is settled: one `SourceMap` per compilation (`modules::Sources`, or the LSP session), one entry per (path, content hash), and `Error` resolves its `Span` to `line`/`column` at the `modules.rs`/`lib.rs::Error::in_file` boundary. That boundary covers `Error`, but not the places that put a position into text or a non-`Error` value. These need the map passed in: `modules::Site::place` (cross-file "declared at" text inside diagnostics), `check::format_note` and `Note` (warnings), `split::warning`, `prove/exec.rs` (`loop_places`, counterexample notes), `spec/instrument.rs` ("loop invariant at line:col"), `lint.rs`, and the LSP/`index.rs` position lookups.
 
-**Two of the four clones are structural; the other two landed (below).** `Checked.source` is the program before `compose` rewrites it, and `split::facet_program`, `gen`, `index` and `compose`'s ERC-165 re-check all read it, so a snapshot is needed while `check` takes `Program` by value. `spec::check(prog.clone())` in `build` exists because `spec::check` and `check::check` both consume and mutate the program. Neither goes away until `check` borrows the AST, which is 5.5's arena.
+**Two of the four clones are structural; the other two landed (below).** `Checked.source` is the program before `compose` rewrites it, and `split::facet_program`, `gen`, `index` and `compose`'s ERC-165 re-check all read it, so a snapshot is needed while `check` takes `Program` by value. `spec::check(prog.clone())` in `build` exists because `spec::check` and `check::check` both consume and mutate the program. Neither goes away until `check` borrows the AST, which is 5.5's arena. **(S32 measured this: borrowing cannot remove them, because `Checked.source` is the pre-`compose` program, a different value from `checked.prog`. See `## S32 5.5 closed: not taken`.)**
 
 **What landed (byte-identical, no diagnostic changes):**
 - `analyze_in` iterates `&units` and clones each unit once for `check_in`; only a `Full` pass clones it again for `build`. A keystroke (`Pass::Edit`) went from three deep `Program` copies per unit (`units.clone()`, `unit.clone()`, `Checked.source`) to two.
 - `lint::units` no longer copies the loaded program to keep a fallback for a broken spec file; it loads the file again on that (error-only) path.
 
-**Split proposed:** 5.2a, a `Span`/`FileId` source map in `ast`/`parse` with `line()`/`col()` accessors and one owner for the call-site sweep; 5.1b, the `Symbol` flip of the four AST shapes, also one owner of `check`/`gen`/`prove`/`evm`; and the `Checked.source` and `spec::check(prog.clone())` clones carried into 5.5 (not closed here): both exist because `check` takes `Program` by value and mutates it, and both go once 5.5's arena lets `check` borrow the AST.
+**Split proposed:** 5.2a, a `Span`/`FileId` source map in `ast`/`parse` with `line()`/`col()` accessors and one owner for the call-site sweep; 5.1b, the `Symbol` flip of the four AST shapes, also one owner of `check`/`gen`/`prove`/`evm`; and the `Checked.source` and `spec::check(prog.clone())` clones carried into 5.5 (not closed here): both exist because `check` takes `Program` by value and mutates it, and both go once 5.5's arena lets `check` borrow the AST. **(S32: neither does; see `## S32 5.5 closed: not taken`.)**
 
 ## 5.2a
 
@@ -1359,7 +1360,7 @@ Plan: replace every AST `line`/`col` with a byte `Span` and every `origin: Strin
 | diagnostic corpus: `compile`, `abi`, `errors`, `specs`, `lint` over `examples/`, `bench/`, `fuzz/`, `std/`, plus 797 variants (lines 3/7/13/21/34/55/89 deleted, junk appended) | 7 342 lines, `cmp` identical between `b1c574a` and this tree (1 937 positioned lines, 866 warnings) |
 | `make check` (fmt, clippy, test, VERIFY test, differential at 2 000 steps, snapshot, bench-gas, wasm playground) | green, exit 0 |
 
-**Number.** `lsp::tests::did_change_coalesces_and_erc20_full_diagnostics_are_fast` (20 ms limit), release, best of 5 per run, three runs each: before (`b1c574a`) 6.87 / 6.54 / 6.28 ms, after 6.23 / 6.24 / 6.26 ms. That is within run-to-run noise: the sweep does not move it. The test now prints the number under `--nocapture`. Spans are the same size as the pairs they replace, and the only frontend allocation removed is one `String` per declaration (`origin`), which is not where `check`'s 5–7 ms goes. The ≤ 5 ms target stays with 5.1b/5.1c (names) and 5.5 (the arena).
+**Number.** `lsp::tests::did_change_coalesces_and_erc20_full_diagnostics_are_fast` (20 ms limit), release, best of 5 per run, three runs each: before (`b1c574a`) 6.87 / 6.54 / 6.28 ms, after 6.23 / 6.24 / 6.26 ms. That is within run-to-run noise: the sweep does not move it. The test now prints the number under `--nocapture`. Spans are the same size as the pairs they replace, and the only frontend allocation removed is one `String` per declaration (`origin`), which is not where `check`'s 5–7 ms goes. The ≤ 5 ms target stays with 5.1b/5.1c (names); 5.5 (the arena) was measured in S32 and does not move it.
 
 **Known edge, not reached by any test or the corpus.** An error raised after `check` from a span inside an imported module's function, with no `in_file` on its way out, used to print that module's line and column under the contract's name. It now reads the contract's own line table, because nothing on that path says which file the span is in. Every such site the corpus and suite reach either names its file or is in the contract's file.
 
@@ -1419,7 +1420,7 @@ Plan: `Checked.named` and `domain_tys` become `FxHashMap<Symbol, usize>`, and so
 | playground wasm build | green |
 | diagnostic corpus: `compile`, `abi`, `errors`, `specs`, `lint` over 245 `examples/`, `bench/`, `fuzz/` files (1 225 invocations) | 52 213 lines, `cmp` identical between `c11cee2` and this tree |
 
-**Number (`check`).** `bench/erc20_full.lithe`, `--release`, `LITHE_CACHE_DIR=` (cache off), interleaved A/B on one box, 25 runs each, min: parent `c11cee2` **5.83 ms** → this tree **5.67 ms** (medians 6.20 → 5.98). That inverts about half of the 0.9 ms S58 paid for the AST flip, not all of it: the scope maps are reached on every name the checker resolves, but the AST flip also made every *diagnostic* and every `Debug` cache key read a name through the table, and those reads stay. The rest of the gap is 5.5's (the `Program` clones) and 5.6's (the module cache), not more interning.
+**Number (`check`).** `bench/erc20_full.lithe`, `--release`, `LITHE_CACHE_DIR=` (cache off), interleaved A/B on one box, 25 runs each, min: parent `c11cee2` **5.83 ms** → this tree **5.67 ms** (medians 6.20 → 5.98). That inverts about half of the 0.9 ms S58 paid for the AST flip, not all of it: the scope maps are reached on every name the checker resolves, but the AST flip also made every *diagnostic* and every `Debug` cache key read a name through the table, and those reads stay. The rest of the gap is not more interning; 5.5 (the `Program` clones) was measured in S32 at 3 clones and 0.8–0.9 ms per build, and 5.6 (the module cache) landed with no resolvable change.
 
 **Review findings.**
 - **`make check` red** (high): `cargo fmt --check` failed at five sites and clippy failed on `intern(&iface)` where `iface: &str`. `cargo fmt` run; the call is `intern(iface)`. Both now clean.
@@ -1471,3 +1472,104 @@ No resolvable change in any of the three, and the record says so rather than cla
 **Review findings.** None; this is the first pass.
 
 **What this leaves open.** 5.6's premise was that the module cache was unshared and worth building; the tree says the sharing was three lines of plumbing and the win is 0.6 %. The parsed cache and the checked memo are `std::HashMap` under a `Mutex` with `DefaultHasher`, so a directory build on many threads contends on one lock per lookup — not measured here because `load` is 20 ms of 360 ms total and would need a bigger denominator to show. If directory mode ever gets a frontend-only path where load dominates (a `lithe check` command, or the LSP linting a workspace), 5.4's `FxHash` applies to these two maps first.
+
+## S32 5.5 closed: not taken
+
+**The step asks for two things, and the tree says neither pays.** `Vec<Expr>` + `ExprId(u32)`, with `Func.stmts`/`tail` borrowing from it; and, as a consequence, `Checked.source` and `spec::check(prog.clone())` removed. Both were measured against this tree before any code was written, because the second half is only worth having if the first is.
+
+**1. The flip is a whole-crate rewrite: 1 378 errors in 41 files.** Measured by making exactly the step's change — `Box<Expr>` → `ExprId` and `Vec<Expr>` → `Vec<ExprId>` in `ast::Expr`'s children, plus an `ExprId`/`ExprArena` pair — and asking the compiler (`cargo check --profile fast --lib`). Error classes: 1 019 `E0308` (a `&Expr` where an `ExprId` is wanted), 259 `E0599` (no method on the index), 62 `E0614` (deref of a `Copy`), 22 `E0631`, 10 `E0282`, 5 `E0277`, 1 `E0271`. Distribution, largest first:
+
+| file | errors |
+|---|---:|
+| `src/gen/expr.rs` | 154 |
+| `src/check/expr.rs` | 122 |
+| `src/gen/range.rs` | 114 |
+| `src/gen/stmt.rs` | 82 |
+| `src/route.rs`, `src/gen/storage.rs` | 80 each |
+| `src/gen/calls.rs` | 58 |
+| `src/resolve.rs` | 56 |
+| `src/gen/tree.rs` | 54 |
+| `src/gen/list.rs` | 43 |
+| `src/gen/plan.rs` | 42 |
+| `src/check/mod.rs` | 38 |
+| `src/check/stmt.rs` | 37 |
+| `src/index.rs`, `src/check/consts.rs` | 34 each |
+| `src/gen/decode.rs` | 33 |
+| `src/prove/bspec.rs` | 30 |
+| `src/prove/exec.rs` | 28 |
+| `src/spec/instrument.rs` | 25 |
+| `src/parse.rs`, `src/check/place.rs` | 22 each |
+| `src/check/generic.rs`, `src/check/funcs.rs` | 18 each |
+| `src/spec/mod.rs`, `src/gen/body.rs` | 17 each |
+| `src/prove/bytecode.rs`, `src/ast.rs` | 16 each |
+| `src/lint.rs`, `src/check/hooks.rs` | 15 each |
+| 12 more files | 1–11 each |
+
+The 29 named files add to 1 320 (a two-file row counts both files) and the other 12 to 58, so the 41 files total 1 378.
+
+This is the 184-site shape of 5.1b again, seven times over, and unlike 5.1b it cannot be done incrementally: an `Expr` either holds its children by value or by index. 367 of the crate's function parameters are `&Expr` and 32 are `&mut Expr`; every one of them either becomes `ExprId` plus a `&ExprArena` thread, or keeps taking `&Expr` and forces the arena to hand out borrows that the caller then cannot mutate. `check` mutates expressions in place in 11 whole-node rewrites (`*e = ...`, 8 in `check/expr.rs`) and 100 field writes over eight fields (`*ty`, `*sym`, `*root`, `*leaf`, `*callee`, `*builtin`, `*iface`, `*method`), so the arena's `get_mut` is on the hot path of every one of those, and any `&ExprArena` held across them is a borrow conflict. That is a crate-wide slice in its own right, not a frontend-hygiene step.
+
+**2. The payoff is 3 clones per build, ~0.6–0.9 ms in Fast and ~0.4 ms in Release, and the arena does not make them cheaper.** Instrumented `impl Clone for Program` (size and duration per clone, plus the total) over a whole `erc20_full` build, `target/fast`, `LITHE_THREADS=1`, cache off:
+
+| | Fast | Release |
+|---|---:|---:|
+| wall time | 53–54 ms | 478–488 ms |
+| `Program` clones in a build | 3 | 3 |
+| their total cost | 628–905 µs | 392–393 µs |
+| share of the build | **1.2–1.7 %** | **0.08 %** |
+
+Per clone, in call order, all three of the *pre-`compose`* program (119–120 functions each): 121 µs, then 256 µs, then 251 µs. The later two are the same value cloned twice by the ERC-165 re-check and cost about twice the first because the allocator's free lists are colder there, which is why the total is 0.6–0.9 ms rather than 3 × 0.15 ms. The share varies with the run because a 53 ms total makes the same absolute cost a different fraction; Release, 9× longer, puts it at 0.08 % consistently. Traced with a backtrace, the three are `check_program`'s own `let source = prog.clone()` and the two inside `compose::supports_interface`'s ERC-165 re-check (`src/check/compose.rs:779`, cloning `checked.source`, then re-checking, then re-checking again). `spec::check(prog.clone())` in `build` adds a fourth and fifth: it runs under `--check-specs` (which only `lithe prove` sets) **or** when the file itself holds spec blocks (`spec::has_specs`, `src/spec/mod.rs:109`), so `bench/`'s 51 entries — none of which carries a spec block, they live in `.spec.lithe` files loaded by a separate path — pay 3 clones each, as measured. On `examples/verification/capped_token.lithe`, which has one, `--check-specs` takes the build to 5 clones and 221 µs of 18.6 ms (**1.19 %**), against 1 clone and 41 µs of 20.3 ms (**0.20 %**) with it off.
+
+**The arena would not cut that cost, because the expressions are not where it goes.** What a `Program` clone costs depends on which program it is, so both are measured, 200 iterations each, `target/fast`:
+
+| program | funcs (own + in modules) | clone |
+|---|---:|---:|
+| as `modules::load` returns it — what the build's 3 clones copy | 119–120 | 147–160 µs |
+| as `checked.prog` (after `compose` inlined every module) | 264 | **298 µs** |
+
+Within the loaded program, the split is not the expressions:
+
+| part | µs |
+|---|---:|
+| whole program | 141–157 |
+| its `Func` bodies (`stmts`+`tail`) | 4 |
+| its `modules` | 118–129 |
+| other decls | 5 |
+
+A flat `Vec<Expr>` arena cloned on its own, i.e. the best case the step's representation can reach:
+
+| target | tree `Program` clone | flat arena clone |
+|---|---:|---:|
+| erc20_full | 141.8 µs | **159.5 µs** |
+| uniswap_v2_pair | 48.7 µs | 40.2 µs |
+
+erc20_full gets *worse* and uniswap_v2_pair saves 8.5 µs, because `Vec<Expr>` is a flat memcpy of 2 098 nodes where the tree is 2 098 small allocations that mostly fit the allocator's fast path, and erc20_full's cost is its ~120 µs of `Program.modules` — every module's `Func`s, types, errors, events and domains, cloned whether the expressions are boxed or indexed. So the representation change buys nothing even on the number it was chosen for.
+
+**3. `Checked.source` is not an ownership artefact, so borrowing cannot remove it.** The plan's premise is that `Checked.source` exists only because `check` takes `Program` by value. It does not. `check_program` (`src/check/mod.rs:541`) clones *before* `compose`, and `compose` then rewrites the program: it moves every used module's types, errors, error sets, events and functions into the contract's own lists, qualifies their names (`M.twice`), and turns a module's externals into entries (`src/check/compose.rs:239–330`). `Checked.source` is therefore the program **before composition** and `Checked.prog` the program **after** it — different values, not one value stored twice. Measured on a contract that uses a module:
+
+```
+module M is { function twice(const x : uint) : uint is x * 2 }
+use M;
+external function go(const x : uint) : uint is M.twice(x)
+```
+
+`checked.source.funcs` is `["go"]`; `checked.prog.funcs` is `["go", "M.twice"]`. And `checked.source`'s own `Debug` text differs from `checked.prog`'s on all four bench targets tried. The readers confirm they want the *pre-composition* program: `split::facet` builds a facet from `checked.source` so a module's facet is the module alone, not the contract with it inlined (`src/split.rs:598`); `split::cache_key` keys on it so two contracts that compose the same module at different sites share one facet (`:1397`); `index::template` looks a `storage`-parameter function up in it because the checker specialized the copy in `prog` (`src/index.rs:557`). A borrow of the AST could not supply any of them: the AST the checker was handed has been composed, and the pre-composition one no longer exists. Keeping it is a snapshot of an intermediate value, which is what `Checked.source` already is.
+
+`spec::check(prog.clone())` is the same story one level up: `spec::check` sets `proving`, attaches module specs and *adds functions* for each clause (`src/spec/mod.rs:167–200`), so it needs its own copy of the program, and `build` then needs the unmodified one back for `spec::instrument` and `check::check`. Borrowing does not help; something has to hold the two.
+
+**4. `Program`'s `Debug` is a cache key, which the arena would put at risk for no gain.** `split::cache_key` and `split::facet` key their on-disk and in-process memos on `format!("{checked.source:?}")`, and `Program`'s `Debug` is documented as a cache key. A `Vec<Expr>` arena makes `Debug` print an index unless the arena is printed too, and printing it in node order is the same text at the same cost; printing it in arena order changes the key. The measured cost of the key is 749 µs per `format!` on erc20_full (518 573 bytes of text) and 1.60 ms with the `keccak256` — 4.8× and 10× the 147–160 µs clone the arena is meant to replace. So the tree representation is not the problem here either.
+
+**What would actually remove the clones, if that were worth doing.** Not the arena: the three sites are `check_program`'s snapshot, which must be a snapshot (above), and `compose::supports_interface`'s re-check, which re-runs `check` on a program with one generated function added — that one could take `&Program` and build only the added `Func`, but `check` needs `&mut` throughout, so it is a `check`-signature change, and it is 2 of the 3 clones. Deleting the `spec` path's clones means `spec::check` stops adding functions to the program it was given, which is a spec-tool redesign.
+
+**Conclusion.** §2's rules make this a failed iteration if landed and a measured close if not. The step is closed as **not taken**: 1 378 errors in 41 files for 0.08 % of a Release build and 1.2–1.7 % of a Fast one, with the specific representation it prescribes measured at *worse* than the tree on the largest target, and its second half (removing `Checked.source`) resting on a premise the tree disproves. Nothing in codegen, diagnostics or the checker changed, so both bytecode snapshots and the diagnostic corpus are untouched by definition, and the tree is green: `cargo test --locked --lib` 565 passed, 2 ignored, 0 failed.
+
+**How the numbers were taken, and their gates.** Every figure above comes from a copy of this tree outside it (`/tmp`), because the instrument is an `impl Clone for Program` that prints and a test that drives a build; nothing of that is in the committed tree. Reproduce with: apply `#[derive(Debug)] struct Program` plus a hand-written `Clone` that times itself, then `cargo check --profile fast --lib` for the error counts, and a `#[cfg(test)]` test loading `bench/erc20_full.lithe` through `modules::load` and `check::check` for the timings. The flat-arena comparison clones a `Vec<Expr>` built by walking the same target's expressions. Since no production code changed, the only gates this step can fail are the ones it does not touch, and they pass on the committed tree:
+
+| gate | result |
+|---|---|
+| `cargo test --locked --lib` | 565 passed, 2 ignored, 0 failed |
+| `cargo clippy --profile fast --all-targets -- -D warnings` | clean |
+| `cargo fmt --check` | clean |
+| `git status` | only `PROGRESS.md` modified |
+
+**What would reopen it.** A measured frontend bottleneck where expressions dominate a clone or a `Debug` key: `check` on a contract an order of magnitude larger than any in `bench/`, where the 2 098 expressions become ~20 000 and `Program.clone` becomes the difference between 12 ms and 5 ms of LSP latency. §4's 5 ms LSP target is currently `check` at 5.1–7.0 ms (`## 2.6`), and the clones are 0.4–0.9 ms of a 54 ms Fast build, so they are not that bottleneck on today's targets. If a later slice makes `check` cheap enough for the clones to become the floor, the cheaper fix is `compose::supports_interface`'s two clones, not the AST's representation.
