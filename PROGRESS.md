@@ -1972,3 +1972,32 @@ Nothing in this step changes source, so the gates are here to prove the tree the
 | `cargo test --locked --lib evm::snapshot` | 2 passed — **both bytecode snapshots unchanged** |
 | `LITHE_FUZZ_STEPS=2000 … evm::differential` | 5 passed, `fast_matches_release` included |
 | `git status` | clean before this edit; the only diff this step adds is `PROGRESS.md` — this record plus the four summary lines it brings into line (the 3.5 task line, the State bullet, the `## S48` obligation list, and a "superseded" note on the old ladder table) |
+
+## Accepted §4 misses
+
+Two of §4's after-Phase-3 headline targets are missed on the finished tree. The human has accepted both as they stand. Neither is re-attempted. The numbers below are the ones already recorded; the linked sections hold the measurements and methods.
+
+| §4 target | baseline | recorded on this tree | target | why accepted |
+|---|---|---|---|---|
+| LSP diagnostics on a `bench/erc20_full.lithe` edit | ≈ 2 400 ms (§4) | **6.2 ms** (release; `## 5.2a`, after `## 2.6`'s 6.3–6.5 ms) | ≤ 5 ms | The floor is `check` alone at 5.3–5.8 ms (`## 2.6`, `## 5.1c`). The server already skips everything else: the index is lazy, and lint reuses the checked units. |
+| Synthetic 1 735-line ladder (N = 64), single build | ≈ 195 ms (§4); 261.6 ms in `baseline.json` | **40.0 ms backend / 52.0–53.5 ms wall** (Fast, min of 5; `## S50 3.5 closed`) | ≤ 25 ms | 3.2c and 3.3b(ii) gave the pass cuts that hold under the gates. The remaining time is `optimize`/`outline+` on code whose bytes are fixed by the snapshot and the 1 % budget. |
+
+Why neither is reachable inside §2's invariants:
+
+- **LSP ≤ 5 ms.** Getting under the bar means making `check` cheaper. §2 forbids touching the checker for speed. The Phase 5 hygiene steps (5.1a–c, 5.2a, 5.4, 5.7) are done and did not move this number past noise.
+- **Ladder ≤ 25 ms.** Getting under the bar means another cut to `optimize`, one that either changes the bytes or the gates would not accept. A per-round incremental `flow` measures at 10–12 % of a small loop (`## 3.4b`), and `merge_tails` already takes every free pair it can per call (`## 3.2c`).
+
+Known residual, accepted with the ladder row and owned by no remaining step: per-line cost still grows past 1 735 lines. Release is 1.30× at 3 463 lines and 1.81× at 6 919. Fast is 1.07× and 1.20× (`## S50 3.5 closed`, "Residual, recorded not fixed").
+
+## Handoff
+
+This is the closing note under §3's stop condition. Every §5 box from 0.1 to 6.5 is checked on this branch. Each one either landed or is recorded as not taken with the measurement that closes it.
+
+- **Branch.** `recur/honeyed-trifle`, 110 commits ahead of `origin/main` and 21 behind. It is unpushed by design. `celestiaorg/lithe` does not accept outside PRs, so the deliverable is the reviewed branch plus this file. No PR is opened.
+- **Accepted §4 misses.** LSP diagnostics are 6.2 ms against ≤ 5 ms, and the 1 735-line ladder is 40.0 ms backend against ≤ 25 ms. Both are in `## Accepted §4 misses` above.
+- **Also missed, not part of that acceptance.** The `erc20_full` Fast compile is 50.4 ms against §4's Phase 3 bar of ≤ 15 ms. The Phase 1 bar (≤ 60 ms) is met. This miss is recorded in `## Comparison with baseline.json` under "Headlines against §4's targets", and it is left for the human to decide.
+- **Recorded not taken, with measurements:**
+  - **4.1, per-function parallel emit.** Per-body emission is 9.1 % of the Fast backend and 8.2 % of the Release backend, so it caps the speedup at 1.10×. See `## S23 4.1 closed: not taken`.
+  - **5.5, index-arena AST.** The change is 1 378 errors in 41 files. Its payoff is 0.08 % of a Release build and 1.2–1.7 % of a Fast build. See `## S32 5.5 closed: not taken`.
+  - **3.3, value-numbering stack scheduler.** `promote` is 8.9 % of the Fast backend over `bench/`. 3.3b(ii)'s batched promotion is what landed. See `## S48 3.3 closed: not taken`.
+- **Final state.** `make check` passed on this tree for the packaging commit, and both bytecode snapshots are unchanged. The final numbers are in `## Comparison with baseline.json`.
