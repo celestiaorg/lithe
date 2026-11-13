@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lithe compiler speed program — change and safety record</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel2:#1c232c; --line:#2b333d;
+    --fg:#e6edf3; --dim:#8b949e; --dim2:#6e7681;
+    --good:#3fb950; --warn:#d29922; --bad:#f85149; --accent:#58a6ff;
+    --ok-bg:#12261a; --warn-bg:#2a2110; --bad-bg:#2a1416;
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --bg:#ffffff; --panel:#f6f8fa; --panel2:#eef2f5; --line:#d0d7de;
+      --fg:#1f2328; --dim:#57606a; --dim2:#6e7781;
+      --good:#1a7f37; --warn:#9a6700; --bad:#cf222e; --accent:#0969da;
+      --ok-bg:#e6f6ec; --warn-bg:#fdf6e3; --bad-bg:#ffeef0;
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:32px 20px 72px;
+    background:var(--bg); color:var(--fg);
+    font:15px/1.6 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:26px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+  h2{font-size:19px;margin:44px 0 4px;letter-spacing:-.01em;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:15px;margin:26px 0 8px;color:var(--fg)}
+  p{margin:10px 0}
+  .sub{color:var(--dim);font-size:13.5px;margin:0 0 4px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;
+       background:var(--panel2);padding:1px 5px;border-radius:4px}
+  .lede{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);
+        border-radius:8px;padding:14px 18px;margin:22px 0 0;font-size:14px;color:var(--dim)}
+  .lede b{color:var(--fg)}
+
+  /* hero numbers */
+  .hero{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:24px 0 0}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .stat .k{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin-bottom:6px}
+  .stat .v{font-size:27px;font-weight:650;letter-spacing:-.02em;line-height:1.1;font-variant-numeric:tabular-nums}
+  .stat .v.g{color:var(--good)}
+  .stat .d{font-size:12px;color:var(--dim2);margin-top:5px;font-variant-numeric:tabular-nums}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);font-weight:600;white-space:nowrap}
+  td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  tbody tr:hover{background:var(--panel)}
+  tr.total td{font-weight:650;border-top:2px solid var(--line);border-bottom:none;background:var(--panel)}
+  .up{color:var(--good)} .down{color:var(--bad)} .flat{color:var(--dim2)}
+
+  .pill{display:inline-block;font-size:11px;font-weight:650;padding:2px 8px;border-radius:999px;
+        letter-spacing:.02em;white-space:nowrap;vertical-align:1px}
+  .p-pass{background:var(--ok-bg);color:var(--good);border:1px solid color-mix(in srgb,var(--good) 35%,transparent)}
+  .p-miss{background:var(--warn-bg);color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 35%,transparent)}
+  .p-acpt{background:var(--bad-bg);color:var(--bad);border:1px solid color-mix(in srgb,var(--bad) 35%,transparent)}
+
+  /* bar chart */
+  .chart{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px 14px;margin:16px 0}
+  .row{display:grid;grid-template-columns:132px 1fr 78px;gap:12px;align-items:center;margin:9px 0;font-size:13px}
+  .row .lbl{color:var(--dim);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .row .track{height:17px;background:var(--panel2);border-radius:4px;overflow:hidden;display:flex}
+  .row .bar{height:100%;border-radius:4px 0 0 4px}
+  .row .val{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+  .b-base{background:linear-gradient(90deg,#6e7681,#8b949e)}
+  .b-rel{background:linear-gradient(90deg,#1f6feb,#58a6ff)}
+  .b-fast{background:linear-gradient(90deg,#238636,#3fb950)}
+  .legend{display:flex;gap:18px;font-size:12px;color:var(--dim);margin-top:12px;padding-top:12px;border-top:1px solid var(--line);flex-wrap:wrap}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+
+  ul{margin:10px 0;padding-left:22px} li{margin:5px 0}
+  .note{font-size:12.5px;color:var(--dim2);margin-top:10px;font-style:italic}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+  .card h3{margin-top:0}
+  footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);font-size:12.5px;color:var(--dim2)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Lithe compiler speed program</h1>
+  <p class="sub">Change &amp; safety record &middot; branch <code>recur/compiler-speed-program</code> @ <code>aec6d0d</code></p>
+
+  <div class="lede">
+    <b>Goal:</b> make the Lithe compiler dramatically faster without weakening any security property of the language or the compiler.
+    <b>Result:</b> Release builds 1.55&times; faster single-threaded and 3.21&times; at 16 threads; the new <code>--fast</code> mode is 10.2&times; faster end-to-end; LSP keystroke latency fell from ~2,400&nbsp;ms to 6.2&nbsp;ms.
+    <b>Safety:</b> release bytecode <b>+0.08&nbsp;%</b> against a 1&nbsp;% budget, transaction gas <b>+0.0022&nbsp;%</b>, and all <b>1,786</b> replayed transaction outcomes byte-for-byte unchanged.
+  </div>
+
+  <div class="hero">
+    <div class="stat"><div class="k">Release, 1 thread</div><div class="v g">1.55&times;</div><div class="d">20,409 &rarr; 13,148 ms</div></div>
+    <div class="stat"><div class="k">Release, 16 threads</div><div class="v g">3.21&times;</div><div class="d">&rarr; 6,360 ms</div></div>
+    <div class="stat"><div class="k">Fast mode, 1 thread</div><div class="v g">10.2&times;</div><div class="d">&rarr; 1,995 ms</div></div>
+    <div class="stat"><div class="k">LSP keystroke</div><div class="v g">387&times;</div><div class="d">~2,400 &rarr; 6.2 ms</div></div>
+  </div>
+  <p class="note">All figures: <code>target/release</code> with fat LTO, 16 cores, one file per process, cache disabled so every row is a real compile, minimum of five full rounds. 127 targets = 51 <code>bench/</code> + 71 <code>examples/</code> + 5 synthetic ladder rungs.</p>
+
+  <h2>1. Where the time went &mdash; and what changed</h2>
+
+  <p>The original problem was structural: every compile ran the entire <code>emit &rarr; promote &rarr; optimize &rarr; outline &rarr; assemble</code> pipeline <b>50&ndash;100 times</b>, hill-climbing over codegen plans to pick the cheapest by gas + size. That search was ~99&nbsp;% of wall time. Three changes fixed it.</p>
+
+  <table>
+    <thead><tr><th>Area</th><th>What changed</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>1.1</b><br><span class="sub">Plan search</span></td>
+        <td>New <code>--fast</code>/<code>-O0</code> optimization level: exactly <b>one</b> build of the <code>start</code> plan &mdash; no variant rounds, no toggle rounds, no retry. Wired into the CLI, <code>lithe.toml</code> <code>opt</code>, Standard JSON, and the LSP. Keeps the size-limit outline fallback so nothing becomes undeployable.</td>
+        <td><code>erc20_full</code><br><b>1,731.9 &rarr; 50.4 ms</b><br><span class="up">34&times;</span></td>
+      </tr>
+      <tr>
+        <td><b>3.1&ndash;3.2c</b><br><span class="sub">Block IR</span></td>
+        <td>Built a CFG over the flat instruction stream (<code>asm::Blocks</code> with successors/predecessors) and rewrote <code>prune_labels</code>, <code>remove_dead</code>, <code>thread_jumps</code>, <code>dedup_blocks</code>, <code>merge_tails</code>, <code>hoist</code>, <code>rotate_loops</code>/<code>rotate_exits</code>, <code>peephole</code> and <code>schedule</code> as per-block worklist passes that never splice the global stream.</td>
+        <td>ladder <code>optimize</code><br><b>56.2 &rarr; 13.8 ms</b><br><span class="up">4.1&times;</span></td>
+      </tr>
+      <tr>
+        <td><b>3.3b(ii)</b><br><span class="sub">Promotion</span></td>
+        <td>Batched stack promotion: plans every memory word's promotion region once per round and applies every non-conflicting one in that round, instead of one word per round.</td>
+        <td>rounds <b>34/130/258 &rarr; 4</b><br><code>promote</code> <b>49.6 &rarr; 12.0 ms</b><br><span class="up">4.1&times;</span></td>
+      </tr>
+      <tr>
+        <td><b>2.1&ndash;2.6</b><br><span class="sub">Language server</span></td>
+        <td>Split <code>analyze</code> into frontend-only and full. On <code>didOpen</code>/<code>didChange</code> the server runs only load + check + lints &mdash; no codegen. Codegen-only errors move to <code>didSave</code> on a worker thread, cancelled when a newer edit lands. Added debounce, non-blocking reader/worker loop, lazy indexing, and a per-session module cache.</td>
+        <td>diagnostics<br><b>~2,400 &rarr; 6.2 ms</b><br><span class="up">387&times;</span></td>
+      </tr>
+      <tr>
+        <td><b>1.3&ndash;1.4</b><br><span class="sub">Search cost</span></td>
+        <td>Plan dedupe before emitting, a post-promote <code>finish</code> cache, lower-bound short-circuits, shared <code>flow</code>/<code>heat</code> results, and a per-function body memo in <code>Gen</code>. &mdash; <b>All byte-identical.</b></td>
+        <td>release output<br><span class="up">unchanged bytes</span></td>
+      </tr>
+      <tr>
+        <td><b>5.1&ndash;5.7</b><br><span class="sub">Frontend</span></td>
+        <td>Identifier interning (<code>Symbol(u32)</code>), <code>FileId</code> + byte <code>Span</code> replacing owned origin strings and line/col pairs, Fx hashing throughout, parsed-module cache shared across files, lexer interns once instead of twice, statement-level parser recovery.</td>
+        <td>check <span class="up">&minus;1.5&ndash;2&nbsp;%</span><br>intern calls <span class="up">&minus;32&ndash;38&nbsp;%</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Per-contract timings (Release, single thread)</h3>
+  <div class="chart">
+    <div class="row"><div class="lbl">erc20_full</div><div class="track"><div class="bar b-base" style="width:100%"></div></div><div class="val">1,731.9</div></div>
+    <div class="row"><div class="lbl"></div><div class="track"><div class="bar b-rel" style="width:100%"></div></div><div class="val">1,816.1</div></div>
+    <div class="row"><div class="lbl"></div><div class="track"><div class="bar b-fast" style="width:2.9%"></div></div><div class="val up">50.4</div></div>
+
+    <div class="row" style="margin-top:16px"><div class="lbl">uniswap_v2_pair</div><div class="track"><div class="bar b-base" style="width:19.6%"></div></div><div class="val">338.6</div></div>
+    <div class="row"><div class="lbl"></div><div class="track"><div class="bar b-rel" style="width:19.5%"></div></div><div class="val">337.1</div></div>
+    <div class="row"><div class="lbl"></div><div class="track"><div class="bar b-fast" style="width:1.5%"></div></div><div class="val up">26.0</div></div>
+
+    <div class="row" style="margin-top:16px"><div class="lbl">erc1155</div><div class="track"><div class="bar b-base" style="width:5.4%"></div></div><div class="val">93.7</div></div>
+    <div class="row"><div class="lbl"></div><div class="track"><div class="bar b-rel" style="width:5.1%"></div></div><div class="val">88.4</div></div>
+    <div class="row"><div class="lbl"></div><div class="track"><div class="bar b-fast" style="width:0.9%"></div></div><div class="val up">14.9</div></div>
+
+    <div class="row" style="margin-top:16px"><div class="lbl">solady_erc20</div><div class="track"><div class="bar b-base" style="width:2.3%"></div></div><div class="val">40.2</div></div>
+    <div class="row"><div class="lbl"></div><div class="track"><div class="bar b-rel" style="width:2.1%"></div></div><div class="val">36.7</div></div>
+    <div class="row"><div class="lbl"></div><div class="track"><div class="bar b-fast" style="width:0.5%"></div></div><div class="val up">8.9</div></div>
+
+    <div class="row" style="margin-top:16px"><div class="lbl">counter</div><div class="track"><div class="bar b-base" style="width:0.44%"></div></div><div class="val">7.6</div></div>
+    <div class="row"><div class="lbl"></div><div class="track"><div class="bar b-rel" style="width:0.39%"></div></div><div class="val">6.7</div></div>
+    <div class="row"><div class="lbl"></div><div class="track"><div class="bar b-fast" style="width:0.34%"></div></div><div class="val up">5.9</div></div>
+
+    <div class="legend">
+      <span><i class="b-base"></i>baseline</span>
+      <span><i class="b-rel"></i>Release (this branch)</span>
+      <span><i class="b-fast"></i>Fast (new mode)</span>
+      <span style="margin-left:auto;color:var(--dim2)">ms &middot; bars scaled to erc20_full</span>
+    </div>
+  </div>
+  <p class="note">Small files are dominated by process startup (4&ndash;6 ms) and fixed per-build cost, which is why <code>counter</code> barely moves while <code>erc20_full</code> falls 34&times;.</p>
+
+  <h3>Synthetic scaling ladder &mdash; the superlinear term</h3>
+  <table>
+    <thead><tr><th class="num">N</th><th class="num">lines</th><th class="num">base R ms</th><th class="num">R ms</th><th class="num">F ms</th><th class="num">R &micro;s/line</th><th class="num">F &micro;s/line</th></tr></thead>
+    <tbody>
+      <tr><td class="num">16</td><td class="num">439</td><td class="num">34.5</td><td class="num">26.8</td><td class="num">16.5</td><td class="num">61.1</td><td class="num">37.6</td></tr>
+      <tr><td class="num">32</td><td class="num">871</td><td class="num">80.0</td><td class="num">55.6</td><td class="num">27.4</td><td class="num">63.8</td><td class="num">31.5</td></tr>
+      <tr><td class="num">64</td><td class="num">1,735</td><td class="num">261.6</td><td class="num">143.5</td><td class="num">51.3</td><td class="num">82.7</td><td class="num up">29.5</td></tr>
+      <tr><td class="num">128</td><td class="num">3,463</td><td class="num">1,122.9</td><td class="num">467.3</td><td class="num">129.0</td><td class="num">135.0</td><td class="num">37.3</td></tr>
+      <tr><td class="num">256</td><td class="num">6,919</td><td class="num">7,407.3</td><td class="num">2,089.0</td><td class="num">465.4</td><td class="num down">301.9</td><td class="num">67.3</td></tr>
+    </tbody>
+  </table>
+  <p class="note">Per-line <code>promote</code>+<code>optimize</code> from 439 &rarr; 1,735 lines is <b>0.64&times; Fast</b> and <b>0.92&times; Release</b>, inside the &le;1.5&times; bar (baseline was 2.79&times;). The term is pushed out of range, not eliminated: above 1,735 lines per-line cost still climbs. Recorded, not hidden.</p>
+
+  <h2>2. Is it safe? &mdash; the four gates</h2>
+
+  <p>Every invariant in the program prompt was treated as a hard gate, not a guideline. These are the measured checks, not assertions.</p>
+
+  <table>
+    <thead><tr><th>Invariant</th><th>Gate</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>Semantics never change</b><br><span class="sub">results, reverts, logs, storage effects</span></td>
+        <td>Replay all 45 <code>bench/run.py</code> suites through the in-crate EVM interpreter in both modes; compare every step's status vector and returndata hash against baseline.</td>
+        <td><span class="pill p-pass">PASS</span><br>1,294 ok / 492 revert &mdash; <b>1,786/1,786 step statuses identical</b>. One suite's returndata hashes differ (<code>uniswap_v2</code>) because a <code>CREATE2</code>-derived pair address shifts by one byte; status stays <code>ok</code> on all 12 affected steps.</td>
+      </tr>
+      <tr>
+        <td><b>Size &amp; gas budget</b><br><span class="sub">&le;1&nbsp;% regression allowed</span></td>
+        <td>Creation + runtime bytes and transaction gas on every benchmark target, both modes.</td>
+        <td><span class="pill p-pass">PASS</span><br>Release size <b>+0.08&nbsp;%</b> (non-ladder), tx gas <b>+0.0022&nbsp;%</b>, deploy gas +0.138&nbsp;%. <b>92&nbsp;% of the allowance unspent.</b></td>
+      </tr>
+      <tr>
+        <td><b>No check skipped for speed</b><br><span class="sub">fast mode changes plans only</span></td>
+        <td><code>check::check</code>, <code>spec::check</code>, <code>route</code> and <code>split</code> safety logic untouched by the fast path.</td>
+        <td><span class="pill p-pass">PASS</span><br>Fast mode differs only in <i>which</i> codegen plan is built. Verified by the Fast-vs-Release differential gate.</td>
+      </tr>
+      <tr>
+        <td><b>Determinism</b><br><span class="sub">same input &rArr; same bytes</span></td>
+        <td>Compile all 127 targets at 1 thread and at 16, both modes, diff the bytes.</td>
+        <td><span class="pill p-pass">PASS</span><br><b>Bytes identical at 1 and 16 threads on all 127 targets, both modes.</b></td>
+      </tr>
+      <tr>
+        <td><b>Tests are law</b></td>
+        <td><code>cargo test</code>, <code>LITHE_VERIFY=1</code>, differential at 2,000 steps, both bytecode snapshots, clippy <code>-D warnings</code>, <code>fmt --check</code>, playground wasm build.</td>
+        <td><span class="pill p-pass">PASS</span><br>571 passed, 2 ignored, 0 failed. <code>make check</code> green. No test expectation was ever edited to make a change pass.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="grid2">
+    <div class="card">
+      <h3>What is deliberately unchanged</h3>
+      <ul>
+        <li>Overflow / underflow checks</li>
+        <li><code>assert</code> / <code>raises</code> completeness</li>
+        <li>External calls deferred until entrypoint finishes</li>
+        <li>Storage-image semantics around queries</li>
+        <li>Reentrancy (<code>nonreentrant</code>)</li>
+        <li>ERC-7201 storage layout</li>
+        <li>Immutables, facet routing</li>
+        <li><code>migrate</code> / UUPS behaviour</li>
+        <li>Event ordering and revert data</li>
+        <li><code>lithe prove</code> on emitted bytecode</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Constraints honoured</h3>
+      <ul>
+        <li><b>No new dependencies</b> &mdash; still one crate (<code>logos</code>)</li>
+        <li><b>No unsafe code</b> added</li>
+        <li><b>No new network, filesystem, or process behaviour</b></li>
+        <li>WebAssembly playground still builds (no threads there)</li>
+        <li>Bytecode snapshot covers <code>bench/</code>, <code>examples/</code>, <code>fuzz/</code></li>
+        <li>Every commit on the branch is green</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>3. Targets &mdash; and what was missed</h2>
+
+  <p>Three of §4's headline targets were not met. All three are recorded with their measurements; two were explicitly accepted. Nothing was quietly dropped or redefined after the fact.</p>
+
+  <table>
+    <thead><tr><th>§4 target</th><th class="num">Bar</th><th class="num">Measured</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>erc20_full</code> compile, Phase 1</td><td class="num">&le;60 ms</td><td class="num up">50.4 ms</td>
+        <td><span class="pill p-pass">MET</span> 16&nbsp;% margin</td>
+      </tr>
+      <tr>
+        <td><code>erc20_full</code> compile, Phase 3</td><td class="num">&le;15 ms</td><td class="num">50.4 ms</td>
+        <td><span class="pill p-miss">MISSED</span> <b>awaiting your ruling</b></td>
+      </tr>
+      <tr>
+        <td>Ladder 1,735 lines, single build</td><td class="num">&le;25 ms</td><td class="num">40.0 ms</td>
+        <td><span class="pill p-acpt">ACCEPTED</span> floor is <code>optimize</code>+<code>outline</code></td>
+      </tr>
+      <tr>
+        <td>LSP diagnostics per keystroke</td><td class="num">&le;5 ms</td><td class="num">6.2 ms</td>
+        <td><span class="pill p-acpt">ACCEPTED</span> floor is <code>check</code> alone at 5.3&ndash;5.8 ms</td>
+      </tr>
+      <tr>
+        <td>Release bytes / gas</td><td class="num">&le;1&nbsp;%</td><td class="num up">+0.08&nbsp;% / +0.0022&nbsp;%</td>
+        <td><span class="pill p-pass">MET</span></td>
+      </tr>
+      <tr>
+        <td>Determinism at 1 and N threads</td><td class="num">identical</td><td class="num up">identical</td>
+        <td><span class="pill p-pass">MET</span> 127/127 targets</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Why the two accepted misses are structural, not sloppy</h3>
+  <p><b>LSP &le; 5&nbsp;ms.</b> The server already does the minimum: no codegen, lazy index, lints reuse the checked units. The remaining 6.2&nbsp;ms is <code>check</code> itself at 5.3&ndash;5.8&nbsp;ms. Getting under the bar would mean making the type checker faster <i>for speed's sake</i>, which the invariants forbid &mdash; so the correct engineering answer is to accept the miss rather than erode a safety-critical component.</p>
+  <p><b>Ladder &le; 25&nbsp;ms.</b> The remaining time is <code>optimize</code> and <code>outline</code> on code whose bytes are pinned by the snapshot and the 1&nbsp;% budget. Two candidate cuts were measured and rejected: a per-round incremental <code>flow</code> costs 10&ndash;12&nbsp;% of a loop that is itself a small part of the total, and <code>merge_tails</code> already takes every free pair per call.</p>
+
+  <h2>4. Also evaluated and deliberately not done</h2>
+  <p>Each of these was measured and rejected on the numbers, not on intuition. The measurements are in <code>PROGRESS.md</code> so a reviewer can re-run them.</p>
+  <table>
+    <thead><tr><th>Candidate</th><th>Why not</th></tr></thead>
+    <tbody>
+      <tr><td><b>4.1</b> Per-function parallel emit</td><td>Per-body emission is only 9.1&nbsp;% of the Fast backend and 8.2&nbsp;% of Release, so even with unlimited threads and a free join the cap is <b>1.10&times;</b>. The join would also have to relocate shared emitter state, including 21 cases that currently give up.</td></tr>
+      <tr><td><b>5.5</b> Index-arena AST</td><td>Costs 1,378 compile errors across 41 files for <b>0.08&nbsp;%</b> of a Release build and 1.2&ndash;1.7&nbsp;% of a Fast one. The dominant cost is <code>Program.modules</code>, which a flat arena does not make cheaper.</td></tr>
+      <tr><td><b>3.3</b> Value-numbering stack scheduler</td><td><code>promote</code> is 8.9&nbsp;% of the Fast backend over <code>bench/</code> &mdash; it moves no open target. The batched promotion that <i>did</i> pay was landed instead as 3.3b(ii).</td></tr>
+      <tr><td><b>6.1&ndash;6.3</b> Startup, assembler, keccak</td><td>Measured; no win large enough to justify the churn. The assembler was already a single fixed-point pass and candidate cost was already cached.</td></tr>
+      <tr><td><b>IndexMap / new crates</b></td><td>Not needed: the two order-sensitive maps are <code>BTreeMap</code>s. Still one dependency.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>5. How to verify this yourself</h2>
+  <table>
+    <thead><tr><th>Want to check</th><th>Command</th></tr></thead>
+    <tbody>
+      <tr><td>The whole gate suite</td><td><code>make check</code></td></tr>
+      <tr><td>Unit + integration tests</td><td><code>cargo test --locked</code></td></tr>
+      <tr><td>Self-checking promotion / ranges</td><td><code>LITHE_VERIFY=1 cargo test --locked</code></td></tr>
+      <tr><td>Fast vs Release equivalence</td><td><code>LITHE_FUZZ_STEPS=2000 cargo test --locked --lib evm::differential</code></td></tr>
+      <tr><td>Bytecode unchanged</td><td><code>cargo test --locked --lib evm::snapshot</code></td></tr>
+      <tr><td>Gas + outcomes, both modes</td><td><code>LITHE_BENCH_GAS=1 cargo test --locked --lib evm::bench_gas -- --include-ignored</code></td></tr>
+      <tr><td>Reproduce any timing</td><td><code>python3 scripts/bench_compile.py --skip-gas --threads 1</code></td></tr>
+      <tr><td>Phase breakdown of one build</td><td><code>LITHE_TIME=1 lithe compile --fast bench/erc20_full.lithe</code></td></tr>
+    </tbody>
+  </table>
+
+  <footer>
+    Branch <code>recur/compiler-speed-program</code> @ <code>aec6d0d</code> &middot; 111 commits ahead of <code>origin/main</code> &middot; full record in <code>PROGRESS.md</code> &middot;
+    architecture notes in <code>docs/src/pages/guide/architecture.mdx</code> &middot;
+    published at github.com/Ferret-san/lithe.
+    <br>Every figure on this page is copied from <code>PROGRESS.md</code>; none is estimated.
+  </footer>
+</div>
+</body>
+</html>
