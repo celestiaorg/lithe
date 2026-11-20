@@ -39,6 +39,115 @@
 //! [`storage_diff`], [`upgrade_check`], and [`upgrade_plan`]. [`compile_dir`] and [`abi_dir`]
 //! write Foundry-style artifacts.
 
+/// Where a build's time went, for `lithe compile --timings`: each phase's time summed over
+/// every build and thread since `enable`, and the wall time since then. A build inside
+/// another's phase, as of a contract the code creates, counts under both.
+pub mod timings {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    #[derive(Clone, Copy)]
+    pub(crate) enum Phase {
+        Load,
+        Check,
+        Dispatch,
+        Lower,
+        DeadCode,
+        Emit,
+        Optimize,
+        Outline,
+        Assemble,
+        Creation,
+    }
+
+    const NAMES: [&str; 10] = [
+        "load", "check", "dispatch", "lower", "dce", "emit", "optimize", "outline", "assemble",
+        "creation",
+    ];
+    static ON: AtomicBool = AtomicBool::new(false);
+    static NANOS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
+    static START: OnceLock<Instant> = OnceLock::new();
+
+    /// Starts the clock. Nothing reads one before this: the browser's build has none.
+    pub fn enable() {
+        START.get_or_init(Instant::now);
+        ON.store(true, Relaxed);
+    }
+
+    pub(crate) fn on() -> bool {
+        ON.load(Relaxed)
+    }
+
+    pub(crate) fn add(phase: Phase, took: Duration) {
+        NANOS[phase as usize].fetch_add(took.as_nanos() as u64, Relaxed);
+    }
+
+    thread_local! {
+        /// The phases this thread has a span open for, a bit each.
+        static OPEN: std::cell::Cell<u16> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Adds the time until it drops to `phase`.
+    pub(crate) struct Span(Option<Instant>, Phase);
+
+    /// A span inside another of its phase counts nothing: checking a composed program
+    /// checks again, and that time is the outer span's already.
+    pub(crate) fn span(phase: Phase) -> Span {
+        let bit = 1 << phase as u16;
+        let outermost = on() && OPEN.get() & bit == 0;
+        if outermost {
+            OPEN.set(OPEN.get() | bit);
+        }
+        Span(outermost.then(Instant::now), phase)
+    }
+
+    impl Drop for Span {
+        fn drop(&mut self) {
+            if let Some(start) = self.0 {
+                OPEN.set(OPEN.get() & !(1 << self.1 as u16));
+                add(self.1, start.elapsed());
+            }
+        }
+    }
+
+    /// `[time] load=..ms check=..ms ... total=..ms`: every phase, always in this order.
+    pub fn line() -> String {
+        let ms = |nanos: u64| format!("{:.2}ms", nanos as f64 / 1e6);
+        let phases: Vec<String> = NAMES
+            .iter()
+            .zip(&NANOS)
+            .map(|(name, nanos)| format!("{name}={}", ms(nanos.load(Relaxed))))
+            .collect();
+        let total = START
+            .get()
+            .map_or(0, |start| start.elapsed().as_nanos() as u64);
+        format!("[time] {} total={}", phases.join(" "), ms(total))
+    }
+
+    /// The line names every phase once, in order, whatever was built.
+    #[test]
+    fn line_names_every_phase() {
+        enable();
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bench/counter.lithe");
+        crate::compile(&crate::Sources::disk(), &file, &crate::Options::default()).expect("builds");
+        let line = line();
+        let mut rest = line.strip_prefix("[time] ").expect("the prefix");
+        for name in NAMES.iter().chain(&["total"]) {
+            let (key, value) = rest.split_once(' ').unwrap_or((rest, ""));
+            let ms = key
+                .strip_prefix(&format!("{name}="))
+                .and_then(|v| v.strip_suffix("ms"));
+            assert!(
+                ms.is_some_and(|v| v.parse::<f64>().is_ok()),
+                "{name} in {line}"
+            );
+            rest = value;
+        }
+        assert!(rest.is_empty() && !line.contains("check=0.00ms"), "{line}");
+    }
+}
+
 mod asm;
 mod ast;
 mod check;

@@ -504,6 +504,7 @@ pub(crate) fn check_in(
     require_entries: bool,
     evm: crate::EvmVersion,
 ) -> Result<Checked, Error> {
+    let _span = crate::timings::span(crate::timings::Phase::Check);
     let origin = prog.origin.clone();
     check_program(prog, require_entries, evm).map_err(|err| err.in_file(&origin))
 }

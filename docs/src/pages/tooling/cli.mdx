@@ -59,6 +59,18 @@ For such a chain, build with `--evm-version prague`, or set `evm-version = "prag
 
 Code reads the target as [`Evm.osaka`](/language/builtins#target-fork).
 
+### Timings
+
+`lithe compile` also takes `--timings`, which prints one line to stderr saying where the time went:
+
+```text
+[time] load=2.97ms check=7.92ms dispatch=0.21ms lower=0.67ms dce=0.05ms emit=0.20ms optimize=2.65ms outline=2.59ms assemble=0.04ms creation=1.02ms total=17.25ms
+```
+
+`load` reads and parses the file and what it imports, and `check` resolves and type-checks it. The rest is code generation, in order: the selector table, lowering each function to a graph, removing dead code, writing stack code, the bytecode passes, sharing repeated runs, assembling the runtime code, and building the creation code. `total` is the time since the command started.
+
+The line always names every phase, in this order. A phase's time is summed over everything built, so a directory, a contract with facets, or one that creates another shows the sum for all of them, and with several threads the phases can add up to more than `total`. A build answered from the cache shows only the front end.
+
 ## Building
 
 ### `lithe compile file.lithe`

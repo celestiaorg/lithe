@@ -37,6 +37,10 @@ fn main() {
         cmd.as_str(),
         "compile" | "abi" | "facets" | "abi-tree" | "footprint" | "upgrade" | "upgrade-check"
     );
+    let timings = cmd == "compile" && take_switch(&mut args, "--timings");
+    if timings {
+        lithe::timings::enable();
+    }
     let emits = matches!(cmd.as_str(), "compile" | "abi");
     let out_dir = emits.then(|| take_flag(&mut args, "--out")).flatten();
     let interface = emits.then(|| take_flag(&mut args, "--interface")).flatten();
@@ -142,6 +146,9 @@ fn main() {
                 std::process::exit(2);
             }
         };
+        if timings {
+            eprintln!("{}", lithe::timings::line());
+        }
         finish_dir(result);
     }
     let file = Path::new(&path);
@@ -177,6 +184,9 @@ fn main() {
                 })
             }),
     };
+    if timings {
+        eprintln!("{}", lithe::timings::line());
+    }
     match result {
         Ok(text) => {
             let notes = match warnings {
@@ -683,6 +693,8 @@ where it explains one; it also takes
 compile also takes
        --check-specs                 a test build that checks the contract's specs as it
                                      runs, and reverts with SpecViolation(string)
+       --timings                     one `[time]` line on stderr: the milliseconds spent
+                                     loading, checking, and in each code generation phase
 
 add puts a package in lithe.toml's [dependencies] and installs it, by default at ^ its
 newest version tag; install checks out the git packages lithe.lock pins, or with --update

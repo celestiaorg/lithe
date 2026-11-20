@@ -132,6 +132,7 @@ fn import_path_in(entry: &Path, from: &Path, import: &str) -> Result<PathBuf, St
 /// files the entry imports may have spec files too, for their modules, and the standard
 /// library's do.
 pub(crate) fn load_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Result<(), Error> {
+    let _span = crate::timings::span(crate::timings::Phase::Load);
     load_entry_specs(sources, entry, prog).map_err(|err| {
         match spec_path(entry).and_then(|path| sources.canonicalize(&path).ok()) {
             Some(path) => err.in_file(&path.display().to_string()),
@@ -283,11 +284,13 @@ fn load_entry_specs(sources: &Sources, entry: &Path, prog: &mut Program) -> Resu
 }
 
 pub(crate) fn load(sources: &Sources, path: &Path) -> Result<Program, Error> {
+    let _span = crate::timings::span(crate::timings::Phase::Load);
     load_inner(sources, path, None, &mut Vec::new())
 }
 
 /// Loads `path` with `src` in place of its saved contents, as an editor sees it.
 pub(crate) fn load_source(sources: &Sources, path: &Path, src: &str) -> Result<Program, Error> {
+    let _span = crate::timings::span(crate::timings::Phase::Load);
     load_inner(sources, path, Some(src), &mut Vec::new())
 }
 
