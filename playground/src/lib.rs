@@ -216,6 +216,7 @@ fn build_options() -> Result<lithe::Options, Vec<lithe::Error>> {
                 line: 0,
                 column: 0,
                 message: format!("{key} {message}"),
+                more: Vec::new(),
             });
         }
     }

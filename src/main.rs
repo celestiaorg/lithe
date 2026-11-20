@@ -293,8 +293,16 @@ fn usage_exit(msg: &str) -> ! {
 
 /// Prints `errors`, placing one with a line but no file in `file`, the file the command reads.
 fn fail(errors: &[lithe::Error], file: Option<&Path>) -> ! {
+    eprintln!("{}", fatal_text(errors, file));
+    std::process::exit(1);
+}
+
+/// Each of `errors`, and each the parser found after it, a blank line apart. `file` names
+/// an error that has a line and no file.
+fn fatal_text(errors: &[lithe::Error], file: Option<&Path>) -> String {
     let errors: Vec<String> = errors
         .iter()
+        .flat_map(lithe::Error::chain)
         .map(|err| match file {
             Some(file) if err.file.is_none() && err.line > 0 => lithe::Error {
                 file: Some(file.display().to_string()),
@@ -304,8 +312,7 @@ fn fail(errors: &[lithe::Error], file: Option<&Path>) -> ! {
             _ => err.to_string(),
         })
         .collect();
-    eprintln!("{}", errors.join("\n\n"));
-    std::process::exit(1);
+    errors.join("\n\n")
 }
 
 /// Removes `flag` and its value from `args`, returning the value.
@@ -799,5 +806,31 @@ mod tests {
         );
         assert_eq!(args, ["x.lithe"]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The CLI prints every statement a file broke, not only the first, and names the file
+    /// on each.
+    #[test]
+    fn a_broken_file_prints_every_recovered_statement_error() {
+        let dir = std::env::temp_dir().join(format!("lithe-main-errors-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = "storage is record { count : uint; }\n\
+external function f() : uint is {\n\
+  var x : uint := ;\n\
+  var y : uint := ;\n\
+  storage.count := 5;\n\
+} with 0\n";
+        let file = dir.join("broken.lithe");
+        std::fs::write(&file, src).unwrap();
+        let errors = lithe::compile(&Sources::disk(), &file, &lithe::Options::default())
+            .err()
+            .expect("broken statements do not compile");
+        let text = fatal_text(&errors, Some(&file));
+        std::fs::remove_dir_all(&dir).unwrap();
+        let found = text.matches("expected an expression, found `;`").count();
+        assert_eq!(found, 2, "{text}");
+        let named = text.lines().filter(|l| l.contains("broken.lithe:")).count();
+        assert_eq!(named, 2, "{text}");
     }
 }

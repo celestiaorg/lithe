@@ -12,14 +12,16 @@ pub(crate) const FLAT_ONLY: &str = "`flat` goes only on an external function's o
 
 pub(crate) fn parse(src: &str) -> Result<Program, Error> {
     let toks = lex::tokenize(src)?;
-    Parser {
+    let mut parser = Parser {
         src,
         toks,
         i: 0,
         declaring: false,
         in_spec: false,
-    }
-    .program()
+        errors: Vec::new(),
+    };
+    let prog = parser.program();
+    parser.finish(prog)
 }
 
 /// A spec file, `x.spec.lithe`: spec blocks for the contract and modules of `x.lithe`.
@@ -40,36 +42,60 @@ pub(crate) fn parse_specs(src: &str) -> Result<SpecFile, Error> {
         i: 0,
         declaring: false,
         in_spec: false,
+        errors: Vec::new(),
     };
-    let mut file = SpecFile {
-        bare: Vec::new(),
-        contracts: Vec::new(),
-        modules: Vec::new(),
-    };
-    while parser.kind() != Kind::Eof {
-        if parser.kind() == Kind::Semi {
-            parser.bump();
-            continue;
-        }
-        if !parser.spec_ahead() {
-            return Err(parser.err(format!(
-                "a spec file holds only spec blocks; found {}",
-                parser.found()
-            )));
-        }
-        match parser.peek_kind(2) {
-            Kind::Contract => {
-                let (name, blocks) = parser.spec_wrapper()?;
-                file.contracts.push((name, blocks));
+    let file = parser.spec_file();
+    parser.finish(file)
+}
+
+impl Parser<'_> {
+    fn spec_file(&mut self) -> Result<SpecFile, Error> {
+        let mut file = SpecFile {
+            bare: Vec::new(),
+            contracts: Vec::new(),
+            modules: Vec::new(),
+        };
+        while self.kind() != Kind::Eof {
+            if self.kind() == Kind::Semi {
+                self.bump();
+                continue;
             }
-            Kind::Module => {
-                let (name, blocks) = parser.spec_wrapper()?;
-                file.modules.push((name, blocks));
+            if !self.spec_ahead() {
+                return Err(self.err(format!(
+                    "a spec file holds only spec blocks; found {}",
+                    self.found()
+                )));
             }
-            _ => file.bare.push(parser.spec_block(None)?),
+            match self.peek_kind(2) {
+                Kind::Contract => {
+                    let (name, blocks) = self.spec_wrapper()?;
+                    file.contracts.push((name, blocks));
+                }
+                Kind::Module => {
+                    let (name, blocks) = self.spec_wrapper()?;
+                    file.modules.push((name, blocks));
+                }
+                _ => file.bare.push(self.spec_block(None)?),
+            }
+        }
+        Ok(file)
+    }
+
+    /// `result`, unless a statement failed on the way to it: then the first error in the
+    /// file, with the later ones as its `more`. Whatever ended the parse comes last, since a
+    /// block's statements are parsed before anything that follows the block.
+    fn finish<T>(&mut self, result: Result<T, Error>) -> Result<T, Error> {
+        let mut errors = std::mem::take(&mut self.errors);
+        let value = result.map_err(|err| errors.push(err)).ok();
+        let mut errors = errors.into_iter();
+        match errors.next() {
+            Some(mut first) => {
+                first.more = errors.collect();
+                Err(first)
+            }
+            None => Ok(value.expect("a parse with no error has a result")),
         }
     }
-    Ok(file)
 }
 
 enum StorageItem {
@@ -110,6 +136,8 @@ struct Parser<'a> {
     declaring: bool,
     /// Inside a spec block, where `old.`, `new.`, `sum`, `count`, and `forall` are spec forms.
     in_spec: bool,
+    /// The errors of the statements parsing carried on past, in file order.
+    errors: Vec<Error>,
 }
 
 /// A fixed list's length, which must be from 1 to 1024.
@@ -2850,10 +2878,50 @@ impl<'a> Parser<'a> {
                 self.bump();
                 continue;
             }
-            stmts.push(self.stmt()?);
+            let start = self.i;
+            match self.stmt() {
+                Ok(stmt) => stmts.push(stmt),
+                // The statement's error is kept and parsing carries on at the next one, so
+                // a file shows every broken statement and not only the first.
+                Err(err) => {
+                    self.errors.push(err);
+                    self.skip_stmt(start);
+                }
+            }
         }
         self.want(Kind::RBrace)?;
         Ok(stmts)
+    }
+
+    /// Moves past the statement that began at `start`, to after its `;` or to the `}` that
+    /// ends its block. The scan starts at the statement's first token, not where it failed,
+    /// so it counts every bracket the statement opened: a failure after `Foo {` must not
+    /// take that record's `}` for the block's.
+    ///
+    /// Brackets are counted by kind. A `}` with none of the statement's own braces open is
+    /// the block's, whatever `(` or `[` is still open: `foo(x;` ends there, and the `}`
+    /// stays for the block. A `)` or `]` with nothing of its kind open counts for nothing.
+    fn skip_stmt(&mut self, start: usize) {
+        self.i = start;
+        let (mut braces, mut parens, mut brackets) = (0u32, 0u32, 0u32);
+        loop {
+            match self.kind() {
+                Kind::Eof => return,
+                Kind::RBrace if braces == 0 => return,
+                Kind::Semi if braces == 0 && parens == 0 && brackets == 0 => {
+                    self.bump();
+                    return;
+                }
+                Kind::LBrace => braces += 1,
+                Kind::LParen => parens += 1,
+                Kind::LBrack => brackets += 1,
+                Kind::RBrace => braces -= 1,
+                Kind::RParen => parens = parens.saturating_sub(1),
+                Kind::RBrack => brackets = brackets.saturating_sub(1),
+                _ => {}
+            }
+            self.bump();
+        }
     }
 
     fn stmt(&mut self) -> Result<Stmt, Error> {
@@ -4333,5 +4401,145 @@ mod tests {
                 .contains("expected type `unit`, found value `Unit`"),
             "{err}"
         );
+    }
+
+    /// A broken statement does not hide the ones after it: every statement of every block is
+    /// parsed, and each broken one adds its error. The first is the one the parse would have
+    /// reported had it stopped there, so a diagnostic that names one error names the same one.
+    #[test]
+    fn statement_errors_are_all_reported_in_file_order() {
+        let src = "storage is record { count : uint; }\n\
+external function f(const a : uint) : uint is {\n\
+  var x : uint := 1;\n\
+  x := ;\n\
+  if x > 0 then {\n\
+    var q : uint := a +;\n\
+  }\n\
+  var z : uint := ;\n\
+  storage.count := x;\n\
+} with x\n";
+        let err = parse(src).expect_err("broken statements");
+        let found: Vec<(u32, String)> = err
+            .chain()
+            .map(|err| (err.line, err.message.clone()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (4, "expected an expression, found `;`".to_string()),
+                (6, "expected an expression, found `;`".to_string()),
+                (8, "expected an expression, found `;`".to_string()),
+            ],
+            "every broken statement, in file order"
+        );
+    }
+
+    /// A file with one broken statement reports exactly the one error it always did: recovery
+    /// adds errors, it never changes or drops the first.
+    #[test]
+    fn one_broken_statement_is_one_error() {
+        let src = "storage is record { count : uint; }\n\
+external function f() : uint is {\n\
+  var x : uint := ;\n\
+  storage.count := 5;\n\
+} with 0\n";
+        let err = parse(src).expect_err("broken statement");
+        assert_eq!(err.chain().count(), 1);
+        assert_eq!(err.line, 3);
+    }
+
+    /// The statement a failure happened in is skipped from its first token, so a `}` inside a
+    /// record literal it had already opened is not mistaken for the end of the block: the block
+    /// still ends where it does, and the file reports the one error it always did.
+    #[test]
+    fn skipping_a_broken_statement_counts_the_brackets_it_opened() {
+        let src = "event Foo of record {\n\
+  amount : uint;\n\
+}\n\
+storage is record {\n\
+  n : uint;\n\
+}\n\
+external function go() is {\n\
+  emit Foo { indexed amount = 1 };\n\
+}\n";
+        let err = parse(src).expect_err("indexed in an emit");
+        let found: Vec<(u32, String)> = err
+            .chain()
+            .map(|err| (err.line, err.message.clone()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![(8, "`indexed` belongs on the event declaration".to_string())],
+            "one error, and no cascade from the record's own `}}`"
+        );
+    }
+
+    /// A `}` with only `(` open above the statement's own braces is the block's `}`, not that
+    /// paren's closer: `bar(a;` ends the statement at the block's `}` without consuming it, so
+    /// the declaration after it is parsed and reports its own error instead of a cascade.
+    #[test]
+    fn an_unclosed_paren_does_not_swallow_the_block() {
+        let src = "storage is record { n : uint; }\n\
+external function f() : uint is {\n\
+  bar(1;\n\
+} with 0\n\
+\n\
+external function g() : uint is {\n\
+  var y : uint := ;\n\
+} with 0\n";
+        let err = parse(src).expect_err("broken statements");
+        let found: Vec<(u32, String)> = err
+            .chain()
+            .map(|err| (err.line, err.message.clone()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (3, "expected `)`, found `;`".to_string()),
+                (7, "expected an expression, found `;`".to_string()),
+            ],
+            "the first error unchanged, the second function's reported, no cascade"
+        );
+    }
+
+    /// The same for a `[`: the block's `}` closes the statement, not the index.
+    #[test]
+    fn an_unclosed_bracket_does_not_swallow_the_block() {
+        let src = "storage is record { n : uint; }\nexternal function f(const a : list(uint, 4)) : uint is {\n\
+  var z : uint := a[0;\n\
+  z := 1;\n\
+} with z\n\
+\n\
+external function g() : uint is {\n\
+  var y : uint := ;\n\
+} with 0\n";
+        let err = parse(src).expect_err("broken statements");
+        let found: Vec<(u32, String)> = err
+            .chain()
+            .map(|err| (err.line, err.message.clone()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (3, "expected `]`, found `;`".to_string()),
+                (8, "expected an expression, found `;`".to_string()),
+            ],
+            "the first error unchanged, the second function's reported, no cascade"
+        );
+    }
+
+    /// A block a spec clause reaches recovers errors too, and a spec file with a broken
+    /// statement is rejected rather than accepted with the statement silently dropped.
+    #[test]
+    fn statement_errors_inside_a_spec_block_are_reported() {
+        let src = "spec for deposit is {\n\
+  ensures if true then { var y : uint := ; } with true else true;\n\
+}\n";
+        let err = match super::parse_specs(src) {
+            Ok(_) => panic!("a broken statement in a spec block must be an error"),
+            Err(err) => err,
+        };
+        assert_eq!(err.line, 2);
+        assert_eq!(err.message, "expected an expression, found `;`");
     }
 }

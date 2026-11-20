@@ -217,6 +217,9 @@ pub struct Error {
     pub line: u32,
     pub column: u32,
     pub message: String,
+    /// The errors the parser found in the same file after this one, having carried on past
+    /// each broken statement. Empty for an error that is the only one.
+    pub more: Vec<Error>,
 }
 
 impl Error {
@@ -225,7 +228,13 @@ impl Error {
         if self.file.is_none() && !file.is_empty() {
             self.file = Some(file.to_string());
         }
+        self.more = self.more.into_iter().map(|err| err.in_file(file)).collect();
         self
+    }
+
+    /// This error, then the ones the parser found after it.
+    pub fn chain(&self) -> impl Iterator<Item = &Error> {
+        std::iter::once(self).chain(&self.more)
     }
 }
 
@@ -281,8 +290,9 @@ pub(crate) fn shown_path(file: &str) -> String {
 impl std::error::Error for Error {}
 
 impl From<Error> for Vec<Error> {
-    fn from(err: Error) -> Self {
-        vec![err]
+    fn from(mut err: Error) -> Self {
+        let more = std::mem::take(&mut err.more);
+        std::iter::once(err).chain(more).collect()
     }
 }
 
@@ -2491,6 +2501,7 @@ pub(crate) fn error(line: u32, column: u32, message: impl Into<String>) -> Error
         line,
         column,
         message: message.into(),
+        more: Vec::new(),
     }
 }
 

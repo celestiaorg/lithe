@@ -85,6 +85,8 @@ A contract with `delegated` modules prints a JSON deployment plan instead: each 
 
 A contract or facet over the size limit still prints its bytecode or plan, and warns on stderr. See [Over the limit](/tooling/size-limit#over-the-limit).
 
+A file that does not parse reports every statement that is broken, in file order, and builds nothing. Any other error is reported once, the first for each contract.
+
 ### `lithe compile directory`
 
 Compiles every `.lithe` file under the directory and its subdirectories, but hidden and symlinked ones, so point it at your sources, such as `src`, rather than a project root that vendors dependencies under `lib/`. Each file builds with its nearest `lithe.toml`. Library files, which declare no contract, only modules, interfaces, and shared declarations, are skipped. It writes one Foundry-style artifact per contract to `./out/<file>/<Contract>.json`, or under the directory `--out` names:
@@ -299,7 +301,7 @@ allow = ["reentry", "stale-capture"]
 
 ### `lithe lsp`
 
-Runs a language server on stdin and stdout. As you type, it reports the first error, for each contract in the file, and what [`lithe lint`](#linting) finds, honoring `lithe-ignore` comments you have not saved yet. An error only code generation finds is reported when you save; see [When errors appear](/tooling/editors#when-errors-appear). A finding `lithe lint --fix` can fix is offered as a quick fix, and so is the import a name needs when another file or the standard library declares it, and the `use` a module needs when the contract's code reads its state or calls a function of it that isn't `pure`, added to the contract's grouped `use`. Formatting the document formats it as [`lithe fmt`](#formatting) does. Imports resolve from the file's saved location. An error inside an imported file is shown on the `import` that brings the file in, or on the first `import` when it comes in through another file, with the imported file's path, line, and column in the message. The VS Code extension and the Recur bundle run it; see [Editors](/tooling/editors) to install them.
+Runs a language server on stdin and stdout. As you type, it reports every statement that does not parse, or else the first error, for each contract in the file, and what [`lithe lint`](#linting) finds, honoring `lithe-ignore` comments you have not saved yet. An error only code generation finds is reported when you save; see [When errors appear](/tooling/editors#when-errors-appear). A finding `lithe lint --fix` can fix is offered as a quick fix, and so is the import a name needs when another file or the standard library declares it, and the `use` a module needs when the contract's code reads its state or calls a function of it that isn't `pure`, added to the contract's grouped `use`. Formatting the document formats it as [`lithe fmt`](#formatting) does. Imports resolve from the file's saved location. An error inside an imported file is shown on the `import` that brings the file in, or on the first `import` when it comes in through another file, with the imported file's path, line, and column in the message. The VS Code extension and the Recur bundle run it; see [Editors](/tooling/editors) to install them.
 
 It also answers from the last version of the file that checked, so answers survive a half-typed line:
 
