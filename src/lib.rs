@@ -177,7 +177,7 @@ pub use config::{build_options, format_width, set_build_option, BUILD_KEYS, DEFA
 pub use format::{add_use, format_source};
 pub use index::{Completion, Def, File, Index, Kind, Ref, Signature, Span};
 pub use lint::{lint_paths, lithe_files, Lint};
-pub use modules::{import_path, Sources};
+pub use modules::{import_path, ModuleCache, Sources};
 pub use packages::{add, install, packages, Add};
 pub use prove::{serve_if_child, Proof, ProveOptions};
 pub use route::{
@@ -655,7 +655,7 @@ fn part_names(
 
 /// What an editor shows for unsaved `src` at `path`.
 pub struct Analysis {
-    /// The first error, including those only code generation finds.
+    /// The first error. [`analyze_frontend`] leaves out those only code generation finds.
     pub error: Option<Error>,
     /// What `lithe lint` reports for the file, once every contract in it checks.
     pub lints: Vec<Lint>,
@@ -663,56 +663,144 @@ pub struct Analysis {
     pub index: Option<Index>,
 }
 
-/// Checks every contract `src` defines, as `lithe compile directory` does, with the build
-/// options the nearest `lithe.toml` sets.
+/// Checks every contract `src` defines and builds it, as `lithe compile directory` does,
+/// with the build options the nearest `lithe.toml` sets.
 pub fn analyze(path: &Path, src: &str) -> Analysis {
+    ModuleCache::new().analyze_full(path, src)
+}
+
+/// [`analyze`] without the build, so what an editor runs on a keystroke generates no code.
+pub fn analyze_frontend(path: &Path, src: &str) -> Analysis {
+    ModuleCache::new().analyze_frontend(path, src)
+}
+
+impl ModuleCache {
+    /// [`analyze_frontend`] with this session's parsed and checked programs.
+    pub fn analyze_frontend(&self, path: &Path, src: &str) -> Analysis {
+        analyze_in(path, src, Pass::Frontend, self).0
+    }
+
+    /// [`analyze`] with this session's parsed and checked programs.
+    pub fn analyze_full(&self, path: &Path, src: &str) -> Analysis {
+        analyze_in(path, src, Pass::Full, self).0
+    }
+
+    /// [`analyze_frontend`] without the index, and whether [`ModuleCache::index`] would
+    /// return one for `src`: an editor needs the index only once it is asked a question.
+    pub fn analyze_edit(&self, path: &Path, src: &str) -> (Analysis, bool) {
+        analyze_in(path, src, Pass::Edit, self)
+    }
+
+    /// The index [`analyze_frontend`] returns for `src`, without linting it again.
+    pub fn index(&self, path: &Path, src: &str) -> Option<Index> {
+        analyze_in(path, src, Pass::Index, self).0.index
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Pass {
+    Edit,
+    Index,
+    Frontend,
+    Full,
+}
+
+/// The analysis `pass` asks for, and whether the file has anything to index.
+fn analyze_in(path: &Path, src: &str, pass: Pass, cache: &ModuleCache) -> (Analysis, bool) {
     let (opts, mut failed) = match build_options(path) {
         Ok(opts) => (opts, None),
         Err(err) => (Options::default(), Some(err)),
     };
     let sources = Sources::disk();
-    let prog = match modules::load_source(&sources, path, src) {
+    let mut touched = Vec::new();
+    let loaded = modules::load_in(
+        &sources,
+        path,
+        Some(src),
+        Some(cache),
+        opts.evm,
+        &mut touched,
+    );
+    let prog = match loaded {
         Ok(prog) => prog,
         Err(err) => {
-            return Analysis {
+            let analysis = Analysis {
                 error: Some(err),
                 lints: Vec::new(),
                 index: None,
-            }
+            };
+            return (analysis, false);
         }
     };
+    let fingerprint = modules::fingerprint(&touched);
     let units = modules::split_units(prog);
-    let mut checked = Vec::new();
-    for unit in units.clone() {
-        let name = artifact_contract_name(&unit, path);
-        match check::check_in(unit.clone(), false, opts.evm) {
-            Ok(unit_checked) => {
-                if failed.is_none() {
-                    failed = build(&sources, path, unit, &name, &opts)
-                        .err()
-                        .filter(|err| {
-                            err.message != route::NO_ENTRIES || !declares_no_contract(src)
-                        });
-                }
-                checked.push(unit_checked);
-            }
-            Err(err) => {
-                failed.get_or_insert(err);
-            }
-        }
-    }
-    let lints = if checked.len() == units.len() {
-        lint::lint_source(src, path, units).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
     let root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    Analysis {
+    // What only code generation finds in a unit that checks.
+    let build_error = |unit: &ast::Program| {
+        let name = artifact_contract_name(unit, path);
+        build(&sources, path, unit.clone(), &name, &opts)
+            .err()
+            .filter(|err| err.message != route::NO_ENTRIES || !declares_no_contract(src))
+    };
+    // The lints and the index of the units that checked. Lint checks for the default fork,
+    // so it takes these units as checked only when they were checked for it.
+    let report = |checked: &[check::Checked], all: bool| {
+        let reuse = if opts.evm == EvmVersion::default() {
+            checked
+        } else {
+            &[]
+        };
+        let lints = if pass != Pass::Index && all {
+            lint::lint_source(src, path, units.clone(), reuse).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let indexable = !checked.is_empty();
+        let index = (pass != Pass::Edit && indexable)
+            .then(|| index::build(&root.display().to_string(), src, checked));
+        (lints, index, indexable)
+    };
+    let known = cache.with_checked(&root, fingerprint, opts.evm, |checked| {
+        report(checked, true)
+    });
+    let (lints, index, indexable) = match known {
+        Some(known) => {
+            if pass == Pass::Full {
+                failed = failed.or_else(|| units.iter().find_map(build_error));
+            }
+            known
+        }
+        None => {
+            let mut checked = Vec::new();
+            for unit in &units {
+                #[cfg(test)]
+                cache.note_check();
+                match check::check_in(unit.clone(), false, opts.evm) {
+                    Ok(unit_checked) => {
+                        if pass == Pass::Full && failed.is_none() {
+                            failed = build_error(unit);
+                        }
+                        checked.push(unit_checked);
+                    }
+                    Err(err) => {
+                        failed.get_or_insert(err);
+                    }
+                }
+            }
+            let all = checked.len() == units.len();
+            let found = report(&checked, all);
+            if all {
+                cache.store_checked(&root, fingerprint, opts.evm, checked);
+            }
+            found
+        }
+    };
+    let analysis = Analysis {
         error: failed,
         lints,
-        index: (!checked.is_empty())
-            .then(|| index::build(&root.display().to_string(), src, &checked)),
-    }
+        index,
+    };
+    (analysis, indexable)
 }
 
 /// Each external function's footprint: its writes, events, deferred calls, and errors, with
@@ -2408,3 +2496,37 @@ pub(crate) fn error(line: u32, column: u32, message: impl Into<String>) -> Error
 
 #[cfg(test)]
 mod evm;
+
+#[cfg(test)]
+mod session_cache {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn second_analysis_does_not_recheck() {
+        let cache = ModuleCache::new();
+        let path = Path::new("bench/counter.lithe");
+        let text = std::fs::read_to_string(path).expect("counter");
+        assert!(cache.analyze_frontend(path, &text).error.is_none());
+        let n = cache.check_count();
+        assert!(n > 0);
+        assert!(cache.analyze_frontend(path, &text).error.is_none());
+        assert_eq!(cache.check_count(), n);
+    }
+
+    #[test]
+    fn undo_reuses_the_checked_program() {
+        let cache = ModuleCache::new();
+        let path = Path::new("bench/counter.lithe");
+        let text = std::fs::read_to_string(path).expect("counter");
+        let edited = format!("{text}\n");
+        assert!(cache.analyze_frontend(path, &text).error.is_none());
+        assert!(cache.analyze_frontend(path, &edited).error.is_none());
+        let n = cache.check_count();
+        assert!(cache.analyze_frontend(path, &text).error.is_none());
+        assert_eq!(cache.check_count(), n);
+        assert!(cache.analyze_frontend(path, &edited).error.is_none());
+        assert_eq!(cache.check_count(), n);
+    }
+}

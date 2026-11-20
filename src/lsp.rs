@@ -1,78 +1,259 @@
-//! `lithe lsp`: a language server on stdin and stdout. It reports errors and `lithe lint`'s
-//! findings as you type, with their fixes as quick fixes, formats as `lithe fmt` does, and
-//! answers hover, go to definition, references, highlights, outline, completion, and
-//! signature help from the last version of each file that checked.
+//! `lithe lsp`: a language server on stdin and stdout. It reports check errors and `lithe lint`'s
+//! findings as you type, and errors only a build finds when the file is saved. It formats as
+//! `lithe fmt` does, and answers hover, go to definition, references, highlights, outline,
+//! completion, and signature help from the last version of each file that checked.
 
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use lithe::{Index, Kind, Span};
 
 pub fn run() -> ! {
-    let code = serve(&mut std::io::stdin().lock(), &mut std::io::stdout().lock());
+    let (code, _) = serve(&mut std::io::stdin().lock(), std::io::stdout());
     std::process::exit(code)
 }
 
-const CAPABILITIES: &str = r#"{"capabilities":{"textDocumentSync":{"openClose":true,"change":1,"save":true},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"completionProvider":{"triggerCharacters":["."]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentFormattingProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix"]}},"serverInfo":{"name":"lithe"}}"#;
+const CAPABILITIES: &str = r#"{"capabilities":{"textDocumentSync":{"openClose":true,"change":1,"save":true},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"documentHighlightProvider":true,"documentSymbolProvider":true,"renameProvider":true,"workspaceSymbolProvider":true,"completionProvider":{"triggerCharacters":["."]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentFormattingProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix"]}},"serverInfo":{"name":"lithe"}}"#;
 
 struct Doc {
     text: String,
     /// From the last version that checked, so answers survive a half-typed line.
     index: Option<Index>,
+    /// A newer version that checked and is indexed on the next request that needs it.
+    unindexed: Option<String>,
     /// The findings for `text` as it is.
     lints: Vec<lithe::Lint>,
-    /// Why `text` does not compile, if it does not.
+    /// Why `text` does not check, if it does not.
     error: Option<lithe::Error>,
+    /// A build error from the last save that a newer edit has not cancelled.
+    codegen: Option<lithe::Error>,
+}
+
+/// Per server. Tests pass their own so parallel `cargo test` does not share a clock.
+#[derive(Clone)]
+struct Pace {
+    debounce: Duration,
+    save_delay: Duration,
+    diag: Option<std::sync::Arc<AtomicU64>>,
+}
+
+fn pace() -> Pace {
+    Pace {
+        debounce: Duration::from_millis(50),
+        save_delay: Duration::ZERO,
+        diag: None,
+    }
 }
 
 /// Answers messages until `exit` or the end of input, and returns the exit status.
-fn serve(input: &mut impl BufRead, output: &mut impl Write) -> i32 {
-    let mut docs: HashMap<String, Doc> = HashMap::new();
-    let mut shutdown = false;
+///
+/// This thread reads frames. Another thread analyzes them, and a save has its own worker.
+/// `didChange` waits 50 ms so a burst of keystrokes checks once.
+fn serve<W: Write + Send + 'static>(input: &mut impl BufRead, output: W) -> (i32, W) {
+    serve_at(input, output, pace())
+}
+
+fn serve_at<W: Write + Send + 'static>(
+    input: &mut impl BufRead,
+    output: W,
+    pace: Pace,
+) -> (i32, W) {
+    let docs = std::sync::Arc::new(Mutex::new(HashMap::<String, Doc>::new()));
+    let generation = std::sync::Arc::new(AtomicU64::new(0));
+    let output = std::sync::Arc::new(Mutex::new(output));
+    let cache = std::sync::Arc::new(lithe::ModuleCache::new());
+    let (save_tx, save_rx) = mpsc::channel();
+    let saver = thread::spawn({
+        let docs = std::sync::Arc::clone(&docs);
+        let generation = std::sync::Arc::clone(&generation);
+        let output = std::sync::Arc::clone(&output);
+        let cache = std::sync::Arc::clone(&cache);
+        let pace = pace.clone();
+        move || save_worker(save_rx, &docs, &generation, &output, &cache, pace)
+    });
+    let (tx, rx) = mpsc::channel();
+    let analysis = thread::spawn({
+        let docs = std::sync::Arc::clone(&docs);
+        let generation = std::sync::Arc::clone(&generation);
+        let output = std::sync::Arc::clone(&output);
+        let cache = std::sync::Arc::clone(&cache);
+        let save_tx = save_tx.clone();
+        let pace = pace.clone();
+        move || worker(rx, &docs, &generation, &output, &cache, &save_tx, pace)
+    });
     while let Some(msg) = read(input) {
+        let exit = msg.get("method").and_then(Json::str) == Some("exit");
+        if tx.send(msg).is_err() || exit {
+            break;
+        }
+    }
+    drop(tx);
+    let code = analysis.join().unwrap();
+    drop(save_tx);
+    saver.join().unwrap();
+    let Ok(output) = std::sync::Arc::try_unwrap(output) else {
+        panic!("save worker dropped its output");
+    };
+    let output = output.into_inner().unwrap();
+    (code, output)
+}
+
+fn flush_changes<W: Write + Send>(
+    pending: &mut Vec<String>,
+    docs: &Mutex<HashMap<String, Doc>>,
+    output: &Mutex<W>,
+    cache: &lithe::ModuleCache,
+    pace: &Pace,
+) {
+    for uri in pending.drain(..) {
+        let started = pace.diag.is_some().then(Instant::now);
+        let mut docs = docs.lock().unwrap();
+        let Some(doc) = docs.get_mut(&uri) else {
+            continue;
+        };
+        apply_frontend(&uri, doc, cache);
+        publish(output, &uri, doc);
+        if let (Some(slot), Some(started)) = (&pace.diag, started) {
+            slot.store(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
+    }
+}
+
+fn worker<W: Write + Send>(
+    rx: mpsc::Receiver<Json>,
+    docs: &Mutex<HashMap<String, Doc>>,
+    generation: &AtomicU64,
+    output: &Mutex<W>,
+    cache: &lithe::ModuleCache,
+    saved: &mpsc::Sender<u64>,
+    pace: Pace,
+) -> i32 {
+    let mut shutdown = false;
+    let mut pending: Vec<String> = Vec::new();
+    let mut deadline = None;
+    loop {
+        let msg = if pending.is_empty() {
+            match rx.recv() {
+                Ok(msg) => Some(msg),
+                Err(_) => return 1,
+            }
+        } else {
+            let wait = deadline
+                .map(|at: Instant| at.saturating_duration_since(Instant::now()))
+                .unwrap_or(Duration::ZERO);
+            match rx.recv_timeout(wait) {
+                Ok(msg) => Some(msg),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => {
+                    flush_changes(&mut pending, docs, output, cache, &pace);
+                    return 1;
+                }
+            }
+        };
+        let Some(msg) = msg else {
+            flush_changes(&mut pending, docs, output, cache, &pace);
+            deadline = None;
+            continue;
+        };
         let method = msg.get("method").and_then(Json::str).unwrap_or("");
         let params = msg.get("params");
         let doc = params.and_then(|p| p.get("textDocument"));
         let uri = doc.and_then(|d| d.get("uri")).and_then(Json::str);
-        let text = match method {
-            "textDocument/didOpen" => doc.and_then(|d| d.get("text")),
-            "textDocument/didChange" => params
+        if method == "textDocument/didChange" {
+            let text = params
                 .and_then(|p| p.get("contentChanges"))
                 .and_then(Json::last)
-                .and_then(|change| change.get("text")),
-            _ => None,
-        }
-        .and_then(Json::str);
-        match method {
-            "initialize" => reply(output, &msg, CAPABILITIES),
-            "shutdown" => {
-                shutdown = true;
-                reply(output, &msg, "null");
-            }
-            "exit" => return if shutdown { 0 } else { 1 },
-            "textDocument/didOpen" | "textDocument/didChange" => {
-                if let (Some(uri), Some(text)) = (uri, text) {
+                .and_then(|change| change.get("text"))
+                .and_then(Json::str);
+            if let (Some(uri), Some(text)) = (uri, text) {
+                generation.fetch_add(1, Ordering::AcqRel);
+                {
+                    let mut docs = docs.lock().unwrap();
                     let doc = docs.entry(uri.to_string()).or_insert(Doc {
                         text: String::new(),
                         index: None,
+                        unindexed: None,
                         lints: Vec::new(),
                         error: None,
+                        codegen: None,
                     });
                     doc.text = text.to_string();
-                    update(output, uri, doc);
+                    doc.codegen = None;
+                }
+                if let Some(i) = pending.iter().position(|have| have == uri) {
+                    pending.remove(i);
+                }
+                pending.push(uri.to_string());
+                let wait = pace.debounce;
+                if wait.is_zero() {
+                    flush_changes(&mut pending, docs, output, cache, &pace);
+                    deadline = None;
+                } else {
+                    deadline = Some(Instant::now() + wait);
                 }
             }
-            // A saved file can change what the open files that import it report.
-            "textDocument/didSave" => {
-                for (uri, doc) in &mut docs {
-                    update(output, uri, doc);
+            continue;
+        }
+        if !pending.is_empty() {
+            flush_changes(&mut pending, docs, output, cache, &pace);
+            deadline = None;
+        }
+        let text = (method == "textDocument/didOpen")
+            .then(|| doc.and_then(|d| d.get("text")))
+            .flatten()
+            .and_then(Json::str);
+        match method {
+            "initialize" => reply(&mut *output.lock().unwrap(), &msg, CAPABILITIES),
+            "shutdown" => {
+                shutdown = true;
+                reply(&mut *output.lock().unwrap(), &msg, "null");
+            }
+            "exit" => return if shutdown { 0 } else { 1 },
+            "textDocument/didOpen" => {
+                if let (Some(uri), Some(text)) = (uri, text) {
+                    generation.fetch_add(1, Ordering::AcqRel);
+                    let mut docs = docs.lock().unwrap();
+                    let doc = docs.entry(uri.to_string()).or_insert(Doc {
+                        text: String::new(),
+                        index: None,
+                        unindexed: None,
+                        lints: Vec::new(),
+                        error: None,
+                        codegen: None,
+                    });
+                    doc.text = text.to_string();
+                    doc.codegen = None;
+                    apply_frontend(uri, doc, cache);
+                    publish(output, uri, doc);
                 }
+            }
+            // A saved file can change what the open files that import it report. The build
+            // runs on the worker; a newer edit bumps `generation` and that result is dropped.
+            "textDocument/didSave" => {
+                let job = generation.fetch_add(1, Ordering::AcqRel) + 1;
+                {
+                    let mut docs = docs.lock().unwrap();
+                    let uris: Vec<String> = docs.keys().cloned().collect();
+                    for uri in uris {
+                        let Some(doc) = docs.get_mut(&uri) else {
+                            continue;
+                        };
+                        apply_frontend(&uri, doc, cache);
+                        publish(output, &uri, doc);
+                    }
+                }
+                let _ = saved.send(job);
             }
             "textDocument/didClose" => {
                 if let Some(uri) = uri {
-                    docs.remove(uri);
-                    notify_diagnostics(output, uri, &[]);
+                    docs.lock().unwrap().remove(uri);
+                    notify_diagnostics(&mut *output.lock().unwrap(), uri, &[]);
                 }
             }
             "textDocument/hover"
@@ -82,25 +263,69 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write) -> i32 {
             | "textDocument/documentSymbol"
             | "textDocument/completion"
             | "textDocument/signatureHelp" => {
-                let found = uri.zip(params).and_then(|(uri, params)| {
-                    let doc = docs.get(uri)?;
-                    answer(method, uri, doc, doc.index.as_ref()?, params)
-                });
-                reply(output, &msg, found.as_deref().unwrap_or("null"));
+                let found = {
+                    let mut docs = docs.lock().unwrap();
+                    uri.zip(params).and_then(|(uri, params)| {
+                        let doc = docs.get_mut(uri)?;
+                        index_now(uri, doc, cache);
+                        answer(method, uri, doc, doc.index.as_ref()?, params)
+                    })
+                };
+                reply(
+                    &mut *output.lock().unwrap(),
+                    &msg,
+                    found.as_deref().unwrap_or("null"),
+                );
             }
             "textDocument/formatting" => {
-                let found = uri.and_then(|uri| format(uri, &docs.get(uri)?.text));
-                reply(output, &msg, found.as_deref().unwrap_or("null"));
+                let found = {
+                    let docs = docs.lock().unwrap();
+                    uri.and_then(|uri| format(uri, &docs.get(uri)?.text))
+                };
+                reply(
+                    &mut *output.lock().unwrap(),
+                    &msg,
+                    found.as_deref().unwrap_or("null"),
+                );
             }
             "textDocument/codeAction" => {
-                let found = uri
-                    .zip(params)
-                    .and_then(|(uri, params)| fixes(uri, docs.get(uri)?, params));
-                reply(output, &msg, found.as_deref().unwrap_or("[]"));
+                let found = {
+                    let docs = docs.lock().unwrap();
+                    uri.zip(params)
+                        .and_then(|(uri, params)| fixes(uri, docs.get(uri)?, params))
+                };
+                reply(
+                    &mut *output.lock().unwrap(),
+                    &msg,
+                    found.as_deref().unwrap_or("[]"),
+                );
+            }
+            "textDocument/rename" => match rename_request(docs, cache, uri, params) {
+                Rename::Edit(edit) => reply(&mut *output.lock().unwrap(), &msg, &edit),
+                Rename::Reject => send(
+                    &mut *output.lock().unwrap(),
+                    &format!(
+                        r#"{{"jsonrpc":"2.0","id":{},"error":{{"code":-32602,"message":"cannot rename this name"}}}}"#,
+                        id(&msg)
+                    ),
+                ),
+                Rename::None => reply(&mut *output.lock().unwrap(), &msg, "null"),
+            },
+            "workspace/symbol" => {
+                let query = params
+                    .and_then(|p| p.get("query"))
+                    .and_then(Json::str)
+                    .unwrap_or("");
+                let mut docs = docs.lock().unwrap();
+                for (uri, doc) in docs.iter_mut() {
+                    index_now(uri, doc, cache);
+                }
+                let found = workspace_symbols(&docs, query);
+                reply(&mut *output.lock().unwrap(), &msg, &found);
             }
             "" => {}
             _ if msg.get("id").is_some() => send(
-                output,
+                &mut *output.lock().unwrap(),
                 &format!(
                     r#"{{"jsonrpc":"2.0","id":{},"error":{{"code":-32601,"message":{}}}}}"#,
                     id(&msg),
@@ -110,19 +335,245 @@ fn serve(input: &mut impl BufRead, output: &mut impl Write) -> i32 {
             _ => {}
         }
     }
-    1
 }
 
-fn update(output: &mut impl Write, uri: &str, doc: &mut Doc) {
-    let analysis = lithe::analyze(&file_path(uri), &doc.text);
-    if analysis.index.is_some() {
-        doc.index = analysis.index;
+enum Rename {
+    None,
+    Reject,
+    Edit(String),
+}
+
+fn rename_request(
+    docs: &Mutex<HashMap<String, Doc>>,
+    cache: &lithe::ModuleCache,
+    uri: Option<&str>,
+    params: Option<&Json>,
+) -> Rename {
+    let Some((uri, params)) = uri.zip(params) else {
+        return Rename::None;
+    };
+    let Some(new_name) = params.get("newName").and_then(Json::str) else {
+        return Rename::Reject;
+    };
+    if !is_ident(new_name) {
+        return Rename::Reject;
+    }
+    let mut docs = docs.lock().unwrap();
+    let Some(doc) = docs.get_mut(uri) else {
+        return Rename::None;
+    };
+    index_now(uri, doc, cache);
+    let Some(index) = doc.index.as_ref() else {
+        return Rename::None;
+    };
+    let Some((line, col)) = params.get("position").and_then(|p| position(&doc.text, p)) else {
+        return Rename::None;
+    };
+    let Some(r) = index.at(0, &doc.text, line, col) else {
+        return Rename::None;
+    };
+    let def_id = r.def;
+    let def = &index.defs[def_id];
+    if matches!(def.kind, Kind::Builtin | Kind::Keyword)
+        || def
+            .at
+            .is_some_and(|at| index.files.get(at.file).is_some_and(|f| f.std.is_some()))
+    {
+        return Rename::Reject;
+    }
+    let def_name = def.name.clone();
+    let decl = def.at;
+    let spans: Vec<lithe::Span> = index.references(def_id).map(|r| r.at).chain(decl).collect();
+    let mut seen = Vec::new();
+    let mut by_uri: Vec<(String, Vec<String>)> = Vec::new();
+    for at in spans {
+        if seen.contains(&(at.file, at.line, at.col, at.len)) {
+            continue;
+        }
+        let Some(file) = index.files.get(at.file) else {
+            continue;
+        };
+        if file.std.is_some() {
+            continue;
+        }
+        let (edit_uri, text) = if at.file == 0 {
+            (uri.to_string(), doc.text.as_str())
+        } else {
+            (file_uri(Path::new(&file.path)), file.text.as_str())
+        };
+        if at.file == 0
+            && !index.live(
+                &doc.text,
+                &lithe::Ref {
+                    at,
+                    def: def_id,
+                    hover: None,
+                },
+            )
+        {
+            continue;
+        }
+        let Some(have) = span_text(text, at) else {
+            continue;
+        };
+        if have != def_name {
+            continue;
+        }
+        seen.push((at.file, at.line, at.col, at.len));
+        let edit = format!(
+            r#"{{"range":{},"newText":{}}}"#,
+            range(text, at),
+            quote(new_name)
+        );
+        if let Some((_, edits)) = by_uri.iter_mut().find(|(u, _)| u == &edit_uri) {
+            edits.push(edit);
+        } else {
+            by_uri.push((edit_uri, vec![edit]));
+        }
+    }
+    let changes: Vec<String> = by_uri
+        .iter()
+        .map(|(uri, edits)| format!(r#"{}:[{}]"#, quote(uri), edits.join(",")))
+        .collect();
+    Rename::Edit(format!(r#"{{"changes":{{{}}}}}"#, changes.join(",")))
+}
+
+fn is_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c.is_ascii_alphabetic() => {
+            chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+        }
+        _ => false,
+    }
+}
+
+fn span_text(text: &str, at: lithe::Span) -> Option<&str> {
+    let line = text.split('\n').nth(at.line.saturating_sub(1) as usize)?;
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let start = at.col.saturating_sub(1) as usize;
+    line.get(start..start + at.len as usize)
+}
+
+fn workspace_symbols(docs: &HashMap<String, Doc>, query: &str) -> String {
+    let query = query.to_ascii_lowercase();
+    let mut uris: Vec<&String> = docs.keys().collect();
+    uris.sort();
+    let mut items = Vec::new();
+    for uri in uris {
+        let Some(doc) = docs.get(uri) else {
+            continue;
+        };
+        let Some(index) = &doc.index else {
+            continue;
+        };
+        for d in 0..index.defs.len() {
+            if !outline(index, &doc.text, d) {
+                continue;
+            }
+            let def = &index.defs[d];
+            if !query.is_empty() && !def.name.to_ascii_lowercase().contains(&query) {
+                continue;
+            }
+            let Some(at) = def.at else {
+                continue;
+            };
+            let container = def
+                .parent
+                .and_then(|p| index.defs.get(p))
+                .map(|p| format!(r#","containerName":{}"#, quote(&p.name)))
+                .unwrap_or_default();
+            items.push(format!(
+                r#"{{"name":{},"kind":{},"location":{{"uri":{},"range":{}}}{container}}}"#,
+                quote(&def.name),
+                symbol_kind(def.kind),
+                quote(uri),
+                range(&doc.text, at),
+            ));
+        }
+    }
+    format!("[{}]", items.join(","))
+}
+
+fn apply_frontend(uri: &str, doc: &mut Doc, cache: &lithe::ModuleCache) {
+    let (analysis, indexable) = cache.analyze_edit(&file_path(uri), &doc.text);
+    if indexable {
+        doc.unindexed = Some(doc.text.clone());
     }
     doc.lints = analysis.lints;
     doc.error = analysis
         .error
         .map(|err| in_document(&file_path(uri), &doc.text, err));
-    publish(output, uri, doc);
+}
+
+fn index_now(uri: &str, doc: &mut Doc, cache: &lithe::ModuleCache) {
+    if let Some(text) = doc.unindexed.take() {
+        if let Some(index) = cache.index(&file_path(uri), &text) {
+            doc.index = Some(index);
+        }
+    }
+}
+
+/// One build per save. A newer edit or save makes `generation` move, and this result
+/// is not published.
+///
+/// simplify: cancellation drops the result; the build runs to completion. Abort it
+/// mid-compile if a discarded save is slow enough to matter.
+fn save_worker<W: Write + Send>(
+    rx: mpsc::Receiver<u64>,
+    docs: &Mutex<HashMap<String, Doc>>,
+    generation: &AtomicU64,
+    output: &Mutex<W>,
+    cache: &lithe::ModuleCache,
+    pace: Pace,
+) {
+    while let Ok(job) = rx.recv() {
+        if !pace.save_delay.is_zero() {
+            thread::sleep(pace.save_delay);
+        }
+        let snap: Vec<(String, String, bool)> = {
+            let docs = docs.lock().unwrap();
+            if generation.load(Ordering::Acquire) != job {
+                continue;
+            }
+            docs.iter()
+                .map(|(uri, doc)| (uri.clone(), doc.text.clone(), doc.error.is_none()))
+                .collect()
+        };
+        let mut found = Vec::new();
+        for (uri, text, frontend_ok) in &snap {
+            if generation.load(Ordering::Acquire) != job {
+                found.clear();
+                break;
+            }
+            let codegen = if *frontend_ok {
+                cache
+                    .analyze_full(&file_path(uri), text)
+                    .error
+                    .map(|err| in_document(&file_path(uri), text, err))
+            } else {
+                None
+            };
+            found.push((uri.clone(), codegen));
+        }
+        if found.len() != snap.len() || generation.load(Ordering::Acquire) != job {
+            continue;
+        }
+        let mut docs = docs.lock().unwrap();
+        if generation.load(Ordering::Acquire) != job {
+            continue;
+        }
+        for (uri, codegen) in &found {
+            if let Some(doc) = docs.get_mut(uri) {
+                doc.codegen = codegen.clone();
+            }
+        }
+        for (uri, _) in &found {
+            if let Some(doc) = docs.get(uri) {
+                publish(output, uri, doc);
+            }
+        }
+    }
 }
 
 /// `err` as the document `path` shows it. One in another file is shown at the `import` that
@@ -202,15 +653,14 @@ fn fixes(uri: &str, doc: &Doc, params: &Json) -> Option<String> {
         })
         .collect();
     let mut actions = actions;
+    let error = doc.error.as_ref().or(doc.codegen.as_ref());
     actions.extend(
-        doc.error
-            .as_ref()
+        error
             .filter(|err| (first..=last).contains(&err.line))
             .and_then(|err| import_fix(uri, &doc.text, err)),
     );
     actions.extend(
-        doc.error
-            .as_ref()
+        error
             .filter(|err| (first..=last).contains(&err.line))
             .and_then(|err| use_fix(uri, &doc.text, err)),
     );
@@ -647,7 +1097,7 @@ fn range(text: &str, at: Span) -> String {
     )
 }
 
-fn publish(output: &mut impl Write, uri: &str, doc: &Doc) {
+fn publish<W: Write + Send>(output: &Mutex<W>, uri: &str, doc: &Doc) {
     let mut items: Vec<String> = doc
         .lints
         .iter()
@@ -656,9 +1106,10 @@ fn publish(output: &mut impl Write, uri: &str, doc: &Doc) {
     items.extend(
         doc.error
             .as_ref()
+            .or(doc.codegen.as_ref())
             .map(|err| error_diagnostic(&doc.text, err)),
     );
-    notify_diagnostics(output, uri, &items);
+    notify_diagnostics(&mut *output.lock().unwrap(), uri, &items);
 }
 
 fn error_diagnostic(text: &str, err: &lithe::Error) -> String {
@@ -966,9 +1417,12 @@ mod tests {
     }
 
     fn session(messages: &[String]) -> (i32, Vec<String>) {
+        session_at(messages, pace())
+    }
+
+    fn session_at(messages: &[String], pace: Pace) -> (i32, Vec<String>) {
         let input = messages.concat();
-        let mut output = Vec::new();
-        let code = serve(&mut input.as_bytes(), &mut output);
+        let (code, output) = serve_at(&mut input.as_bytes(), Vec::new(), pace);
         let output = String::from_utf8(output).unwrap();
         let bodies = output
             .split("Content-Length: ")
@@ -1012,6 +1466,83 @@ mod tests {
         );
         assert!(bodies[3].contains(r#""id":7,"error":{"code":-32601"#));
         assert_eq!(bodies[4], r#"{"jsonrpc":"2.0","id":8,"result":null}"#);
+    }
+
+    fn saved(uri: &str) -> String {
+        frame(&format!(
+            r#"{{"jsonrpc":"2.0","method":"textDocument/didSave","params":{{"textDocument":{{"uri":{}}}}}}}"#,
+            quote(uri)
+        ))
+    }
+
+    #[test]
+    fn codegen_error_is_reported_on_save() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.lithe");
+        let text = "storage is record { count : uint; }\n";
+        std::fs::write(&path, text).unwrap();
+        let uri = format!("file://{}", path.display());
+        let (_, open_only) = session(&[
+            open(&uri, text),
+            frame(r#"{"jsonrpc":"2.0","method":"exit"}"#),
+        ]);
+        assert!(
+            open_only.iter().all(|b| !b.contains("no entrypoints")),
+            "{open_only:?}"
+        );
+        let (_, bodies) = session(&[
+            open(&uri, text),
+            saved(&uri),
+            frame(r#"{"jsonrpc":"2.0","method":"exit"}"#),
+        ]);
+        assert!(
+            bodies
+                .iter()
+                .any(|b| b.contains("contract has no entrypoints")),
+            "{bodies:?}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_newer_edit_drops_the_save_build() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.lithe");
+        let text = "storage is record { count : uint; }\n";
+        std::fs::write(&path, text).unwrap();
+        let uri = format!("file://{}", path.display());
+        let broken =
+            "storage is record { count : uint; }\nexternal view function get() : uint is\n  nope\n";
+        let change = frame(&format!(
+            r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":{},"version":2}},"contentChanges":[{{"text":{}}}]}}}}"#,
+            quote(&uri),
+            quote(broken)
+        ));
+        let mut pace = pace();
+        pace.save_delay = Duration::from_millis(200);
+        let (_, bodies) = session_at(
+            &[
+                open(&uri, text),
+                saved(&uri),
+                change,
+                frame(r#"{"jsonrpc":"2.0","method":"exit"}"#),
+            ],
+            pace,
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        let diags: Vec<_> = bodies
+            .iter()
+            .filter(|b| b.contains("publishDiagnostics"))
+            .collect();
+        let last = diags.last().expect("a diagnostic");
+        assert!(last.contains("unknown name `nope`"), "{last}");
+        assert!(!last.contains("no entrypoints"), "{last}");
+        assert!(
+            bodies.iter().all(|b| !b.contains("no entrypoints")),
+            "{bodies:?}"
+        );
     }
 
     #[test]
@@ -1178,6 +1709,7 @@ mod tests {
         assert!(analysis.index.is_some());
         let text = "storage is record { count : uint; }\n";
         std::fs::write(&path, text).unwrap();
+        assert!(lithe::analyze_frontend(&path, text).error.is_none());
         let analysis = lithe::analyze(&path, text);
         assert_eq!(
             analysis.error.map(|e| e.message).as_deref(),
@@ -1639,6 +2171,206 @@ mod tests {
             bodies[3].contains(r#""newText":"storage is record { n : uint; }"#),
             "{}",
             bodies[3]
+        );
+    }
+
+    #[test]
+    fn renames_a_name_and_lists_workspace_symbols() {
+        let dir = std::env::temp_dir().join(format!("lithe-lsp-rename-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.lithe");
+        let text = "storage is record { n : uint; }\n\
+pure function inc(const x : uint) : uint is x + 1\n\
+external function bump(const x : uint) is { storage.n := inc(x); }\n";
+        std::fs::write(&path, text).unwrap();
+        let uri = format!("file://{}", path.display());
+        let (_, bodies) = session(&[
+            frame(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#),
+            open(&uri, text),
+            frame(
+                r#"{"jsonrpc":"2.0","id":1,"method":"workspace/symbol","params":{"query":"inc"}}"#,
+            ),
+            frame(&format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"textDocument/rename","params":{{"textDocument":{{"uri":{}}},"position":{{"line":1,"character":14}},"newName":"plus"}}}}"#,
+                quote(&uri)
+            )),
+            frame(&format!(
+                r#"{{"jsonrpc":"2.0","id":3,"method":"textDocument/rename","params":{{"textDocument":{{"uri":{}}},"position":{{"line":1,"character":14}},"newName":"1bad"}}}}"#,
+                quote(&uri)
+            )),
+        ]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let reply = |id: u32| {
+            bodies
+                .iter()
+                .find(|b| b.starts_with(&format!(r#"{{"jsonrpc":"2.0","id":{id},"#)))
+                .unwrap_or_else(|| panic!("no reply {id}: {bodies:?}"))
+        };
+        assert!(reply(0).contains("renameProvider"));
+        assert!(reply(1).contains(r#""name":"inc""#), "{}", reply(1));
+        let edit = reply(2);
+        assert!(edit.contains(r#""newText":"plus""#), "{edit}");
+        assert_eq!(edit.matches(r#""newText":"plus""#).count(), 2, "{edit}");
+        assert!(reply(3).contains("cannot rename this name"), "{}", reply(3));
+    }
+
+    /// The messages an editor's client sends over a session, in its order: each request is
+    /// answered, in order, and diagnostics follow each open, edit and save.
+    #[test]
+    fn an_editor_session_is_answered_in_order() {
+        let path = std::env::current_dir()
+            .unwrap()
+            .join("bench/erc20_full.lithe");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let uri = format!("file://{}", path.display()).replace(' ', "%20");
+        let change = |version: u32, text: &str| {
+            frame(&format!(
+                r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":{},"version":{version}}},"contentChanges":[{{"text":{}}}]}}}}"#,
+                quote(&uri),
+                quote(text)
+            ))
+        };
+        let named = |id: u32, method: &str, params: &str| {
+            frame(&format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{{"textDocument":{{"uri":{}}}{params}}}}}"#,
+                quote(&uri)
+            ))
+        };
+        // `mintTo`, where line 81 declares it.
+        let at = r#","position":{"line":80,"character":11}"#;
+        let (code, bodies) = session(&[
+            frame(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"capabilities":{}}}"#),
+            frame(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#),
+            open(&uri, &text),
+            change(2, &format!("{text}\nexternal function broken( is {{ }}\n")),
+            named(1, "textDocument/hover", at),
+            change(3, &text),
+            saved(&uri),
+            named(
+                2,
+                "textDocument/rename",
+                &format!(r#"{at},"newName":"mintInto""#),
+            ),
+            frame(
+                r#"{"jsonrpc":"2.0","id":3,"method":"workspace/symbol","params":{"query":"mint"}}"#,
+            ),
+            named(
+                4,
+                "textDocument/formatting",
+                r#","options":{"tabSize":2,"insertSpaces":true}"#,
+            ),
+            frame(r#"{"jsonrpc":"2.0","id":5,"method":"shutdown"}"#),
+            frame(r#"{"jsonrpc":"2.0","method":"exit"}"#),
+        ]);
+        assert_eq!(code, 0);
+        let errors = |body: &str| body.matches(r#""severity":1"#).count();
+        let kinds: Vec<String> = bodies
+            .iter()
+            .map(|body| {
+                if body.contains("publishDiagnostics") {
+                    format!("diagnostics:{}", errors(body))
+                } else {
+                    let id = body.split(r#""id":"#).nth(1).unwrap_or("?");
+                    format!("reply:{}", &id[..1])
+                }
+            })
+            .collect();
+        // Open, the broken edit (flushed by the hover behind it), the edit back (flushed by
+        // the save), and the save's own check. The save's build then finds nothing more,
+        // whenever its thread gets to say so.
+        let before_build = [
+            "reply:0",
+            "diagnostics:0",
+            "diagnostics:1",
+            "reply:1",
+            "diagnostics:0",
+            "diagnostics:0",
+        ];
+        assert_eq!(kinds[..6], before_build, "{bodies:?}");
+        let after: Vec<&str> = kinds[6..].iter().map(String::as_str).collect();
+        let replies: Vec<&&str> = after.iter().filter(|k| k.starts_with("reply")).collect();
+        assert_eq!(replies, [&"reply:2", &"reply:3", &"reply:4", &"reply:5"]);
+        assert_eq!(
+            after.len(),
+            5,
+            "one more publish, from the build: {after:?}"
+        );
+        assert!(after.contains(&"diagnostics:0"), "{after:?}");
+        let reply = |id: u32| {
+            bodies
+                .iter()
+                .find(|b| b.starts_with(&format!(r#"{{"jsonrpc":"2.0","id":{id},"#)))
+                .unwrap_or_else(|| panic!("no reply {id}"))
+        };
+        for capability in [
+            r#""save":true"#,
+            "hoverProvider",
+            "renameProvider",
+            "workspaceSymbolProvider",
+            "documentFormattingProvider",
+        ] {
+            assert!(reply(0).contains(capability), "{capability}: {}", reply(0));
+        }
+        assert!(reply(1).contains("mintTo"), "{}", reply(1));
+        let renames = reply(2).matches(r#""newText":"mintInto""#).count();
+        assert_eq!(renames, 3, "{}", reply(2));
+        assert!(reply(3).contains(r#""name":"mintTo""#), "{}", reply(3));
+        assert!(!reply(4).contains(r#""error""#), "{}", reply(4));
+        assert_eq!(reply(5), r#"{"jsonrpc":"2.0","id":5,"result":null}"#);
+    }
+
+    #[test]
+    fn did_change_coalesces_and_erc20_full_diagnostics_are_fast() {
+        let path = std::env::current_dir()
+            .unwrap()
+            .join("bench/erc20_full.lithe");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let uri = format!("file://{}", path.display());
+        let change = |text: &str| {
+            frame(&format!(
+                r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":{},"version":2}},"contentChanges":[{{"text":{}}}]}}}}"#,
+                quote(&uri),
+                quote(text)
+            ))
+        };
+        let mut slow = pace();
+        slow.debounce = Duration::from_millis(200);
+        let broken = text.clone() + "\nnope\n";
+        let (_, coalesced) = session_at(&[open(&uri, &text), change(&broken), change(&text)], slow);
+        let diags: Vec<_> = coalesced
+            .iter()
+            .filter(|b| b.contains("publishDiagnostics"))
+            .collect();
+        assert_eq!(diags.len(), 2, "open plus one coalesced change: {diags:?}");
+        assert!(
+            !diags[1].contains("unknown name"),
+            "the later text is what was checked: {}",
+            diags[1]
+        );
+        // The best of a few runs, so a loaded machine's scheduling noise does not count.
+        let mut best = u64::MAX;
+        for _ in 0..5 {
+            let diag = std::sync::Arc::new(AtomicU64::new(0));
+            let mut fast = pace();
+            fast.debounce = Duration::ZERO;
+            fast.diag = Some(std::sync::Arc::clone(&diag));
+            let (_, timed) = session_at(&[open(&uri, &text), change(&(text.clone() + "\n"))], fast);
+            assert!(
+                timed.iter().any(|b| b.contains("publishDiagnostics")),
+                "{timed:?}"
+            );
+            let ns = diag.load(Ordering::Relaxed);
+            assert!(ns > 0, "diagnostics timer did not run");
+            best = best.min(ns);
+        }
+        let ms = best as f64 / 1e6;
+        // Measured at 7.3 to 8.5 ms in the test profile and 6.8 to 7.1 ms optimized, where
+        // checking and building on every edit took 27 and 22: the limits leave a slower,
+        // busier machine about five and three times that.
+        let limit = if cfg!(debug_assertions) { 40.0 } else { 20.0 };
+        assert!(
+            ms <= limit,
+            "diagnostics on erc20_full took {ms:.1} ms (limit {limit} ms)"
         );
     }
 

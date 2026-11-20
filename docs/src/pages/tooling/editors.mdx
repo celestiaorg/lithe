@@ -5,7 +5,7 @@ description: "Lithe in VS Code, Cursor, and Recur: syntax highlighting, and the 
 
 # Editors
 
-The repository's `extensions/` directory holds a VS Code extension, which Cursor runs too, and a bundle for Recur. Both highlight `.lithe` files and run [`lithe lsp`](/tooling/cli#lithe-lsp), the compiler's language server. It reports errors and lint findings as you type, offers quick fixes, formats the file, and answers hover, go to definition, references, outline, completion, and signature help.
+The repository's `extensions/` directory holds a VS Code extension, which Cursor runs too, and a bundle for Recur. Both highlight `.lithe` files and run [`lithe lsp`](/tooling/cli#lithe-lsp), the compiler's language server. It reports errors and lint findings as you type, offers quick fixes, formats the file, and answers hover, go to definition, references, rename, outline, workspace symbols, completion, and signature help.
 
 ## Installing
 
@@ -21,6 +21,10 @@ The script installs the Recur bundle into `~/.recur/bundles/Lithe`. For VS Code 
 ## Settings
 
 In VS Code and Cursor, the `lithe.path` setting names the compiler to run, `lithe` by default. Set it to an absolute path when the editor can't find `lithe` on its `PATH`, or to try a compiler built from source, such as `target/release/lithe`. Recur runs `lithe lsp` from the `PATH`.
+
+## When errors appear
+
+On every edit, the server checks the file without compiling it, about 50 ms after you stop typing. Type errors, lint findings, and quick fixes come from this check. An error that only the code generator finds, such as a contract with no entrypoints, appears when you save: the server then builds the open files in the background. The next edit drops that build and clears its error until you save again.
 
 ## Other editors
 
