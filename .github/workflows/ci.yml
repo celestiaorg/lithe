@@ -130,12 +130,12 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build --release --locked
       - name: erc20_full compiles within 2x its baseline
-        # simplify: the baseline is a wall time from one machine (an M-series laptop, best
-        # of seven), so a runner more than twice as slow fails on hardware alone. If that
-        # happens, set it to this job's own best time on main, or compare against a
-        # reference binary built in the same job.
+        # simplify: the baseline is this job's own best of seven on a hosted runner, a wall
+        # time, so a change of runner hardware moves it. If the job starts failing with no
+        # compiler change, set it again from the job's log, or compare against a reference
+        # binary built in the same job.
         run: |
-          baseline_ms=18
+          baseline_ms=27
           limit_ms=$((baseline_ms * 2))
           best=999999
           for i in 1 2 3 4 5 6 7; do
