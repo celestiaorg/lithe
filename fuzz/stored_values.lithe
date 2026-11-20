@@ -1,0 +1,144 @@
+(* Fuzz target: values read from storage and kept in variables. What a variable holds is
+   the value as it was read, whatever is stored afterwards; a string or list stored before
+   a query is seen by the code after it; strings joined in a loop or chosen by a condition
+   are one value after it; and lists of strings come back as they went in. *)
+
+import "std/list";
+import "std/string";
+
+interface Oracle is {
+  view function price(asset : address) : uint;
+}
+
+type Entry is record {
+  n    : uint;
+  text : string;
+  xs   : list(uint);
+}
+
+storage is record {
+  name   : string;
+  entry  : Entry;
+  saved  : list(uint);
+  names  : list(string);
+  small  : list(uint8);
+  slots  : list(uint16, 6);
+  spare  : option(uint);
+  oracle : Oracle;
+  last   : uint;
+}
+
+external function setOracle(const o : Oracle) is {
+  storage.oracle := o;
+}
+
+(* The old name comes back, though the new one is stored before it is returned. *)
+external function rename(const name : string) : string is {
+  const old : string := storage.name;
+  storage.name := name;
+} with old
+
+external function swapEntry(
+  const n : uint;
+  const text : string;
+  const xs : list(uint)
+) : (uint, string, list(uint)) is {
+  const old : Entry := storage.entry;
+  storage.entry := { n = n; text = text; xs = xs; };
+} with (old.n, old.text, old.xs)
+
+external function replace(const xs : list(uint)) : list(uint) is {
+  const old : list(uint) := storage.saved;
+  storage.saved := xs;
+  List.push(storage.saved, xs.length);
+} with old
+
+(* A string stored before a query is the stored one after it. *)
+external function quote(const name : string; const asset : address) : (uint, uint) is {
+  storage.name := name;
+  const price : uint := query storage.oracle.price(asset);
+  storage.last := price;
+} with (price, storage.name.length)
+
+external function setNames(const names : list(string)) is {
+  storage.names := names;
+}
+
+external function addName(const name : string) is {
+  List.push(storage.names, name);
+}
+
+external function dropName() is {
+  List.pop(storage.names);
+}
+
+external view function names() : list(string) is
+  storage.names
+
+external view function nameAt(const i : uint) : string is
+  storage.names[i]
+
+(* Strings joined in a loop, then with one a condition picks. *)
+external view function joined(const sep : string; const pick : uint) : string is {
+  var out : string := "";
+  for name : string in storage.names bound 8 do {
+    out := String.concat(out, sep, name);
+  }
+  var tail : string := storage.name;
+  if pick % 3 = 0 then {
+    tail := sep;
+  } else if pick % 3 = 1 then {
+    tail := "none";
+  }
+} with String.concat(out, tail)
+
+external function pushSmall(const v : uint8) is {
+  List.push(storage.small, v);
+}
+
+external function setSmall(const i : uint; const v : uint8) is {
+  storage.small[i] := v;
+}
+
+external function popSmall() is {
+  List.pop(storage.small);
+}
+
+external view function smallAt(const i : uint) : uint8 is
+  storage.small[i]
+
+external function setSlot(const i : uint; const v : uint16) is {
+  storage.slots[i] := v;
+}
+
+external view function slotAt(const i : uint) : uint16 is
+  storage.slots[i]
+
+external function keep(const v : uint; const on : bool) : uint is {
+  const before : option(uint) := storage.spare;
+  if on then {
+    storage.spare := Some(v);
+  } else {
+    storage.spare := None;
+  }
+} with case before of { Some(x) -> x + 1 | None -> 0 }
+
+external view function name() : string is
+  storage.name
+
+external view function saved() : list(uint) is
+  storage.saved
+
+external view function last() : uint is
+  storage.last
+
+(* A stored list passed as a value to a function compiled once is read, not named. *)
+pure function weigh(const xs : list(uint)) : uint is {
+  var s : uint := 0;
+  for (i, x) : (uint, uint) in xs bound 64 do {
+    s := (s + (i + 1) * (x % 1000)) % 1000003;
+  }
+} with s * 100 + xs.length % 100
+
+external view function weights() : (uint, uint) is
+  (weigh(storage.saved), weigh(storage.saved) + weigh([storage.last % 7, 3]))

@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use super::track::{Place, Track};
-use super::{stack_io, Inst, Label, Mem, Op, Push, PushLabel, JUMP, MLOAD, MSTORE, POP};
+use super::{stack_io, Inst, Label, Op, Push, PushLabel, JUMP, MLOAD, MSTORE, POP};
 
 /// Label ids from here up are marks.
 pub(crate) const MARK: u32 = 0xF000_0000;
@@ -94,7 +94,6 @@ impl Sim {
         while k < code.len() {
             let inst = code[k];
             let key = |i: Inst| match i {
-                Mem(a) => Some(MemKey::Sym(a)),
                 Push(w) => Some(MemKey::Addr(w)),
                 _ => None,
             };

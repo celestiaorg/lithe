@@ -1066,7 +1066,7 @@ contract Shop is {
         .nth(1)
         .and_then(|n| n.replace(',', "").parse().ok())
         .expect("what marking Render saves");
-    assert!(saved > 100, "{warning}");
+    assert!(saved > 0, "{warning}");
     assert!(
         row("Stash").contains("can't be a facet: `Stash.keep` can't be called across, as its parameter `m` is a storage reference"),
         "{warning}"

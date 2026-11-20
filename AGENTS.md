@@ -34,6 +34,7 @@ target/release/lithe prove <file>.lithe               # for every file with a .s
 ## Where things go
 
 - `src/`: compiler, CLI (`src/main.rs`), LSP. Codegen is in `src/gen` and `src/asm`, the prover in `src/prove`, and the runtime tests in `src/evm`.
+- `src/gen/mir`: the pipeline. `lower` turns the checked program into an SSA graph per function, `build` folds and numbers values as the graph is made, `emit` writes stack code. Around it in `src/gen`: `dispatch` (selector dispatch and routing), `body` (which queries a body issues early), `types` (type, ABI and layout queries), `walk`, `peers`, `immutable`, and `certify` (what a build tells the prover). `src/asm` holds the bytecode passes that run over the result. `LITHE_MIR_DUMP=1` prints each function's stack code and the inlining report; `LITHE_MIR_TIMES=1` times each phase.
 - `src/evm/matrix.rs` crosses every type with every place a value can live. Extend it when you add a type, a place, or a feature that touches either.
 - `examples/reject/`: programs that must fail to compile. Each needs a rule in `src/evm/examples.rs`.
 - `bench/`: each contract in Lithe and Solidity. `python3 bench/run.py [name ...]` compares size and gas on anvil (needs Foundry and solc).

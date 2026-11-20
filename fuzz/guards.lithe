@@ -1,0 +1,37 @@
+(* Fuzz target: checks a guard proves away on its path, beside values from off it. *)
+
+import "std/uint";
+
+storage is record {
+  n  : uint;
+  a8 : uint8;
+}
+
+external function shifted(const x : uint8; const m : uint8) is {
+  const w : uint := Uint.wrappingSub(uint(x), uint(m));
+  var r : uint8 := 0;
+  if x > m then { r := x - m; }
+  storage.n := w >> 8;
+  storage.a8 := r;
+}
+
+external function narrowed(const x : uint8; const m : uint8) is {
+  const w : uint := Uint.wrappingSub(uint(x), uint(m));
+  var r : uint8 := 0;
+  if x > m then { r := x - m; }
+  storage.a8 := uint8(w) + r;
+}
+
+external function asserted(const x : uint8; const m : uint8) is {
+  const w : uint := Uint.wrappingSub(uint(x), uint(m));
+  if x >= m then { storage.a8 := x - m; }
+  storage.n := w & 0xff;
+}
+
+external function addNot(const x : uint8; const y : uint8) is {
+  if uint(x) <= ~uint(y) then { storage.a8 := x + y; }
+}
+
+external function addLeft(const x : uint8; const y : uint8) is {
+  if x <= 255 - y then { storage.a8 := x + y; }
+}

@@ -1,82 +1,147 @@
 ---
 title: "Bytecode size and gas"
-description: "Lithe contracts compile to about 33% smaller bytecode than equivalent optimized Solidity, with the same storage, logs, and return data."
+description: "Lithe contracts compile to about 40% smaller bytecode than equivalent optimized Solidity, with the same storage, logs, and return data."
 ---
 
 # Bytecode size and gas
 
-Lithe's restrictions make its programs easier to compile, as well as easier to review. Across the benchmark suite, Lithe's runtime bytecode is **about 33% smaller** than the best of five optimized `solc` builds of the equivalent Solidity. Every one of the 51 contracts comes in smaller, most by 20–45%.
+Lithe's restrictions make its programs easier to compile, as well as easier to review. Across the benchmark suite, Lithe's runtime bytecode is **about 40% smaller** than the best of five optimized `solc` builds of the equivalent Solidity. Every one of the 51 contracts comes in smaller, most by 25–55%.
 
 ## Runtime bytecode
 
-Runtime bytecode size in bytes. Smaller is better. `solc` is 0.8.36, and each column is one optimizer configuration. The `solar` columns build the same Solidity with [Solar](https://github.com/paradigmxyz/solar), a new Solidity compiler written in Rust, at commit `6e1729d8`, optimizing for gas and for size:
+Runtime bytecode size in bytes. Smaller is better. `solc` is 0.8.36, and each column is one optimizer configuration. The `solar` columns build the same Solidity with [Solar](https://github.com/paradigmxyz/solar), a new Solidity compiler written in Rust, version 0.3.0 (commit `e7a91fc7`), optimizing for gas and for size:
 
-| contract | lithe | solc ir r1 | solc ir r200 | solc ir r10k | solc ir r1M | solc r200 | solar gas | solar size | lithe vs best solc | lithe vs best solar |
-|---|---|---|---|---|---|---|---|---|---|---|
-| base64 | 891 | 1301 | 1322 | 1655 | 1655 | 1170 | 909 | 826 | -23.8% | +7.9% |
-| book | 1160 | 1247 | 1251 | 1766 | 1766 | 1585 | 913 | 867 | -7.0% | +33.8% |
-| codec | 2596 | 2657 | 2652 | 3049 | 3619 | 3117 | 2869 | 2320 | -2.1% | +11.9% |
-| collections | 627 | 1085 | 1098 | 1380 | 1775 | 1392 | 755 | 654 | -42.2% | -4.1% |
-| counter | 198 | 331 | 336 | 489 | 489 | 408 | 236 | 205 | -40.2% | -3.4% |
-| date_time | 1085 | 1225 | 1272 | 2492 | 2792 | 1860 | 1072 | 1011 | -11.4% | +7.3% |
-| deployers | 1512 | 1916 | 1903 | 2617 | 2917 | 2877 | 1466 | 1303 | -20.5% | +16.0% |
-| dialer | 1411 | 1803 | 1841 | 2315 | 2495 | 2229 | 1316 | 1098 | -21.7% | +28.5% |
-| env | 81 | 128 | 128 | 213 | 213 | 137 | 82 | 80 | -36.7% | +1.2% |
-| erc1155 | 4990 | 6610 | 6788 | 9315 | 9975 | 7072 | 4635 | 3979 | -24.5% | +25.4% |
-| erc20 | 2223 | 3090 | 3135 | 4439 | 5159 | 3056 | 2396 | 1979 | -27.3% | +12.3% |
-| erc20_full | 7198 | 10512 | 10747 | 13612 | 16021 | 10226 | 7433 | 6208 | -29.6% | +15.9% |
-| erc4626 | 2809 | 3683 | 3735 | 4752 | 5352 | 4408 | 2340 | 2294 | -23.7% | +22.4% |
-| erc6909 | 3273 | 4558 | 4653 | 5658 | 6565 | 4587 | 2765 | 2614 | -28.2% | +25.2% |
-| erc721 | 2998 | 4759 | 4837 | 7188 | 8438 | 5055 | 3173 | 2696 | -37.0% | +11.2% |
-| erc721_full | 5546 | 8611 | 8739 | 11869 | 14090 | 8421 | 6260 | 5169 | -34.1% | +7.3% |
-| exchange | 417 | 614 | 615 | 822 | 822 | 850 | 441 | 385 | -32.1% | +8.3% |
-| executor | 738 | 1439 | 1440 | 2026 | 2026 | 1798 | 922 | 883 | -48.7% | -16.4% |
-| fixed_point | 2811 | 3526 | 3553 | 4285 | 4740 | 3683 | 3027 | 2846 | -20.3% | -1.2% |
-| flash_borrower | 830 | 1013 | 1056 | 1446 | 1446 | 1225 | 687 | 687 | -18.1% | +20.8% |
-| layout | 705 | 1093 | 1094 | 1308 | 1668 | 1447 | 731 | 712 | -35.5% | -1.0% |
-| lists | 1605 | 2357 | 2352 | 2785 | 3175 | 2698 | 2354 | 1811 | -31.8% | -11.4% |
-| logs | 277 | 369 | 371 | 565 | 565 | 529 | 246 | 245 | -24.9% | +13.1% |
-| loops | 880 | 1392 | 1401 | 1717 | 2017 | 1759 | 997 | 792 | -36.8% | +11.1% |
-| math | 424 | 672 | 672 | 809 | 989 | 1063 | 433 | 418 | -36.9% | +1.4% |
-| names | 1313 | 2743 | 2805 | 3011 | 3708 | 2869 | 2075 | 1655 | -52.1% | -20.7% |
-| numerics | 1653 | 3176 | 3185 | 4195 | 4915 | 3764 | 2250 | 2002 | -48.0% | -17.4% |
-| overloads | 458 | 715 | 723 | 849 | 1089 | 906 | 438 | 423 | -35.9% | +8.3% |
-| ownable_roles | 952 | 1285 | 1296 | 1695 | 2115 | 1455 | 891 | 814 | -25.9% | +17.0% |
-| profile | 557 | 1135 | 1162 | 1515 | 1515 | 866 | 615 | 612 | -35.7% | -9.0% |
-| reasons | 844 | 1312 | 1312 | 1884 | 2064 | 1808 | 1186 | 1083 | -35.7% | -22.1% |
-| receiver | 454 | 691 | 737 | 1094 | 1094 | 885 | 516 | 534 | -34.3% | -12.0% |
-| receiver1155 | 905 | 1611 | 1770 | 2372 | 2372 | 1806 | 1243 | 1098 | -43.8% | -17.6% |
-| records | 1508 | 3398 | 3455 | 4489 | 5407 | 4127 | 2051 | 1960 | -55.6% | -23.1% |
-| registry | 1001 | 2190 | 2240 | 2533 | 3200 | 1699 | 1082 | 1054 | -41.1% | -5.0% |
-| relay | 1875 | 3081 | 3147 | 3494 | 4040 | 2800 | 2188 | 1806 | -33.0% | +3.8% |
-| safe_erc20 | 497 | 655 | 655 | 955 | 955 | 757 | 435 | 415 | -24.1% | +19.8% |
-| selectors | 402 | 620 | 622 | 1214 | 1214 | 769 | 415 | 378 | -35.2% | +6.3% |
-| shapes | 1309 | 1790 | 1800 | 2474 | 2684 | 2227 | 1486 | 1387 | -26.9% | -5.6% |
-| solady_erc1155 | 2682 | 3429 | 3474 | 3765 | 4365 | 4568 | 3065 | 2806 | -21.8% | -4.4% |
-| solady_erc20 | 1404 | 2083 | 2109 | 2388 | 2808 | 2317 | 1557 | 1491 | -32.6% | -5.8% |
-| solady_erc721 | 2099 | 2717 | 2745 | 3465 | 4039 | 3138 | 2110 | 1994 | -22.7% | +5.3% |
-| staking | 2471 | 3256 | 3263 | 4118 | 4838 | 3352 | 2370 | 2141 | -24.1% | +15.4% |
-| strings | 1669 | 2354 | 2389 | 2890 | 3254 | 2362 | 1488 | 1452 | -29.1% | +14.9% |
-| tally | 439 | 599 | 641 | 823 | 823 | 618 | 509 | 399 | -26.7% | +10.0% |
-| texts | 4068 | 6477 | 6633 | 7092 | 8666 | 6431 | 5556 | 4582 | -36.7% | -11.2% |
-| token | 357 | 566 | 571 | 834 | 834 | 765 | 356 | 354 | -36.9% | +0.8% |
-| traits | 468 | 647 | 651 | 979 | 979 | 905 | 560 | 498 | -27.7% | -6.0% |
-| uniswap_v2_factory | 5900 | 9707 | 9787 | 12359 | 13747 | 10120 | 5735 | 5307 | -39.2% | +11.2% |
-| uniswap_v2_pair | 4948 | 7680 | 7713 | 9634 | 10782 | 8300 | 4584 | 4250 | -35.6% | +16.4% |
-| vault | 387 | 618 | 620 | 951 | 951 | 856 | 391 | 390 | -37.4% | -0.8% |
-| **total** | **87905** | 130526 | 132496 | 169644 | 193227 | 143122 | 93610 | 82967 | **-32.7%** | **+6.0%** |
+| contract           | lithe     | solc ir r1 | solc ir r200 | solc ir r10k | solc ir r1M | solc r200 | solar gas | solar size | lithe vs best solc | lithe vs best solar |
+| ------------------ | --------- | ---------- | ------------ | ------------ | ----------- | --------- | --------- | ---------- | ------------------ | ------------------- |
+| base64             | 837       | 1301       | 1322         | 1655         | 1655        | 1170      | 909       | 826        | -28.5%             | +1.3%               |
+| book               | 743       | 1247       | 1251         | 1766         | 1766        | 1585      | 915       | 867        | -40.4%             | -14.3%              |
+| codec              | 1879      | 2657       | 2652         | 3049         | 3619        | 3117      | 2869      | 2321       | -29.1%             | -19.0%              |
+| collections        | 612       | 1085       | 1098         | 1380         | 1775        | 1392      | 758       | 654        | -43.6%             | -6.4%               |
+| counter            | 205       | 331        | 336          | 489          | 489         | 408       | 236       | 205        | -38.1%             | +0.0%               |
+| date_time          | 1001      | 1225       | 1272         | 2492         | 2792        | 1860      | 1072      | 1011       | -18.3%             | -1.0%               |
+| deployers          | 1182      | 1916       | 1903         | 2617         | 2917        | 2877      | 1466      | 1303       | -37.9%             | -9.3%               |
+| dialer             | 1091      | 1803       | 1841         | 2315         | 2495        | 2229      | 1316      | 1098       | -39.5%             | -0.6%               |
+| env                | 82        | 128        | 128          | 213          | 213         | 137       | 82        | 80         | -35.9%             | +2.5%               |
+| erc1155            | 4360      | 6610       | 6788         | 9315         | 9975        | 7072      | 4635      | 3974       | -34.0%             | +9.7%               |
+| erc20              | 1826      | 3090       | 3135         | 4439         | 5159        | 3056      | 2398      | 1981       | -40.2%             | -7.8%               |
+| erc20_full         | 6157      | 10512      | 10747        | 13612        | 16021       | 10226     | 7430      | 6213       | -39.8%             | -0.9%               |
+| erc4626            | 2738      | 3683       | 3735         | 4752         | 5352        | 4408      | 2345      | 2342       | -25.7%             | +16.9%              |
+| erc6909            | 2914      | 4558       | 4653         | 5658         | 6565        | 4587      | 2765      | 2609       | -36.1%             | +11.7%              |
+| erc721             | 2563      | 4759       | 4837         | 7188         | 8438        | 5055      | 3180      | 2698       | -46.1%             | -5.0%               |
+| erc721_full        | 4588      | 8611       | 8739         | 11869        | 14090       | 8421      | 6265      | 5154       | -45.5%             | -11.0%              |
+| exchange           | 404       | 614        | 615          | 822          | 822         | 850       | 441       | 385        | -34.2%             | +4.9%               |
+| executor           | 671       | 1439       | 1440         | 2026         | 2026        | 1798      | 923       | 885        | -53.4%             | -24.2%              |
+| fixed_point        | 2865      | 3526       | 3553         | 4285         | 4740        | 3683      | 3025      | 2849       | -18.7%             | +0.6%               |
+| flash_borrower     | 529       | 1013       | 1056         | 1446         | 1446        | 1225      | 687       | 687        | -47.8%             | -23.0%              |
+| layout             | 674       | 1093       | 1094         | 1308         | 1668        | 1447      | 732       | 714        | -38.3%             | -5.6%               |
+| lists              | 1377      | 2357       | 2352         | 2785         | 3175        | 2698      | 2360      | 1817       | -41.5%             | -24.2%              |
+| logs               | 239       | 369        | 371          | 565          | 565         | 529       | 246       | 245        | -35.2%             | -2.4%               |
+| loops              | 903       | 1392       | 1401         | 1717         | 2017        | 1759      | 997       | 792        | -35.1%             | +14.0%              |
+| math               | 428       | 672        | 672          | 809          | 989         | 1063      | 434       | 420        | -36.3%             | +1.9%               |
+| names              | 1111      | 2743       | 2805         | 3011         | 3708        | 2869      | 2075      | 1655       | -59.5%             | -32.9%              |
+| numerics           | 1715      | 3176       | 3185         | 4195         | 4915        | 3764      | 2252      | 2013       | -46.0%             | -14.8%              |
+| overloads          | 432       | 715        | 723          | 849          | 1089        | 906       | 438       | 423        | -39.6%             | +2.1%               |
+| ownable_roles      | 934       | 1285       | 1296         | 1695         | 2115        | 1455      | 891       | 814        | -27.3%             | +14.7%              |
+| profile            | 395       | 1135       | 1162         | 1515         | 1515        | 866       | 617       | 614        | -54.4%             | -35.7%              |
+| reasons            | 781       | 1312       | 1312         | 1884         | 2064        | 1808      | 1186      | 1089       | -40.5%             | -28.3%              |
+| receiver           | 380       | 691        | 737          | 1094         | 1094        | 885       | 516       | 562        | -45.0%             | -26.4%              |
+| receiver1155       | 903       | 1611       | 1770         | 2372         | 2372        | 1806      | 1243      | 1098       | -43.9%             | -17.8%              |
+| records            | 1303      | 3398       | 3455         | 4489         | 5407        | 4127      | 2066      | 1975       | -61.7%             | -34.0%              |
+| registry           | 859       | 2190       | 2240         | 2533         | 3200        | 1699      | 1092      | 1064       | -49.4%             | -19.3%              |
+| relay              | 1732      | 3081       | 3147         | 3494         | 4040        | 2800      | 2188      | 1806       | -38.1%             | -4.1%               |
+| safe_erc20         | 527       | 655        | 655          | 955          | 955         | 757       | 437       | 416        | -19.5%             | +26.7%              |
+| selectors          | 341       | 620        | 622          | 1214         | 1214        | 769       | 427       | 390        | -45.0%             | -12.6%              |
+| shapes             | 1077      | 1790       | 1800         | 2474         | 2684        | 2227      | 1486      | 1387       | -39.8%             | -22.4%              |
+| solady_erc1155     | 2551      | 3429       | 3474         | 3765         | 4365        | 4568      | 3076      | 2811       | -25.6%             | -9.2%               |
+| solady_erc20       | 1431      | 2083       | 2109         | 2388         | 2808        | 2317      | 1583      | 1507       | -31.3%             | -5.0%               |
+| solady_erc721      | 1760      | 2717       | 2745         | 3465         | 4039        | 3138      | 2104      | 1987       | -35.2%             | -11.4%              |
+| staking            | 1993      | 3256       | 3263         | 4118         | 4838        | 3352      | 2371      | 2141       | -38.8%             | -6.9%               |
+| strings            | 1012      | 2354       | 2389         | 2890         | 3254        | 2362      | 1494      | 1454       | -57.0%             | -30.4%              |
+| tally              | 401       | 599        | 641          | 823          | 823         | 618       | 509       | 399        | -33.1%             | +0.5%               |
+| texts              | 3556      | 6477       | 6633         | 7092         | 8666        | 6431      | 5556      | 4582       | -44.7%             | -22.4%              |
+| token              | 357       | 566        | 571          | 834          | 834         | 765       | 355       | 353        | -36.9%             | +1.1%               |
+| traits             | 464       | 647        | 651          | 979          | 979         | 905       | 560       | 498        | -28.3%             | -6.8%               |
+| uniswap_v2_factory | 5611      | 9707       | 9787         | 12359        | 13747       | 10120     | 5758      | 5330       | -42.2%             | +5.3%               |
+| uniswap_v2_pair    | 4692      | 7680       | 7713         | 9634         | 10782       | 8300      | 4603      | 4248       | -38.9%             | +10.5%              |
+| vault              | 379       | 618        | 620          | 951          | 951         | 856       | 391       | 390        | -38.7%             | -2.8%               |
+| **total**          | **77565** | 130526     | 132496       | 169644       | 193227      | 143122    | 93760     | 83136      | **-40.6%**         | **-6.7%**           |
 
 The builds are `--via-ir` with 1, 200, 10,000, and 1,000,000 optimizer runs, and the legacy pipeline with 200 runs. The high run counts trade size for gas, so they set the bar for the gas comparison below. All are compiled `--no-cbor-metadata`, so metadata doesn't count against Solidity. Solar appends no metadata, and its builds are `-Ogas` and `-Osize`.
 
-Solar is the closer comparison. Its size build is about 6% smaller than Lithe across the suite, and smaller on 31 of the 51 contracts. Lithe is still about 6% smaller than Solar's gas build. Lithe weighs bytes against gas, so it gives up some bytes to save gas on code that runs often.
+Solar is the closer comparison. Lithe is about 7% smaller than Solar's size build across the suite, and smaller on 34 of the 51 contracts. It is about 17% smaller than Solar's gas build. Lithe weighs bytes against gas, so it gives up some bytes to save gas on code that runs often.
 
-Smaller code means cheaper deployment, and more room under the EIP-170 contract size limit of 24,576 bytes. A contract that still doesn't fit can [run modules from shared facets](/tooling/size-limit). Deployment gas falls with it: about 19% across the suite, 22% for the ERC-20, 33% for the ERC-721, and 38% for the Uniswap v2 factory. Each contract is set up as it deploys, by a `deploy` in Lithe and a constructor in Solidity, with the same arguments.
+Smaller code means cheaper deployment, and more room under the EIP-170 contract size limit of 24,576 bytes. A contract that still doesn't fit can [run modules from shared facets](/tooling/size-limit). Deployment gas falls with it: about 25% across the suite, 34% for the ERC-20, 41% for the ERC-721, and 41% for the Uniswap v2 factory. Each contract is set up as it deploys, by a `deploy` in Lithe and a constructor in Solidity, with the same arguments.
 
 ## Gas per transaction
 
-Storage reads and writes dominate the cost of most transactions, and both compilers touch the same slots, so what separates them is everything else a transaction runs: dispatch, argument decoding, arithmetic, loops, memory, hashing, and encoding. On that part Lithe spends **about a third less gas** than the best `solc` build of each contract, and about 6% less in total execution gas, or 2% leaving out the pairs the Uniswap factory deploys. Of the 1,577 transactions and calls in the suite, Lithe costs less than every `solc` build on 1,257, the same on 197, and more on 123, most of those by under 2%. Solar is about even with Lithe: its gas build spends 0.1% less in total. Against the cheaper of Solar's two builds, Lithe costs more on 784 transactions, 747 of them by under 1%, the same on 242, and less on 551. Solar's total lead comes from the Uniswap factory, whose `createPair` deploys a pair 364 bytes smaller in Solar's gas build. Without those two transactions, Lithe spends less in total. The compiler weighs each choice between smaller and faster code by an estimate of how often the code runs, so a hot path can spend a few bytes to save gas on every call.
+Storage reads and writes dominate the cost of most transactions, and both compilers touch the same slots, so what separates them is everything else a transaction runs: dispatch, argument decoding, arithmetic, loops, memory, hashing, and encoding. On that part Lithe spends **about a third less gas** than the best `solc` build of each contract, and about 6% less in total execution gas, or 2.5% leaving out the pairs the Uniswap factory deploys. Of the 1,577 transactions and calls in the suite, Lithe costs less than every `solc` build on 1,289, the same on 196, and more on 92, all but one of those by under 2%. Solar is about even with Lithe: its gas build spends 0.2% more in total, and its size build 0.6% more. Against the cheaper of Solar's two builds, Lithe costs less on 722 transactions, the same on 247, and more on 608, 582 of them by under 1%. The compiler weighs each choice between smaller and faster code by an estimate of how often the code runs, so a hot path can spend a few bytes to save gas on every call.
 
 Some transactions still cost more than their Solidity versions. A transition that defers an external call runs its storage writes first, so when the call then reverts, those writes were paid for. A Solidity contract that makes the call before writing reverts sooner.
+
+## Compile time
+
+Milliseconds to compile each contract, start to finish, one process per contract. Smaller is better. `lithe` compiles into an empty build cache, and `lithe cached` reads the cache back:
+
+| contract           | lithe   | lithe cached | solc ir r200 | solc r200 | solar gas | solar size |
+| ------------------ | ------- | ------------ | ------------ | --------- | --------- | ---------- |
+| base64             | 8       | 5            | 57           | 26        | 10        | 9          |
+| book               | 9       | 7            | 82           | 37        | 14        | 12         |
+| codec              | 13      | 7            | 141          | 86        | 19        | 22         |
+| collections        | 9       | 8            | 106          | 44        | 10        | 10         |
+| counter            | 8       | 7            | 22           | 12        | 6         | 5          |
+| date_time          | 10      | 8            | 87           | 37        | 9         | 9          |
+| deployers          | 11      | 9            | 113          | 43        | 12        | 12         |
+| dialer             | 10      | 7            | 104          | 72        | 13        | 13         |
+| env                | 8       | 7            | 16           | 8         | 5         | 5          |
+| erc1155            | 26      | 11           | 423          | 181       | 31        | 30         |
+| erc20              | 10      | 7            | 246          | 75        | 17        | 17         |
+| erc20_full         | 28      | 18           | 705          | 230       | 35        | 38         |
+| erc4626            | 16      | 10           | 275          | 101       | 21        | 23         |
+| erc6909            | 12      | 8            | 646          | 211       | 18        | 18         |
+| erc721             | 15      | 10           | 367          | 121       | 24        | 25         |
+| erc721_full        | 18      | 10           | 571          | 181       | 32        | 33         |
+| exchange           | 8       | 7            | 44           | 20        | 7         | 7          |
+| executor           | 10      | 8            | 86           | 32        | 9         | 9          |
+| fixed_point        | 15      | 10           | 158          | 51        | 15        | 16         |
+| flash_borrower     | 9       | 7            | 70           | 35        | 9         | 9          |
+| layout             | 9       | 7            | 86           | 31        | 8         | 8          |
+| lists              | 9       | 8            | 144          | 70        | 18        | 18         |
+| logs               | 8       | 7            | 32           | 17        | 6         | 6          |
+| loops              | 11      | 8            | 86           | 31        | 10        | 10         |
+| math               | 9       | 7            | 45           | 29        | 7         | 7          |
+| names              | 10      | 7            | 170          | 75        | 17        | 16         |
+| numerics           | 12      | 9            | 197          | 77        | 19        | 18         |
+| overloads          | 10      | 8            | 48           | 20        | 7         | 7          |
+| ownable_roles      | 10      | 8            | 78           | 24        | 9         | 8          |
+| profile            | 8       | 7            | 95           | 52        | 11        | 10         |
+| reasons            | 9       | 7            | 74           | 31        | 10        | 9          |
+| receiver           | 8       | 7            | 52           | 29        | 8         | 8          |
+| receiver1155       | 9       | 7            | 86           | 45        | 14        | 13         |
+| records            | 10      | 7            | 182          | 58        | 13        | 14         |
+| registry           | 10      | 7            | 134          | 67        | 13        | 12         |
+| relay              | 12      | 7            | 183          | 85        | 18        | 20         |
+| safe_erc20         | 10      | 8            | 50           | 18        | 8         | 8          |
+| selectors          | 9       | 7            | 40           | 21        | 7         | 6          |
+| shapes             | 10      | 7            | 104          | 47        | 11        | 12         |
+| solady_erc1155     | 15      | 8            | 174          | 85        | 23        | 24         |
+| solady_erc20       | 10      | 8            | 93           | 43        | 10        | 10         |
+| solady_erc721      | 11      | 8            | 129          | 54        | 15        | 16         |
+| staking            | 13      | 8            | 223          | 60        | 16        | 15         |
+| strings            | 10      | 7            | 114          | 53        | 12        | 12         |
+| tally              | 7       | 5            | 30           | 15        | 6         | 6          |
+| texts              | 18      | 8            | 358          | 175       | 32        | 32         |
+| token              | 9       | 7            | 34           | 15        | 6         | 6          |
+| traits             | 8       | 7            | 46           | 24        | 7         | 7          |
+| uniswap_v2_factory | 30      | 10           | 656          | 158       | 22        | 23         |
+| uniswap_v2_pair    | 23      | 10           | 521          | 135       | 23        | 22         |
+| vault              | 9       | 7            | 43           | 17        | 7         | 6          |
+| **total**          | **597** | 404          | 8628         | 3265      | 707       | 711        |
+
+Lithe compiles the whole suite in about 0.6 seconds. The legacy `solc` pipeline takes about 3.3 seconds, five times as long, and `--via-ir` about 8.6 seconds, fourteen times as long. The four `--via-ir` builds are within 1% of each other, so the table shows one. Lithe is faster than every `solc` build on 50 of the 51 contracts.
+
+Solar is the closer comparison here too. It takes about 0.71 seconds for the suite with either setting, a fifth longer than Lithe. Lithe is faster than both Solar builds on 29 contracts and slower than both on 19. The smallest contracts take 5 to 10 milliseconds in every compiler, most of it starting the process.
+
+Each figure is the median of ten runs, on an Apple M4 Max. `bench/run.py` prints the same table from a single run.
 
 ## The comparison is like for like
 

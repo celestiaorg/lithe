@@ -2412,7 +2412,7 @@ def main():
     rows = [[name, *seconds[name]] for name in pairs]
     rows.append(["total", *(sum(col) for col in zip(*(seconds[n] for n in pairs)))])
     # Each other build's column sits one further right, past `lithe cached`.
-    rows = [[r[0], *(f"{t * 1000:.0f}" for t in r[1:]), *(f"{r[1] / min(r[i + 1] for i in idx):.1f}x" for idx in family.values())]
+    rows = [[r[0], *(f"{t * 1000:.0f}" for t in r[1:]), *(f"{r[1] / min(r[i + 2] for i in idx):.1f}x" for idx in family.values())]
             for r in rows]
     table(["contract", "lithe", "lithe cached", *others, *(f"lithe vs fastest {f}" for f in family)], rows)
 

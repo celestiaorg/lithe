@@ -187,91 +187,13 @@ pub(super) fn compare_builds_from(
 fn optimizer_preserves_behavior() {
     let steps = steps_from_env("LITHE_FUZZ_STEPS", 200);
     for (path, rel) in differential_targets() {
-        let plain = crate::compile_file_unoptimized(&path).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        crate::gen::mir::PLAIN.set(true);
+        let plain = compile_file(&path);
+        crate::gen::mir::PLAIN.set(false);
+        let plain = plain.unwrap_or_else(|e| panic!("{rel}: {e}"));
         let plain = deploy(&plain).unwrap_or_else(|e| panic!("{rel}: plain deploy: {e}"));
         differential(&path, &rel, &plain, steps, true);
     }
-}
-
-/// Builds that read stored constants as constants and place allocations where the heap's
-/// top is known must behave as builds without them, for every program, whichever build is
-/// smaller. `LITHE_FUZZ_STEPS` sets calls per program.
-#[test]
-fn static_heap_preserves_behavior() {
-    let steps = steps_from_env("LITHE_FUZZ_STEPS", 200);
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut bench = Vec::new();
-    lithe_files(&root.join("bench"), &mut bench);
-    let bench = bench.into_iter().filter_map(|path| {
-        let src = std::fs::read_to_string(&path).ok()?;
-        let rel = path
-            .strip_prefix(&root)
-            .ok()?
-            .to_string_lossy()
-            .replace('\\', "/");
-        (is_program(&src) && contracts(&src) <= 1 && !needs_deploy_args(&src))
-            .then_some((path, rel))
-    });
-    let build = |path: &std::path::Path, rel: &str, on: bool| {
-        crate::gen::FORCE_STATIC_HEAP.set(Some(on));
-        let code = compile_file(path);
-        crate::gen::FORCE_STATIC_HEAP.set(None);
-        deploy(&code.unwrap_or_else(|e| panic!("{rel}: {e}")))
-            .unwrap_or_else(|e| panic!("{rel}: deploy: {e}"))
-    };
-    let mut differ = 0;
-    for (path, rel) in differential_targets().into_iter().chain(bench) {
-        OPAQUE_CODE.set(true);
-        install_mocks();
-        let (off, on) = (build(&path, &rel, false), build(&path, &rel, true));
-        if off == on {
-            continue;
-        }
-        differ += 1;
-        let checked = crate::check::check(
-            crate::modules::load(&Sources::disk(), &path).expect("load"),
-            Default::default(),
-        )
-        .expect("check");
-        let mut methods = crate::route::method_ids(&checked).expect("methods");
-        // Other characters than an alphabet's decode to whatever memory the lookups reach,
-        // which the builds lay out differently.
-        methods.retain(|(sig, _)| !sig.starts_with("decode("));
-        compare_builds(&rel, &methods, &off, &on, steps, true);
-    }
-    assert!(differ > 20, "only {differ} programs placed an allocation");
-}
-
-/// Copies of outlined functions specialized to the constants their calls pass must behave as
-/// the one copy every call shares. `LITHE_FUZZ_STEPS` sets calls per program.
-#[test]
-fn specialized_copies_preserve_behavior() {
-    let steps = steps_from_env("LITHE_FUZZ_STEPS", 200);
-    let build = |path: &std::path::Path, rel: &str, on: bool| {
-        crate::gen::FORCE_SPECIALIZE.set(Some(on));
-        let code = compile_file(path);
-        crate::gen::FORCE_SPECIALIZE.set(None);
-        deploy(&code.unwrap_or_else(|e| panic!("{rel}: {e}")))
-            .unwrap_or_else(|e| panic!("{rel}: deploy: {e}"))
-    };
-    let mut differ = 0;
-    for (path, rel) in differential_targets() {
-        OPAQUE_CODE.set(true);
-        install_mocks();
-        let (off, on) = (build(&path, &rel, false), build(&path, &rel, true));
-        if off == on {
-            continue;
-        }
-        differ += 1;
-        let checked = crate::check::check(
-            crate::modules::load(&Sources::disk(), &path).expect("load"),
-            Default::default(),
-        )
-        .expect("check");
-        let methods = crate::route::method_ids(&checked).expect("methods");
-        compare_builds(&rel, &methods, &off, &on, steps, true);
-    }
-    assert!(differ > 5, "only {differ} programs specialized a function");
 }
 
 /// Runs every program against creation code built by another compiler revision and demands
@@ -512,4 +434,98 @@ fn random_word(ty: &str, rng: &mut Rng) -> Word {
         };
     }
     rng.word()
+}
+
+/// Code over its size limit is built again with the functions that defer or query compiled
+/// once, each keeping the calls it defers in a list, and then with shared runs of code
+/// weighed more against gas. Every bench, example and fuzz program that defers or queries
+/// behaves the same built those ways, whatever its size: one random call sequence against
+/// both builds, each from the storage its creation code leaves. `LITHE_FUZZ_STEPS` sets calls
+/// per program.
+#[test]
+fn sharing_preserves_behavior() {
+    sharing_matches(1);
+    sharing_matches(2);
+}
+
+fn sharing_matches(level: u8) {
+    let steps = steps_from_env("LITHE_FUZZ_STEPS", 3000);
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // Every bench contract must build; these are the arguments of the ones whose `deploy`
+    // takes some: accounts the calls come from, a mock's address, or empty strings.
+    let deploys: [(&str, &[u64]); 13] = [
+        ("erc20", &[1]),
+        ("erc20_full", &[1, 1, 1]),
+        ("erc1155", &[1]),
+        ("erc6909", &[1]),
+        ("erc721", &[1]),
+        ("erc721_full", &[1]),
+        ("erc4626", &[0xcd]),
+        ("staking", &[1, 0xcd, 0xcd]),
+        ("registry", &[0x20, 0]),
+        ("profile", &[0x40, 0x60, 0, 0]),
+        ("executor", &[0xcd, 5]),
+        ("uniswap_v2_factory", &[1]),
+        ("solady_erc20", &[]),
+    ];
+    let mut bench: Vec<std::path::PathBuf> = std::fs::read_dir(root.join("bench"))
+        .expect("bench")
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "lithe"))
+        .collect();
+    bench.sort();
+    let gate = bench.into_iter().map(|path| {
+        let name = path
+            .file_stem()
+            .expect("a name")
+            .to_string_lossy()
+            .to_string();
+        let args = deploys
+            .iter()
+            .find(|(have, _)| *have == name)
+            .map_or(&[][..], |(_, args)| *args);
+        (path, format!("bench/{name}.lithe"), args)
+    });
+    let others = differential_targets()
+        .into_iter()
+        .filter(|(_, rel)| !rel.starts_with("bench/"))
+        .map(|(path, rel)| (path, rel, &[][..]));
+    let mut compared = 0;
+    for (path, rel, args) in gate.chain(others) {
+        let src = std::fs::read_to_string(&path).unwrap_or_default();
+        // A factory's pair addresses hash the pair's own code, which each build makes.
+        let sharing = src.contains("defer ") || src.contains("query ");
+        if !sharing || rel == "bench/uniswap_v2_factory.lithe" {
+            continue;
+        }
+        OPAQUE_CODE.set(true);
+        install_mocks();
+        let build = |share: Option<u8>| {
+            crate::gen::mir::SHARE.set(share);
+            let code = compile_file(&path);
+            crate::gen::mir::SHARE.set(None);
+            let mut init = code.unwrap_or_else(|e| panic!("{rel}: {e}"));
+            for &arg in args {
+                init.extend(Word::from_u64(arg).to_be_bytes());
+            }
+            deploy_state(&init).unwrap_or_else(|e| panic!("{rel}: deploy: {e}"))
+        };
+        let (old, new) = (build(None), build(Some(level)));
+        compared += 1;
+        let checked = crate::check::check(
+            crate::modules::load(&Sources::disk(), &path).expect("load"),
+            Default::default(),
+        )
+        .expect("check");
+        let methods = crate::route::method_ids(&checked).expect("methods");
+        compare_builds_from(
+            &rel,
+            &methods,
+            (&old.0, &old.1),
+            (&new.0, &new.1),
+            steps,
+            true,
+        );
+    }
+    assert!(compared > 40, "only {compared} programs defer or query");
 }

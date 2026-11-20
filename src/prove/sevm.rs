@@ -2924,15 +2924,25 @@ impl Machine {
     }
 
     /// The head of the certified loop without invariants that a `JUMPI` at `pc` to `dest`
-    /// leaves, by either side.
+    /// leaves, by either side. The side that falls through may jump to the exit at once:
+    /// a test at a loop's bottom goes on that way.
     fn counted_exit(&self, p: &Path, pc: usize, dest: T) -> Option<usize> {
         if p.frame.code != 0 {
             return None;
         }
         let to = self.a.cval(dest).and_then(small).map(|d| d as usize);
+        let hop = match self.env.code.bytes.get(pc + 1..) {
+            Some([0x60, d, 0x56, ..]) => Some(usize::from(*d)),
+            Some([0x61, hi, lo, 0x56, ..]) => Some(usize::from(*hi) << 8 | usize::from(*lo)),
+            _ => None,
+        };
         self.hints
             .values()
-            .find(|h| h.counted && h.exit.is_some_and(|e| e == pc + 1 || Some(e) == to))
+            .find(|h| {
+                h.counted
+                    && h.exit
+                        .is_some_and(|e| e == pc + 1 || Some(e) == to || Some(e) == hop)
+            })
             .map(|h| h.head)
     }
 

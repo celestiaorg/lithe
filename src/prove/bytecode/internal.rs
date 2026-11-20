@@ -213,6 +213,9 @@ fn start(setup: &Setup, cert: &FuncCode, f: &crate::ast::Func) -> Result<Run, St
                 cond.push(bspec::clean(&mut m, w, k));
                 Some(bspec::decode_param(&mut m, w, k))
             }
+            (Some(Loc::Env(op)), Some(k)) if !matches!(k, Kind::Bytes(_)) => {
+                loops::env_word(&m, *op).map(|w| bspec::decode_param(&mut m, w, k))
+            }
             (Some(loc @ (Loc::Stack(_) | Loc::Memory(_))), Some(k))
                 if !matches!(k, Kind::Bytes(_)) =>
             {

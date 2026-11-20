@@ -608,3 +608,150 @@ external function copied(const data : bytes) is {
         }
     }
 }
+
+/// A precompile's answer is read before a later hash stages its words, and a continuation's
+/// answer is kept from the precompile calls after it.
+#[test]
+fn precompile_answers_stay_their_own() {
+    install_mocks();
+    let src = "\
+import \"std/abi\"; import \"std/crypto\"; import \"std/evm\";
+storage is record { h : bytes20; n : uint; }
+external pure function pair(const data : bytes; const x : uint) : (bytes32, bytes32) is {
+  const h : bytes32 := Crypto.sha256(data);
+  const k : bytes32 := Crypto.keccak256(Abi.encode(x, x));
+} with (h, k)
+external function run(const seed : uint) is {
+  defer Evm.call(address(0xcd), Abi.encode(seed)) then (answer : bytes) {
+    storage.h := Crypto.ripemd160(Abi.encode(seed));
+    storage.n := answer.length;
+  };
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let data = vec![0x12, 0x34];
+    let out = call_raw(
+        &runtime,
+        &encode_args(
+            "pair(bytes,uint256)",
+            &[Arg::B(data.clone()), Arg::W(Word::from_u64(7))],
+        ),
+    );
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(out.returndata[..32], crate::hash::sha256(&data));
+    let out = call(&runtime, "run(uint256)", &[Word::from_u64(9)]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(slot(&out.storage, 1), Word::from_u64(28));
+}
+
+/// A continuation's answer, held whole or inside a record, tuple, encoding or join, is
+/// kept from the sha256, query and deferred call after it.
+#[test]
+fn held_answers_outlive_later_calls() {
+    install_mocks();
+    let src = "\
+import \"std/abi\"; import \"std/bytes\"; import \"std/crypto\"; import \"std/evm\";
+interface Echo is { view function echo(x : uint) : uint; }
+type Held is record { data : bytes; n : uint; }
+storage is record { h : bytes32; a : uint; b : uint; c : uint; d : uint; e : uint; f : uint; g : uint; }
+external function run(const seed : uint) is {
+  defer Evm.call(address(0xcd), Abi.encode(seed, seed)) then (answer : bytes) {
+    const held : Held := { data = answer; n = seed; };
+    const enc : bytes := Abi.encode(answer);
+    const joined : bytes := Bytes.concat(answer, 0x01);
+    const t : (bytes, uint) := (answer, seed);
+    storage.h := Crypto.sha256(Abi.encode(seed));
+    storage.a := answer.length;
+    storage.b := held.data.length;
+    storage.c := enc.length;
+    storage.d := joined.length;
+    const (x, y) : (bytes, uint) := t;
+    storage.e := x.length + y - seed;
+    storage.f := query Echo(address(0xcd)).echo(seed) - seed + held.data.length;
+    defer Evm.call(address(0xce), Abi.encode(seed)) then {
+      storage.g := held.data.length + answer.length;
+    };
+  };
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let out = call(&runtime, "run(uint256)", &[Word::from_u64(9)]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    for (k, want) in [
+        (1, 60),
+        (2, 60),
+        (3, 128),
+        (4, 61),
+        (5, 60),
+        (6, 60),
+        (7, 120),
+    ] {
+        assert_eq!(slot(&out.storage, k), Word::from_u64(want), "slot {k}");
+    }
+}
+
+/// A continuation's answer read into an expression, or across a loop, is kept from the
+/// calls later in the expression and in the loop's passes.
+#[test]
+fn answers_outlive_calls_in_expressions_and_loops() {
+    install_mocks();
+    let src = "\
+import \"std/abi\"; import \"std/bytes\"; import \"std/crypto\"; import \"std/evm\";
+interface Echo is { view function echo(x : uint) : uint; }
+type Held is record { data : bytes; n : uint; }
+storage is record { h : bytes32; a : uint; b : uint; c : uint; d : uint; e : uint; f : uint; g : uint; i : uint; j : uint; k : uint; m : uint; }
+pure function lenOf(const data : bytes; const h : bytes32) : uint is data.length + uint(h) % 1
+external function run(const seed : uint) is {
+  defer Evm.call(address(0xcd), Abi.encode(seed, seed)) then (answer : bytes) {
+    storage.a := Abi.encode(answer, Crypto.sha256(Abi.encode(seed))).length;
+    const held : Held := { data = answer; n = query Echo(address(0xcd)).echo(seed); };
+    storage.b := held.data.length;
+    const (x, y) : (bytes, bytes32) := (answer, Crypto.sha256(Abi.encode(seed)));
+    storage.c := x.length + uint(y) % 1;
+    storage.d := lenOf(answer, Crypto.sha256(Abi.encode(seed)));
+    storage.e := Bytes.concat(answer, Abi.encode(query Echo(address(0xcd)).echo(seed))).length;
+    defer Evm.call(address(0xcd), Bytes.concat(answer, Abi.encode(Crypto.sha256(Abi.encode(seed))))) then (again : bytes) {
+      storage.f := again.length;
+    };
+  };
+}
+external function loops(const seed : uint) is {
+  defer Evm.call(address(0xcd), Abi.encode(seed, seed)) then (answer : bytes) {
+    var sum : uint := 0;
+    for i : uint in 0 .. 3 do {
+      sum += answer.length;
+      storage.h := Crypto.sha256(Abi.encode(i));
+    }
+    storage.g := sum;
+    const kept : bytes := answer;
+    var more : uint := 0;
+    for i : uint in 0 .. 3 do {
+      more += kept.length;
+      storage.h := Crypto.sha256(Abi.encode(i));
+    }
+    storage.i := more;
+    var asked : uint := 0;
+    for i : uint in 0 .. seed % 4 do {
+      asked += query Echo(address(0xcd)).echo(i);
+    }
+    storage.j := kept.length + asked;
+    for i : uint in 0 .. seed % 4 do {
+      storage.m += query Echo(address(0xcd)).echo(i);
+    }
+    storage.k := answer.length;
+  };
+}
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    for f in ["run(uint256)", "loops(uint256)"] {
+        let out = call(&runtime, f, &[Word::from_u64(9)]);
+        assert!(!out.reverted, "{f}: {}", pretty(&out.returndata));
+        let want: &[(u64, u64)] = match f {
+            "run(uint256)" => &[(1, 160), (2, 60), (3, 60), (4, 60), (5, 92), (6, 88)],
+            _ => &[(7, 180), (8, 180), (9, 60), (10, 60)],
+        };
+        for &(k, want) in want {
+            assert_eq!(slot(&out.storage, k), Word::from_u64(want), "{f} slot {k}");
+        }
+    }
+}

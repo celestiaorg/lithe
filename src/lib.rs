@@ -877,12 +877,6 @@ pub fn specs(sources: &Sources, entry: &Path) -> Result<String, Error> {
     Ok(spec::render(&spec::check(prog, evm_near(entry))?))
 }
 
-/// The same program without the optimizer, for checking that optimization preserves behavior.
-#[cfg(test)]
-pub(crate) fn compile_file_unoptimized(path: &Path) -> Result<Vec<u8>, Error> {
-    gen::codegen_unoptimized(checked(&Sources::disk(), path)?)
-}
-
 /// `upgrade` adds the proxy's `upgradeToAndCall`.
 fn plan_json(plan: &Plan, router: &[u8], upgrade: Option<(&str, &str)>) -> String {
     let deployer = checksum(&plan.deployer);

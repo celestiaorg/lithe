@@ -24,7 +24,7 @@ external function inc() is {
 - **Formal verification.** Specs beside the contract are proved with `lithe prove`, against the bytecode the compiler emits.
 - **Deterministic storage.** The default layout matches Solidity's; named domains sit at ERC-7201 roots.
 - **Modules, not inheritance**, and built-in UUPS upgrades.
-- **Smaller bytecode.** About 32% less runtime code than optimized `solc` across real contracts.
+- **Smaller bytecode.** About 40% less runtime code than optimized `solc` across real contracts.
 
 ## Getting started
 
