@@ -290,7 +290,21 @@ fn exec(
     value: Word,
     balance: Word,
 ) -> Result<Outcome, String> {
-    exec_state(
+    let at = SELF.get();
+    let previous = DEPLOYED.with(|d| {
+        d.borrow_mut().insert(
+            at,
+            (
+                if CONSTRUCTING.get() {
+                    Vec::new()
+                } else {
+                    code.to_vec()
+                },
+                storage.clone(),
+            ),
+        )
+    });
+    let out = exec_state(
         code,
         calldata,
         storage,
@@ -298,9 +312,21 @@ fn exec(
         value,
         balance,
         HashMap::new(),
-    )
+    );
+    DEPLOYED.with(|d| {
+        let mut d = d.borrow_mut();
+        if let Some(previous) = previous {
+            d.insert(at, previous);
+        } else {
+            d.remove(&at);
+        }
+    });
+    out
 }
 
+// Transient storage is frame-local here: self/delegate calls share it, but calls to
+// other accounts copy it without merging it back. This does not model EIP-1153
+// per-address transaction storage; reentrant transient locks need a shared world map.
 fn exec_state(
     code: &[u8],
     calldata: &[u8],
@@ -328,6 +354,7 @@ fn exec_state(
     let self_addr = SELF.get();
     let mut self_balance = balance;
     let mut storage = storage;
+    let metered = bench_gas::metering();
     for _ in 0..200_000 {
         // Running off the end of the code stops, as `STOP` does, with no output.
         if pc >= code.len() {
@@ -336,6 +363,9 @@ fn exec_state(
             break;
         }
         let op = code[pc];
+        if metered {
+            bench_gas::charge(op, &stack, &storage, self_addr);
+        }
         if (0x60..=0x7f).contains(&op) {
             let n = (op - 0x5f) as usize;
             if pc + 1 + n > code.len() {
@@ -348,8 +378,15 @@ fn exec_state(
             continue;
         }
         pc += 1;
-        if matches!(op, 0xf0 | 0xf1 | 0xf2 | 0xf4 | 0xf5 | 0xfa) && snap_world.is_none() {
-            snap_world = Some((DEPLOYED.with(|d| d.borrow().clone()), NONCE.get()));
+        if matches!(op, 0xf0 | 0xf1 | 0xf2 | 0xf4 | 0xf5 | 0xfa) {
+            if snap_world.is_none() {
+                snap_world = Some((DEPLOYED.with(|d| d.borrow().clone()), NONCE.get()));
+            }
+            DEPLOYED.with(|d| {
+                if let Some(entry) = d.borrow_mut().get_mut(&self_addr) {
+                    entry.1 = storage.clone();
+                }
+            });
         }
         let pop = |stack: &mut Vec<Word>| stack.pop().ok_or_else(|| "stack underflow".to_string());
         match op {
@@ -730,7 +767,7 @@ fn exec_state(
                 }
                 let at = created_address(self_addr, salt, &init);
                 let was = CONSTRUCTING.replace(true);
-                let born = elsewhere(self_addr, || {
+                let born = elsewhere(at, || {
                     exec_state(
                         &init,
                         &[],
@@ -743,6 +780,11 @@ fn exec_state(
                 });
                 CONSTRUCTING.set(was);
                 let born = born?;
+                if let Some(current) =
+                    DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone()))
+                {
+                    storage = current;
+                }
                 if born.reverted {
                     returndata = born.returndata;
                     stack.push(Word::from_u64(0));
@@ -786,6 +828,11 @@ fn exec_state(
                             transient.clone(),
                         )
                     })?;
+                    if let Some(current) =
+                        DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone()))
+                    {
+                        storage = current;
+                    }
                     trace.push(Ev::Call { to, value: val });
                     returndata = nested.returndata.clone();
                     if nested.reverted {
@@ -881,6 +928,11 @@ fn exec_state(
                             transient.clone(),
                         )
                     })?;
+                    if let Some(current) =
+                        DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone()))
+                    {
+                        storage = current;
+                    }
                     returndata = nested.returndata;
                     if ret_size > 0 {
                         let n = ret_size.min(returndata.len());
@@ -1094,6 +1146,9 @@ fn exec_state(
     if !stopped {
         return Err("step limit".into());
     }
+    if metered {
+        bench_gas::charge_memory(mem.len());
+    }
     if reverted {
         storage = snap_storage;
         transient = snap_transient;
@@ -1114,6 +1169,58 @@ fn exec_state(
         detail,
         self_balance,
     })
+}
+
+#[test]
+fn reentrant_storage_and_rollback() {
+    let zero = Word::from_u64(0);
+    let one = Word::from_u64(1);
+    let b = Word::from_u64(0xb);
+    for (revert_a, revert_b) in [(false, false), (false, true), (true, false)] {
+        // A's callback saves the value it observed, then replaces it.
+        let mut a = vec![0x36, 0x60, 0, 0x57, 0x60, 1, 0x5f, 0x55];
+        a.extend([0x5f, 0x5f, 0x5f, 0x5f, 0x5f, 0x60, 0xb, 0x5a, 0xf1, 0x50]);
+        // Read after returning from B, rather than just inspecting the world map.
+        a.extend([0x5f, 0x54, 0x60, 2, 0x55]);
+        if revert_a {
+            a.extend([0x5f, 0x5f, 0xfd]);
+        } else {
+            a.push(0x00);
+        }
+        a[2] = a.len() as u8;
+        a.extend([0x5b, 0x5f, 0x54, 0x60, 1, 0x55, 0x60, 2, 0x5f, 0x55, 0x00]);
+        let mut child = vec![0x60, 9, 0x5f, 0x55];
+        child.extend([
+            0x5f, 0x5f, 0x60, 1, 0x5f, 0x5f, 0x61, 0x10, 0x00, 0x5a, 0xf1, 0x50,
+        ]);
+        if revert_b {
+            child.extend([0x5f, 0x5f, 0xfd]);
+        }
+        DEPLOYED.with(|d| d.borrow_mut().insert(b, (child, HashMap::new())));
+        let out = exec(&a, &[], HashMap::new(), one, zero, zero).unwrap();
+        assert_eq!(out.reverted, revert_a);
+        let slot = |key| {
+            out.storage
+                .get(&Word::from_u64(key))
+                .copied()
+                .unwrap_or(zero)
+        };
+        if revert_a {
+            assert!(out.storage.is_empty());
+        } else {
+            assert_eq!(slot(0), Word::from_u64(if revert_b { 1 } else { 2 }));
+            assert_eq!(slot(1), if revert_b { zero } else { one });
+            assert_eq!(slot(2), slot(0));
+        }
+        DEPLOYED.with(|d| {
+            let mut d = d.borrow_mut();
+            let (_, storage) = d.remove(&b).unwrap();
+            assert_eq!(
+                storage.get(&zero).copied().unwrap_or(zero),
+                Word::from_u64(if revert_a || revert_b { 0 } else { 9 })
+            );
+        });
+    }
 }
 
 fn need_dest(code: &[u8], dest: usize) -> Result<(), String> {
@@ -1562,6 +1669,7 @@ fn abi_string(sig: &str, data: &[u8]) -> Vec<u8> {
 mod abi;
 mod abi_tree;
 mod basics;
+mod bench_gas;
 mod calls;
 mod differential;
 mod dispatch;
@@ -1576,6 +1684,7 @@ mod matrix;
 mod precompiles;
 mod prove;
 mod raw;
+mod snapshot;
 mod solady_math;
 mod specs;
 mod split;

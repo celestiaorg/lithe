@@ -8,7 +8,8 @@
 //!
 //! Two switches for looking into a build, like `LITHE_DEBUG_RUNTIME`: `LITHE_MIR_DUMP` prints
 //! each function's stack code, what its instructions came from, and what was inlined where;
-//! `LITHE_MIR_TIMES` prints the time and instructions each phase took.
+//! `LITHE_MIR_TIMES` prints the time and instructions each phase took, per build;
+//! `lithe compile --timings` sums the same phases into one line.
 
 use super::*;
 
@@ -531,17 +532,29 @@ fn creation(
 }
 
 fn build(checked: &Checked, shape: &Shape) -> Result<Built, Error> {
+    use crate::timings::Phase;
     let times = std::env::var_os("LITHE_MIR_TIMES").is_some();
+    let timed = times || crate::timings::on();
     // The clock is read only when asked for: the browser's build has none.
-    let now = || times.then(|| (std::time::Instant::now(), instructions()));
+    let now = || {
+        timed.then(|| {
+            (
+                std::time::Instant::now(),
+                if times { instructions() } else { 0 },
+            )
+        })
+    };
     let mut clock = now();
-    let mut lap = |what: &str| {
+    let mut lap = |what: &str, phase: Phase| {
         if let Some((start, before)) = clock {
-            eprintln!(
-                "mir {what}: {:?}, {} instructions",
-                start.elapsed(),
-                instructions().saturating_sub(before)
-            );
+            crate::timings::add(phase, start.elapsed());
+            if times {
+                eprintln!(
+                    "mir {what}: {:?}, {} instructions",
+                    start.elapsed(),
+                    instructions().saturating_sub(before)
+                );
+            }
         }
         clock = now();
     };
@@ -646,7 +659,7 @@ fn build(checked: &Checked, shape: &Shape) -> Result<Built, Error> {
     if !stubs.is_empty() {
         g.forwarder(&stubs);
     }
-    lap("dispatch");
+    lap("dispatch", Phase::Dispatch);
     // The immutables `deploy` always sets to a constant, which the runtime reads as
     // constants: found by lowering the creation code with no runtime to return.
     let words = checked.transient_from - checked.immutable_from;
@@ -667,7 +680,7 @@ fn build(checked: &Checked, shape: &Shape) -> Result<Built, Error> {
         rejects,
         &imm_consts,
     )?;
-    lap("lower (with fold, CSE, forwarding, inlining)");
+    lap("lower (with fold, CSE, forwarding, inlining)", Phase::Lower);
     let mut module = build::dead_code(module);
     while build::drop_unread_params(&mut module) {
         module = build::dead_code(module);
@@ -676,7 +689,7 @@ fn build(checked: &Checked, shape: &Shape) -> Result<Built, Error> {
         build::merge_checks(&mut module);
         build::share_checks(&mut module);
     }
-    lap("dead code");
+    lap("dead code", Phase::DeadCode);
     let entries: Vec<u32> = targets
         .iter()
         .map(|(label, _)| *label)
@@ -699,13 +712,13 @@ fn build(checked: &Checked, shape: &Shape) -> Result<Built, Error> {
             Some((label, rets))
         })
         .collect();
-    lap("stack codegen");
+    lap("stack codegen", Phase::Emit);
     asm::track::strip(&mut code);
     let plain = plain();
     if !plain {
         asm::optimize(&mut code);
     }
-    lap("asm optimize");
+    lap("asm optimize", Phase::Optimize);
     // A byte of code weighs more against gas where runs are shared, the further a build
     // made again for its size has to go.
     let weight = match TIGHT.get() {
@@ -724,9 +737,9 @@ fn build(checked: &Checked, shape: &Shape) -> Result<Built, Error> {
             asm::track::pass(code, asm::rotate_exits);
         })
     });
-    lap("asm outline");
+    lap("asm outline", Phase::Outline);
     let (runtime, marks) = immutable::place_runtime(&code, &module.data, &g.tail_blobs)?;
-    lap("assemble");
+    lap("assemble", Phase::Assemble);
     // What a tracked build noted of the runtime, before the creation code is assembled.
     if let Some(mut t) = asm::track::take() {
         // A loop tested at its bottom is told by where its test is, when its first pass
@@ -754,7 +767,7 @@ fn build(checked: &Checked, shape: &Shape) -> Result<Built, Error> {
         true,
     )?;
     needs.extend(more);
-    lap("creation code");
+    lap("creation code", Phase::Creation);
     Ok(Built {
         code,
         immutables: immutable::references(checked, &marks),
