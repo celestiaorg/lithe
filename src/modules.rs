@@ -364,10 +364,16 @@ fn load_inner(
     for peer in std::mem::take(&mut root.peers) {
         add_peer(&mut peers, peer, 1, 1).map_err(|err| err.in_file(&root.origin))?;
     }
-    let unit = |own: Program| -> Result<Program, Error> {
+    // Each unit gets every imported file's declarations: the last one built takes them.
+    let mut unit = |own: Program, last: bool| -> Result<Program, Error> {
         let mut dst = empty();
-        for file in &files {
-            append(&mut dst, file.prog.clone(), false)?;
+        for file in &mut files {
+            let prog = if last {
+                std::mem::replace(&mut file.prog, empty())
+            } else {
+                file.prog.clone()
+            };
+            append(&mut dst, prog, false)?;
         }
         let name = own.contract_name.clone();
         let (line, col) = (own.contract_line, own.contract_col);
@@ -377,15 +383,20 @@ fn load_inner(
         dst.contract_line = line;
         dst.contract_col = col;
         dst.origin = root.origin.clone();
-        dst.peers = peers.clone();
+        dst.peers = if last {
+            std::mem::take(&mut peers)
+        } else {
+            peers.clone()
+        };
         dst.scopes = scopes.clone();
         Ok(dst)
     };
     let at = |err: Error| err.in_file(&root.origin);
-    let mut merged = unit(root.prog.clone()).map_err(at)?;
+    let count = siblings.len();
+    let mut merged = unit(root.prog, count == 0).map_err(at)?;
     let mut linked = Vec::new();
-    for sibling in siblings {
-        linked.push(unit(sibling).map_err(at)?);
+    for (i, sibling) in siblings.into_iter().enumerate() {
+        linked.push(unit(sibling, i + 1 == count).map_err(at)?);
     }
     merged.siblings = linked;
     let _ = &root.canon;
@@ -907,6 +918,9 @@ pub(crate) fn split_units(mut prog: Program) -> Vec<Program> {
     let rest = std::mem::take(&mut prog.siblings);
     let mut units = vec![prog];
     units.extend(rest);
+    if units.len() == 1 {
+        return units;
+    }
     let all = units.clone();
     for (i, unit) in units.iter_mut().enumerate() {
         let imported = std::mem::take(&mut unit.peers);
