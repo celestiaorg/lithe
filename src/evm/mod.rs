@@ -105,7 +105,7 @@ thread_local! {
     /// in, innermost last. That code, not the running code, is what the account's size,
     /// hash, and calls to itself see.
     /// A call or creation into another account pushes `None`: that account runs its own code.
-    static ACCOUNT_CODE: std::cell::RefCell<Vec<Option<Vec<u8>>>> = const { std::cell::RefCell::new(Vec::new()) };
+    static HOST_CODE: std::cell::RefCell<Vec<Option<Vec<u8>>>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Deployed facets. A static call to one runs part of the caller's own code, a pure
     /// function of a module, so it is not an effect, and what that code does is the caller's.
     static FACETS: std::cell::RefCell<std::collections::HashSet<Word>> =
@@ -125,8 +125,8 @@ fn gas_limit(gas: Word) -> String {
 }
 
 /// The code of the account running `code`: its own, unless it runs by `delegatecall`.
-fn account_code(code: &[u8]) -> Vec<u8> {
-    ACCOUNT_CODE.with(|a| {
+fn host_code(code: &[u8]) -> Vec<u8> {
+    HOST_CODE.with(|a| {
         a.borrow()
             .last()
             .cloned()
@@ -137,11 +137,11 @@ fn account_code(code: &[u8]) -> Vec<u8> {
 
 /// Runs `f` as the account at `at`, which runs its own code.
 fn elsewhere<T>(at: Word, f: impl FnOnce() -> T) -> T {
-    ACCOUNT_CODE.with(|a| a.borrow_mut().push(None));
+    HOST_CODE.with(|a| a.borrow_mut().push(None));
     let was = SELF.replace(at);
     let out = f();
     SELF.set(was);
-    ACCOUNT_CODE.with(|a| a.borrow_mut().pop());
+    HOST_CODE.with(|a| a.borrow_mut().pop());
     out
 }
 
@@ -568,7 +568,7 @@ fn exec_state(
                 let off = word_usize(pop(&mut stack)?)?;
                 let len = word_usize(pop(&mut stack)?)?;
                 let src = if addr == self_addr {
-                    account_code(code)
+                    host_code(code)
                 } else {
                     DEPLOYED.with(|d| {
                         d.borrow()
@@ -587,7 +587,7 @@ fn exec_state(
                     } else if OPAQUE_CODE.get() {
                         1
                     } else {
-                        account_code(code).len() as u64
+                        host_code(code).len() as u64
                     }
                 } else if MOCKS.with(|m| m.borrow().contains_key(&addr)) {
                     // A mock stands in for a contract.
@@ -602,9 +602,9 @@ fn exec_state(
                 if addr == self_addr && OPAQUE_CODE.get() {
                     stack.push(Word::from_u64(1));
                 } else if addr == self_addr {
-                    stack.push(Word::from_be_bytes(crate::keccak::keccak256(
-                        &account_code(code),
-                    )));
+                    stack.push(Word::from_be_bytes(crate::keccak::keccak256(&host_code(
+                        code,
+                    ))));
                 } else {
                     stack.push(Word::from_u64(0));
                 }
@@ -853,7 +853,7 @@ fn exec_state(
                 } else if to == self_addr && in_size > 0 {
                     let input = read_slice(&mut mem, in_off, in_size);
                     let nested = exec_state(
-                        &account_code(code),
+                        &host_code(code),
                         &input,
                         storage.clone(),
                         self_addr,
@@ -950,7 +950,7 @@ fn exec_state(
                 if to == self_addr && in_size > 0 {
                     // A read-only call back into this contract sees its storage as it is now.
                     let nested = exec_state(
-                        &account_code(code),
+                        &host_code(code),
                         &input,
                         storage.clone(),
                         self_addr,
@@ -1046,8 +1046,8 @@ fn exec_state(
                     // A created contract's code runs in this account: its storage, balance,
                     // and transient storage. A router reaching its parts is not an effect.
                     let input = read_slice(&mut mem, in_off, in_size);
-                    let account = account_code(code);
-                    ACCOUNT_CODE.with(|a| a.borrow_mut().push(Some(account)));
+                    let host = host_code(code);
+                    HOST_CODE.with(|a| a.borrow_mut().push(Some(host)));
                     let nested = exec_state(
                         &child,
                         &input,
@@ -1057,7 +1057,7 @@ fn exec_state(
                         self_balance,
                         transient.clone(),
                     );
-                    ACCOUNT_CODE.with(|a| a.borrow_mut().pop());
+                    HOST_CODE.with(|a| a.borrow_mut().pop());
                     let nested = nested?;
                     returndata = nested.returndata.clone();
                     // Effects are recorded as they happen, reverted or not, as in one frame.
@@ -1090,7 +1090,7 @@ fn exec_state(
                 } else {
                     let input = read_slice(&mut mem, in_off, in_size);
                     let nested = exec_state(
-                        &account_code(code),
+                        &host_code(code),
                         &input,
                         storage.clone(),
                         caller,
