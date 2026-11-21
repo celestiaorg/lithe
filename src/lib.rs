@@ -1524,6 +1524,7 @@ fn emit_dir(
         files.retain(|path| !excluded(&abi.exclude, path.strip_prefix(dir).unwrap_or(path)));
     }
     // Files compile independently, so they share the machine; the output keeps file order.
+    let sources = Sources::disk_once();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let done = std::sync::Mutex::new(Vec::new());
     let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
@@ -1534,7 +1535,7 @@ fn emit_dir(
                 .spawn_scoped(s, || loop {
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(path) = files.get(i) else { break };
-                    let out = emit_file(path, out_dir, abi, opts);
+                    let out = emit_file(&sources, path, out_dir, abi, opts);
                     done.lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .push((i, out));
@@ -1674,6 +1675,7 @@ fn facet_artifact(facet: &Facet) -> String {
 /// Builds one file of a directory build, returning the artifacts to write rather than writing
 /// them, so a clash between files writes neither.
 fn emit_file(
+    sources: &Sources,
     path: &Path,
     out_dir: &Path,
     abi: Option<&AbiDir>,
@@ -1702,16 +1704,16 @@ fn emit_file(
                 body.render(name, abi.format),
             )
         };
-        let contracts = match contract_abis(&Sources::disk(), path, opts.evm) {
+        let contracts = match contract_abis(sources, path, opts.evm) {
             Ok(contracts) => contracts,
-            Err(errors) if is_library(&Sources::disk(), path, &errors) => Vec::new(),
+            Err(errors) if is_library(sources, path, &errors) => Vec::new(),
             Err(errors) => {
                 out.failed.extend(errors.into_iter().map(failed));
                 return (out, writes, facets);
             }
         };
         if !abi.contracts_only {
-            match interface_abis(&Sources::disk(), path) {
+            match interface_abis(sources, path) {
                 Ok(abis) => writes.extend(abis.iter().map(|(name, body)| abi_file(name, body))),
                 Err(err) => {
                     out.failed.push(failed(err));
@@ -1723,9 +1725,9 @@ fn emit_file(
     }
     let compiled = match abi {
         Some(_) => None,
-        None => match compile(&Sources::disk(), path, &opts) {
+        None => match compile(sources, path, &opts) {
             Ok(compiled) => Some(compiled),
-            Err(errors) if is_library(&Sources::disk(), path, &errors) => None,
+            Err(errors) if is_library(sources, path, &errors) => None,
             Err(errors) => {
                 out.failed.extend(errors.into_iter().map(failed));
                 return (out, writes, facets);

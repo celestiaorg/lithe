@@ -1113,7 +1113,14 @@ fn check_program(
     let original = c.work.len();
     let mut index = 0;
     while index < original {
-        let mut func = c.work[index].clone();
+        // Only what a function declares is read from `work` while it is checked, so its
+        // body is taken, not copied.
+        let slot = &mut c.work[index];
+        let mut func = Func {
+            stmts: std::mem::take(&mut slot.stmts),
+            tail: slot.tail.take(),
+            ..slot.clone()
+        };
         c.cur_fn = index;
         c.check_func(&mut func)?;
         c.work[index] = func;

@@ -805,34 +805,60 @@ pub(crate) fn display_name(name: &str) -> &str {
 /// which contract code calls across. Everything the contract's own file declares outside
 /// its modules is gone; what imported files declare stays, for their modules.
 pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing]) -> Program {
-    let mut prog = source.clone();
     let own = source.origin.as_str();
     let mut order = Vec::new();
-    closure(&prog.modules, module, &mut order);
+    closure(&source.modules, module, &mut order);
     // Only the files the modules are written in, and what those import, in an order of
     // their own: the contract's other imports, and the order it imports them, change nothing.
     let mut files = Vec::new();
     let mut seen = HashSet::new();
-    for decl in prog.modules.iter().filter(|m| order.contains(&m.name)) {
+    for decl in source.modules.iter().filter(|m| order.contains(&m.name)) {
         imports_first(&source.scopes, &decl.origin, &mut seen, &mut files);
     }
     let rank = |origin: &str| files.iter().position(|file| file == origin);
     let keep = |origin: &str| origin != own && rank(origin).is_some();
-    prog.funcs.retain(|f| f.constant && keep(&f.origin));
+    fn kept<T: Clone>(all: &[T], keep: impl Fn(&T) -> bool) -> Vec<T> {
+        all.iter().filter(|decl| keep(decl)).cloned().collect()
+    }
+    // Only what the facet keeps is copied. A module's guards and hooks are the contract's
+    // to check and implement, in its router, which also answers ERC-165. What the
+    // contract's own code names stays out: it would make each contract's copy of the
+    // facet a different build.
+    let mut prog = Program {
+        uses: Vec::new(),
+        types: kept(&source.types, |decl| {
+            decl.name != "storage" && keep(&decl.origin)
+        }),
+        errors: kept(&source.errors, |decl| keep(&decl.origin)),
+        error_sets: kept(&source.error_sets, |decl| keep(&decl.origin)),
+        events: kept(&source.events, |decl| keep(&decl.origin)),
+        interfaces: kept(&source.interfaces, |decl| keep(&decl.origin)),
+        funcs: kept(&source.funcs, |f| f.constant && keep(&f.origin)),
+        domains: Vec::new(),
+        modules: kept(&source.modules, |decl| rank(&decl.origin).is_some()),
+        compose: Vec::new(),
+        implied: Vec::new(),
+        refs: Vec::new(),
+        facets: Vec::new(),
+        exposes: Vec::new(),
+        supports: Vec::new(),
+        upgradeable: false,
+        storage_id: source.storage_id.clone(),
+        guard: None,
+        guards: Vec::new(),
+        hooks: Vec::new(),
+        calls_back: true,
+        contract_name: Some(module.to_string()),
+        contract_line: source.contract_line,
+        contract_col: source.contract_col,
+        siblings: Vec::new(),
+        peers: Vec::new(),
+        origin: source.origin.clone(),
+        specs: Vec::new(),
+        proving: source.proving,
+        scopes: source.scopes.clone(),
+    };
     prog.funcs.sort_by_key(|f| rank(&f.origin));
-    prog.domains.clear();
-    prog.exposes.clear();
-    prog.facets.clear();
-    prog.uses.clear();
-    prog.peers.clear();
-    prog.specs.clear();
-    prog.types
-        .retain(|decl| decl.name != "storage" && keep(&decl.origin));
-    prog.errors.retain(|decl| keep(&decl.origin));
-    prog.error_sets.retain(|decl| keep(&decl.origin));
-    prog.events.retain(|decl| keep(&decl.origin));
-    prog.interfaces.retain(|decl| keep(&decl.origin));
-    prog.modules.retain(|decl| rank(&decl.origin).is_some());
     prog.types.sort_by_key(|decl| rank(&decl.origin));
     prog.errors.sort_by_key(|decl| rank(&decl.origin));
     prog.error_sets.sort_by_key(|decl| rank(&decl.origin));
@@ -901,27 +927,12 @@ pub(crate) fn facet_program(source: &Program, module: &str, crossing: &[Crossing
             .collect();
         prog.funcs.extend(entries);
     }
-    // A module's guards are the contract's to check, in its router: the facet runs every
-    // external unguarded.
+    // The facet runs every external unguarded.
     for decl in &mut prog.modules {
         for func in &mut decl.funcs {
             func.guarded = None;
         }
     }
-    prog.guards.clear();
-    // A module's hooks are the contract's to implement: the facet calls them back.
-    prog.hooks.clear();
-    prog.calls_back = true;
-    prog.upgradeable = false;
-    prog.guard = None;
-    // What the contract's own code names. The contract's check already held its code to
-    // them, and leaving them in would make each contract's copy of the facet a different build.
-    prog.implied.clear();
-    prog.refs.clear();
-    // The router answers ERC-165; a facet never sees the call.
-    prog.supports.clear();
-    prog.contract_name = Some(module.to_string());
-    prog.siblings.clear();
     prog
 }
 
@@ -1080,8 +1091,9 @@ fn module_crossings(
 ) -> Result<Vec<Crossing>, Error> {
     let source = &checked.source;
     let mut alone = facet_program(source, module, &[]);
-    alone.scopes = Default::default();
+    let scopes = std::mem::take(&mut alone.scopes);
     let key = keccak256(format!("{alone:?}\0{:?}", opts.evm).as_bytes());
+    alone.scopes = scopes;
     static FOUND: OnceLock<Mutex<HashMap<[u8; 32], Vec<Crossing>>>> = OnceLock::new();
     let memo = FOUND.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(found) = memo.lock().ok().and_then(|memo| memo.get(&key).cloned()) {
@@ -1090,7 +1102,7 @@ fn module_crossings(
     let check = |crossing: &[Crossing]| {
         crate::check::check_in(facet_program(source, module, crossing), false, opts.evm)
     };
-    let alone = check(&[])?;
+    let alone = crate::check::check_in(alone, false, opts.evm)?;
     let mut found = gen::crossable(&alone, module);
     // A function that takes a list is built for each caller. One the module's own code never
     // calls gets its copy from an entrypoint of its own, unless that doesn't check. The

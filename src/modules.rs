@@ -32,6 +32,21 @@ pub struct Sources {
     files: Option<HashMap<PathBuf, String>>,
     /// One more file, read before the others: a contract the compiler writes itself.
     extra: Option<(PathBuf, String)>,
+    /// What one build of many files has found so far, when those files import the same ones.
+    once: Option<Once>,
+}
+
+/// What a build of a directory looks up once, however many of its files ask: nothing it
+/// reads changes under it.
+#[derive(Default)]
+struct Once {
+    /// Each file as parsed, with the hash of its text, by canonical path.
+    parsed: Mutex<HashMap<PathBuf, (Program, u64)>>,
+    /// Each path's canonical form.
+    canon: Mutex<HashMap<PathBuf, PathBuf>>,
+    /// The file a package import names, by the directories of the build's entry file and of
+    /// the importing file, which pick the `lithe.lock` and `lithe.toml` that say.
+    imports: Mutex<HashMap<(PathBuf, PathBuf, String), PathBuf>>,
 }
 
 impl Sources {
@@ -39,6 +54,16 @@ impl Sources {
         Sources {
             files: None,
             extra: None,
+            once: None,
+        }
+    }
+
+    /// The file system, with each file resolved, read and parsed once: for a build of a
+    /// directory.
+    pub(crate) fn disk_once() -> Self {
+        Sources {
+            once: Some(Once::default()),
+            ..Sources::disk()
         }
     }
 
@@ -53,6 +78,7 @@ impl Sources {
         Sources {
             files: Some(files),
             extra: None,
+            once: None,
         }
     }
 
@@ -61,6 +87,7 @@ impl Sources {
         Sources {
             files: self.files.clone(),
             extra: Some((path, src)),
+            once: None,
         }
     }
 
@@ -74,7 +101,45 @@ impl Sources {
         {
             return Ok(normalize(path));
         }
-        path.canonicalize()
+        let Some(once) = &self.once else {
+            return path.canonicalize();
+        };
+        if let Some(canon) = once
+            .canon
+            .lock()
+            .ok()
+            .and_then(|seen| seen.get(path).cloned())
+        {
+            return Ok(canon);
+        }
+        let canon = path.canonicalize()?;
+        if let Ok(mut seen) = once.canon.lock() {
+            seen.insert(path.to_path_buf(), canon.clone());
+        }
+        Ok(canon)
+    }
+
+    /// [`import_path_in`], asked once for each package import of a directory's files.
+    fn import_path(&self, entry: &Path, from: &Path, import: &str) -> Result<PathBuf, String> {
+        let packaged = !import.starts_with("std/") && !import.starts_with('.');
+        let Some(once) = self.once.as_ref().filter(|_| packaged) else {
+            return import_path_in(entry, from, import);
+        };
+        let dir = |file: &Path| file.parent().unwrap_or(file).to_path_buf();
+        let key = (dir(entry), dir(from), import.to_string());
+        if let Some(path) = once
+            .imports
+            .lock()
+            .ok()
+            .and_then(|seen| seen.get(&key).cloned())
+        {
+            return Ok(path);
+        }
+        let path = import_path_in(entry, from, import)?;
+        if let Ok(mut seen) = once.imports.lock() {
+            seen.insert(key, path.clone());
+        }
+        Ok(path)
     }
 
     pub(crate) fn read(&self, path: &Path) -> io::Result<String> {
@@ -582,10 +647,16 @@ fn load_inner(
     for peer in std::mem::take(&mut root.peers) {
         add_peer(&mut peers, peer, 1, 1).map_err(|err| err.in_file(&root.origin))?;
     }
-    let unit = |own: Program| -> Result<Program, Error> {
+    // Each unit gets every imported file's declarations: the last one built takes them.
+    let mut unit = |own: Program, last: bool| -> Result<Program, Error> {
         let mut dst = empty();
-        for file in &files {
-            append(&mut dst, file.prog.clone(), false)?;
+        for file in &mut files {
+            let prog = if last {
+                std::mem::replace(&mut file.prog, empty())
+            } else {
+                file.prog.clone()
+            };
+            append(&mut dst, prog, false)?;
         }
         let name = own.contract_name.clone();
         let (line, col) = (own.contract_line, own.contract_col);
@@ -595,15 +666,20 @@ fn load_inner(
         dst.contract_line = line;
         dst.contract_col = col;
         dst.origin = root.origin.clone();
-        dst.peers = peers.clone();
+        dst.peers = if last {
+            std::mem::take(&mut peers)
+        } else {
+            peers.clone()
+        };
         dst.scopes = scopes.clone();
         Ok(dst)
     };
     let at = |err: Error| err.in_file(&root.origin);
-    let mut merged = unit(root.prog.clone()).map_err(at)?;
+    let count = siblings.len();
+    let mut merged = unit(root.prog, count == 0).map_err(at)?;
     let mut linked = Vec::new();
-    for sibling in siblings {
-        linked.push(unit(sibling).map_err(at)?);
+    for (i, sibling) in siblings.into_iter().enumerate() {
+        linked.push(unit(sibling, i + 1 == count).map_err(at)?);
     }
     merged.siblings = linked;
     let _ = &root.canon;
@@ -670,24 +746,42 @@ fn gather_file(
     root: bool,
     env: &mut LoadEnv,
 ) -> Result<Loaded, Error> {
-    let src = match text.or(std_source(&canon)) {
-        Some(src) => src.to_string(),
-        None if canon.starts_with(STD_ROOT) => {
-            let rel = canon.strip_prefix(STD_ROOT).unwrap_or(&canon);
-            return Err(error(
-                1,
-                1,
-                format!(
-                    "cannot read `{}`: no such standard library file",
-                    rel.display()
-                ),
-            ));
+    let parsed = sources
+        .once
+        .as_ref()
+        .filter(|_| text.is_none())
+        .map(|once| &once.parsed);
+    let seen = parsed.and_then(|parsed| parsed.lock().ok()?.get(&canon).cloned());
+    let mut own = match seen {
+        Some((own, hash)) => {
+            env.touched.push((canon.clone(), hash));
+            own
         }
-        None => sources
-            .read(&canon)
-            .map_err(|err| error(1, 1, format!("cannot read `{}`: {err}", path.display())))?,
+        None => {
+            let src = match text.or(std_source(&canon)) {
+                Some(src) => src.to_string(),
+                None if canon.starts_with(STD_ROOT) => {
+                    let rel = canon.strip_prefix(STD_ROOT).unwrap_or(&canon);
+                    return Err(error(
+                        1,
+                        1,
+                        format!(
+                            "cannot read `{}`: no such standard library file",
+                            rel.display()
+                        ),
+                    ));
+                }
+                None => sources.read(&canon).map_err(|err| {
+                    error(1, 1, format!("cannot read `{}`: {err}", path.display()))
+                })?,
+            };
+            let own = parse_cached(&canon, &src, env)?;
+            if let Some(mut parsed) = parsed.and_then(|parsed| parsed.lock().ok()) {
+                parsed.insert(canon.clone(), (own.clone(), content_hash(&src)));
+            }
+            own
+        }
     };
-    let mut own = parse_cached(&canon, &src, env)?;
     if !root && own.contract_name.is_some() {
         let units = split_units(load_inner(sources, path, None, stack, env)?);
         contracts.insert(canon, units.clone());
@@ -708,7 +802,8 @@ fn gather_file(
     let mut imports = Vec::new();
     let mut peers: Vec<Program> = Vec::new();
     for decl in &uses {
-        let child_path = import_path_in(&stack[0].canon, &canon, &decl.path)
+        let child_path = sources
+            .import_path(&stack[0].canon, &canon, &decl.path)
             .map_err(|msg| error(decl.line, decl.col, msg))?;
         if let Some(start) = sources
             .canonicalize(&child_path)
@@ -1137,6 +1232,9 @@ pub(crate) fn split_units(mut prog: Program) -> Vec<Program> {
     let rest = std::mem::take(&mut prog.siblings);
     let mut units = vec![prog];
     units.extend(rest);
+    if units.len() == 1 {
+        return units;
+    }
     let all = units.clone();
     for (i, unit) in units.iter_mut().enumerate() {
         let imported = std::mem::take(&mut unit.peers);
@@ -1374,5 +1472,36 @@ mod tests {
         .unwrap();
         assert_eq!(std_ids(&edited), std_n);
         assert_eq!(cache.parsed_count(), parsed_n + 1);
+    }
+
+    /// A build of a directory parses a file two of its files import once, and loads each
+    /// file as a build of it alone does.
+    #[test]
+    fn a_directory_build_parses_a_shared_import_once() {
+        let dir = std::env::temp_dir().join(format!("lithe-load-once-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::write(
+            dir.join("lib/util.lithe"),
+            "pure function twice(const n : uint) : uint is n + n\n",
+        )
+        .unwrap();
+        for name in ["a", "b"] {
+            std::fs::write(
+                dir.join(format!("{name}.lithe")),
+                "import \"./lib/util\";\nstorage is record { count : uint; }\n\
+                 external function bump(const n : uint) is { storage.count := twice(n); }\n",
+            )
+            .unwrap();
+        }
+        let shared = Sources::disk_once();
+        for name in ["a", "b"] {
+            let path = dir.join(format!("{name}.lithe"));
+            let once = load(&shared, &path).unwrap();
+            let alone = load(&Sources::disk(), &path).unwrap();
+            assert_eq!(format!("{once:?}"), format!("{alone:?}"));
+        }
+        let parsed = shared.once.unwrap().parsed.into_inner().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(parsed.len(), 3);
     }
 }
