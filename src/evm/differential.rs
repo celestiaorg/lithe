@@ -529,3 +529,35 @@ fn sharing_matches(level: u8) {
     }
     assert!(compared > 40, "only {compared} programs defer or query");
 }
+
+/// A program's cache key tells programs apart exactly as their `Debug` text does: over every
+/// example, fuzz and bench program, each with a function dropped and with its proving flag
+/// turned, two programs have one key only when they have one text.
+#[test]
+fn program_keys_tell_programs_apart_as_their_text_does() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    lithe_files(&root.join("bench"), &mut files);
+    files.extend(differential_targets().into_iter().map(|(path, _)| path));
+    let mut texts: HashMap<String, [u8; 32]> = HashMap::new();
+    let mut keys: HashMap<[u8; 32], String> = HashMap::new();
+    let mut loaded = 0;
+    for path in files {
+        let Ok(prog) = crate::modules::load(&Sources::disk(), &path) else {
+            continue;
+        };
+        loaded += 1;
+        let mut dropped = prog.clone();
+        dropped.funcs.pop();
+        let mut turned = prog.clone();
+        turned.proving = !turned.proving;
+        for prog in [prog.clone(), prog, dropped, turned] {
+            let text = format!("{prog:?}");
+            let key = crate::split::program_key(&prog, "");
+            assert_ne!(key, crate::split::program_key(&prog, "other options"));
+            assert_eq!(*texts.entry(text.clone()).or_insert(key), key);
+            assert_eq!(*keys.entry(key).or_insert_with(|| text.clone()), text);
+        }
+    }
+    assert!(loaded > 100 && keys.len() > 2 * loaded);
+}

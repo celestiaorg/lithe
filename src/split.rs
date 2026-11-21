@@ -590,10 +590,7 @@ fn facet(
     }
     let mut prog = facet_program(&checked.source, module, crossing);
     let scopes = std::mem::take(&mut prog.scopes);
-    let key = (
-        keccak256(format!("{prog:?}\0{opts:?}").as_bytes()),
-        module.to_string(),
-    );
+    let key = (program_key(&prog, &format!("{opts:?}")), module.to_string());
     prog.scopes = scopes;
     // Contracts compiled side by side wait for the one build of a facet they share.
     type Memo = Mutex<HashMap<([u8; 32], String), Arc<OnceLock<Result<Facet, Error>>>>>;
@@ -1092,7 +1089,7 @@ fn module_crossings(
     let source = &checked.source;
     let mut alone = facet_program(source, module, &[]);
     let scopes = std::mem::take(&mut alone.scopes);
-    let key = keccak256(format!("{alone:?}\0{:?}", opts.evm).as_bytes());
+    let key = program_key(&alone, &format!("{:?}", opts.evm));
     alone.scopes = scopes;
     static FOUND: OnceLock<Mutex<HashMap<[u8; 32], Vec<Crossing>>>> = OnceLock::new();
     let memo = FOUND.get_or_init(|| Mutex::new(HashMap::new()));
@@ -1414,9 +1411,29 @@ pub(crate) fn address_word(address: [u8; 20]) -> Word {
     Word::from_be_bytes(word)
 }
 
+/// A key for `prog` and `rest`: every field of the program goes into it, as it would into
+/// the program's `Debug` text, without writing that text.
+pub(crate) fn program_key(prog: &Program, rest: &str) -> [u8; 32] {
+    struct Fields(Vec<u8>);
+    impl std::hash::Hasher for Fields {
+        fn write(&mut self, bytes: &[u8]) {
+            self.0.extend_from_slice(bytes);
+        }
+        fn finish(&self) -> u64 {
+            0
+        }
+    }
+    let mut fields = Fields(Vec::new());
+    std::hash::Hash::hash(prog, &mut fields);
+    fields.0.push(0);
+    fields.0.extend_from_slice(rest.as_bytes());
+    keccak256(&fields.0)
+}
+
 /// Where a contract's build is cached, keyed by its program and the options.
 fn cache_path(checked: &Checked, name: &str, opts: &Options) -> Option<PathBuf> {
-    cache_entry(&format!("{:?}\0{name}\0{opts:?}", checked.source))
+    let key = program_key(&checked.source, &format!("{name}\0{opts:?}"));
+    cache_entry(&crate::hex(&key))
 }
 
 /// Where the build `key` names is cached: `$LITHE_CACHE_DIR`, else `$XDG_CACHE_HOME/lithe`, else
