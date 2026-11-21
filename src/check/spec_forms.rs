@@ -105,7 +105,6 @@ impl Checker {
                     mutable: false,
                     storage: false,
                     slot: 0,
-                    span: 0,
                 });
                 self.define(*bline, *bcol, name, id)?;
                 *sym = Some(id);

@@ -1,0 +1,59 @@
+(* Fuzz target: calls no selector names. Plain ether runs `receive`, and calldata that
+   matches no entrypoint runs `fallback`, which takes value here, so each entrypoint that
+   takes none refuses it itself. A raw call deferred from here runs the target's code
+   there, and a delegate call runs it here. *)
+
+import "std/evm";
+
+event Received of record {
+  indexed from : address;
+  amount       : wei;
+}
+
+event Unknown of record {
+  indexed selector : bytes4;
+  data             : bytes;
+}
+
+storage is record {
+  received : wei;
+  odd      : uint;
+  target   : address;
+  out      : uint;
+}
+
+payable receive is {
+  storage.received += Evm.value();
+  emit Received { from = Evm.sender(); amount = Evm.value(); };
+}
+
+payable fallback is {
+  storage.odd += 1;
+  emit Unknown { selector = Evm.selector(); data = Evm.calldata(); };
+}
+
+(* Never this contract: a call passed on to itself would go round until its gas ran out. *)
+external function setTarget(const target : address) is {
+  if target <> Evm.self() then {
+    storage.target := target;
+  }
+}
+
+external function ping(const n : uint) : uint is {
+  storage.out := n % 1000;
+} with n % 1000 + 1
+
+external payable function tip() : wei is {
+  storage.received += Evm.value();
+} with Evm.value()
+
+external function relay(const data : bytes) is {
+  defer Evm.call(storage.target, data);
+}
+
+external function borrow(const data : bytes) is {
+  defer Evm.delegateCall(storage.target, data);
+}
+
+external view function totals() : (wei, uint, uint) is
+  (storage.received, storage.odd, storage.out)

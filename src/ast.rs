@@ -1,6 +1,6 @@
 use crate::word::Word;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct Program {
     pub uses: Vec<UseDecl>,
     pub types: Vec<TypeDecl>,
@@ -59,7 +59,7 @@ pub(crate) struct Program {
 
 /// `spec is { ... }` or `spec for f is { ... }`: claims about the program that `lithe prove`
 /// checks. Nothing in a spec block runs on chain.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct SpecBlock {
     pub line: u32,
     pub col: u32,
@@ -74,7 +74,7 @@ pub(crate) struct SpecBlock {
     pub module: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct Clause {
     pub line: u32,
     pub col: u32,
@@ -84,7 +84,7 @@ pub(crate) struct Clause {
     pub text: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) enum ClauseKind {
     /// `invariant name is e;`, in `spec is`.
     Invariant(String),
@@ -99,13 +99,13 @@ pub(crate) enum ClauseKind {
 }
 
 /// Which state a spec reads: `old.` before the call, `new.` after it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum State {
     Old,
     New,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct DomainDecl {
     pub line: u32,
     pub col: u32,
@@ -121,7 +121,7 @@ pub(crate) struct DomainDecl {
     pub immutable: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct TypeParam {
     pub line: u32,
     pub col: u32,
@@ -130,7 +130,7 @@ pub(crate) struct TypeParam {
     pub constraint: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct ModuleDecl {
     pub line: u32,
     pub col: u32,
@@ -162,7 +162,7 @@ pub(crate) struct ModuleDecl {
 /// `intrinsic view function sender() : address;` or `intrinsic call;`: a member of a
 /// standard library module that the compiler implements. The checker's rules for it are
 /// its own; the signature, when Lithe can write one, states them.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct Intrinsic {
     pub line: u32,
     pub col: u32,
@@ -172,7 +172,7 @@ pub(crate) struct Intrinsic {
     pub tag: Option<Tag>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Tag {
     Call(Builtin),
     /// `Uint.max`, `Int.min`, `Int.max`, and `Address.zero`: literals as wide as the
@@ -190,7 +190,7 @@ pub(crate) enum Tag {
 
 /// `use M exposing I, J, { ... }`: the contract uses `M` and exposes the members of the
 /// interfaces it names and of its inline one. Each member is one of `M`'s externals.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct Exposing {
     pub line: u32,
     pub col: u32,
@@ -202,7 +202,7 @@ pub(crate) struct Exposing {
 
 /// What a module's external function was declared as, before it became the internal
 /// function that the contracts exposing it call.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct Exported {
     /// Its name in the ABI.
     pub name: String,
@@ -212,7 +212,7 @@ pub(crate) struct Exported {
     pub external_pure: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct GuardDecl {
     pub line: u32,
     pub col: u32,
@@ -221,7 +221,7 @@ pub(crate) struct GuardDecl {
     pub via: Option<NameAt>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct UseDecl {
     pub line: u32,
     pub col: u32,
@@ -229,7 +229,7 @@ pub(crate) struct UseDecl {
     pub alias: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct TypeDecl {
     pub line: u32,
     pub col: u32,
@@ -239,7 +239,7 @@ pub(crate) struct TypeDecl {
     pub ty: TypeRef,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct ErrorDecl {
     pub line: u32,
     pub col: u32,
@@ -249,7 +249,7 @@ pub(crate) struct ErrorDecl {
     pub payload: Option<TypeRef>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct ErrorSetDecl {
     pub line: u32,
     pub col: u32,
@@ -258,14 +258,14 @@ pub(crate) struct ErrorSetDecl {
     pub members: Vec<NameAt>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct NameAt {
     pub line: u32,
     pub col: u32,
     pub name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct EventDecl {
     pub line: u32,
     pub col: u32,
@@ -276,7 +276,7 @@ pub(crate) struct EventDecl {
     pub fields: Vec<FieldRef>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct InterfaceDecl {
     pub line: u32,
     pub col: u32,
@@ -286,7 +286,7 @@ pub(crate) struct InterfaceDecl {
     pub methods: Vec<Func>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ItemKind {
     /// `function`: internal and stateful.
     Function,
@@ -311,13 +311,13 @@ pub(crate) enum ItemKind {
 /// How a `fallback` passes its call on: `delegates to` runs the target's code as this
 /// contract, with `DELEGATECALL`; `forwards to` calls the target, with `CALL`. The target
 /// is the function's tail, and the call's result or revert comes back as it is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Forward {
     Delegate,
     Call,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) enum TypeRef {
     Name {
         line: u32,
@@ -500,7 +500,7 @@ pub(crate) fn each_child(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct FieldRef {
     pub line: u32,
     pub col: u32,
@@ -510,7 +510,7 @@ pub(crate) struct FieldRef {
     pub indexed: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct VariantRef {
     pub line: u32,
     pub col: u32,
@@ -524,7 +524,7 @@ pub(crate) struct VariantRef {
     pub flat: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct Func {
     pub line: u32,
     pub col: u32,
@@ -576,7 +576,7 @@ pub(crate) struct Func {
     pub constant: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct Guarded {
     pub line: u32,
     pub col: u32,
@@ -587,7 +587,7 @@ pub(crate) struct Guarded {
 
 /// `guard editor(...) is { ... }` in `use M ... with`, or `guard editor is f;`, which checks
 /// by calling `f`. `module` is where the binding names the guard.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct GuardOf {
     pub module: NameAt,
     pub name: String,
@@ -596,14 +596,14 @@ pub(crate) struct GuardOf {
 
 /// `hook h ... is ...` in `use M ... with`: which of `M`'s hooks a function is, and what it
 /// is. `module` is where the binding names the hook.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct HookOf {
     pub module: NameAt,
     pub name: String,
     pub form: HookForm,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum HookForm {
     /// `is { ... }`: a body the contract writes.
     Body,
@@ -619,12 +619,12 @@ pub(crate) enum HookForm {
     Entry,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct Raises {
     pub parts: Vec<NameAt>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct Param {
     pub line: u32,
     pub col: u32,
@@ -640,7 +640,7 @@ pub(crate) struct Param {
     pub sym: Option<usize>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) enum Stmt {
     Const {
         line: u32,
@@ -771,7 +771,7 @@ pub(crate) enum Stmt {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) enum ForIter {
     /// `lo .. hi`, half-open.
     Range { lo: Expr, hi: Expr },
@@ -781,7 +781,7 @@ pub(crate) enum ForIter {
 
 /// `then (result : T) { ... }` on a deferred call. The call separates two complete
 /// transitions; this is the second, and it receives the call's result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct Then {
     pub line: u32,
     pub col: u32,
@@ -806,7 +806,7 @@ impl Then {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct Raised {
     pub line: u32,
     pub col: u32,
@@ -817,14 +817,14 @@ pub(crate) struct Raised {
     pub forward: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) enum RaisedForm {
     Unit,
     Positional(Expr),
     Fields(Vec<(String, Expr)>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BinOp {
     Add,
     Sub,
@@ -856,14 +856,14 @@ impl BinOp {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum UnOp {
     Not,
     Neg,
     BitNot,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Builtin {
     /// A read of an immutable that is a value in memory while `deploy` runs, and after it is
     /// built from the code.
@@ -1005,7 +1005,7 @@ pub(crate) enum Builtin {
 }
 
 /// The precompiled contracts past the hashes and `ecrecover`, each a built-in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Pre {
     /// `Crypto.modExp(base, exponent, modulus)`: 0x05 on byte strings.
     ModExp,
@@ -1076,7 +1076,7 @@ pub(crate) enum Lit {
     Zero,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) enum Expr {
     Lit {
         line: u32,
@@ -1266,7 +1266,7 @@ impl Expr {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct Arm {
     pub line: u32,
     pub col: u32,

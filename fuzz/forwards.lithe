@@ -1,0 +1,26 @@
+(* Fuzz target: a `fallback` that passes every call it has no entrypoint for to another
+   contract, with its value, under the lock a `nonreentrant` entrypoint takes. What the
+   target returns or reverts with comes back as it is. *)
+
+import "std/evm";
+
+storage is record {
+  target : address;
+  seen   : uint;
+}
+
+(* Never this contract: a call passed on to itself would go round until its gas ran out. *)
+external function setTarget(const target : address) is {
+  if target <> Evm.self() then {
+    storage.target := target;
+  }
+}
+
+external nonreentrant function mark(const n : uint) is {
+  storage.seen := n % 100;
+}
+
+external view function seen() : uint is
+  storage.seen
+
+payable fallback forwards to storage.target;

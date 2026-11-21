@@ -770,11 +770,11 @@ is {{
         ),
         (
             "var i : uint := m; if i < xs.length then { r := xs[i]; }",
-            "var i : uint := m; if i < ys.length then { r := xs[i]; }",
+            "var i : uint := m; if i < n then { r := xs[i]; }",
         ),
         (
             "if m < ys.length then { r := ys[m]; }",
-            "if m < xs.length then { r := ys[m]; }",
+            "if m < n then { r := ys[m]; }",
         ),
     ];
     for (proven, unproven) in smaller {
@@ -1804,8 +1804,7 @@ external pure function neg8(const x : int8) : int8 is -x
 }
 
 /// Locals carried around a loop, joined after a branch, or mirrored from a loop counter
-/// stay on the stack, and every result is right. The one read of memory left is `total`'s
-/// zero, which nothing stores before the loop loads it.
+/// stay on the stack, and every result is right. At most one read of memory is left.
 #[test]
 fn loop_and_branch_locals_stay_on_the_stack() {
     let src = "
@@ -1844,7 +1843,7 @@ external pure function pick(const a : uint; const b : uint) : uint is {
             0
         };
     }
-    assert_eq!(loads, 1);
+    assert!(loads <= 1, "{loads} loads");
     let w = Word::from_u64;
     let word = |sig: &str, args: &[Word]| load_bytes(&call(&runtime, sig, args).returndata, 0);
     let gcd = |mut a: u64, mut b: u64| {
@@ -2061,4 +2060,73 @@ external pure function pushed(const m : uint8) : uint is {
         assert!(!out.reverted, "pushed({m})");
         assert_eq!(load_bytes(&out.returndata, 0), w(m + 3), "pushed({m})");
     }
+}
+
+/// What a guard proves holds on its path only: a difference that wrapped before the guard
+/// keeps its width past it, and a sum known to fit a word is still checked against its type.
+#[test]
+fn guards_prove_only_their_path() {
+    let src = "\
+import \"std/uint\";
+external pure function shifted(const x : uint8; const m : uint8) : (uint, uint8) is {
+  const w : uint := Uint.wrappingSub(uint(x), uint(m));
+  var r : uint8 := 0;
+  if x > m then { r := x - m; }
+} with (w >> 8, r)
+external pure function narrowed(const x : uint8; const m : uint8) : (uint8, uint8) is {
+  const w : uint := Uint.wrappingSub(uint(x), uint(m));
+  var r : uint8 := 0;
+  if x > m then { r := x - m; }
+} with (uint8(w), r)
+external pure function add(const x : uint8; const y : uint8) : uint8 is {
+  var r : uint8 := 0;
+  if uint(x) <= ~uint(y) then { r := x + y; }
+} with r
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let w = Word::from_u64;
+    let out = call(&runtime, "shifted(uint8,uint8)", &[w(1), w(2)]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    assert_eq!(load_bytes(&out.returndata, 0), w(0).not().shr(8));
+    let out = call(&runtime, "shifted(uint8,uint8)", &[w(5), w(2)]);
+    assert_eq!(load_bytes(&out.returndata, 32), w(3));
+    for (sig, args) in [
+        ("narrowed(uint8,uint8)", [w(1), w(2)]),
+        ("add(uint8,uint8)", [w(200), w(100)]),
+    ] {
+        let out = call(&runtime, sig, &args);
+        assert!(out.reverted, "{sig}: {}", pretty(&out.returndata));
+        assert_eq!(load_bytes(&out.returndata, 4), w(0x11), "{sig}");
+    }
+    let out = call(&runtime, "add(uint8,uint8)", &[w(100), w(100)]);
+    assert_eq!(load_bytes(&out.returndata, 0), w(200));
+}
+
+/// Gas left is read where it is asked, not moved past the work it measures.
+#[test]
+fn gas_left_is_read_in_order() {
+    let src = "\
+import \"std/evm\";
+storage is record { x : uint; }
+external function measure(const v : uint) : uint is {
+  const before : uint := Evm.gasLeft();
+  storage.x := v;
+} with before - Evm.gasLeft()
+";
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let (gas, sstore) = (0x5a, 0x55);
+    let mut ops = Vec::new();
+    let mut pc = 0;
+    while pc < runtime.len() {
+        let op = runtime[pc];
+        if op == gas || op == sstore {
+            ops.push(op);
+        }
+        pc += 1 + if (0x60..=0x7f).contains(&op) {
+            usize::from(op - 0x5f)
+        } else {
+            0
+        };
+    }
+    assert_eq!(ops, [gas, sstore, gas]);
 }

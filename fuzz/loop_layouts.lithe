@@ -1,0 +1,139 @@
+(* Fuzz target: loops whose variables meet at joins and back edges in every arrangement: a
+   loop that ends on a flag it sets, variables one arm changes and the other leaves, values
+   that die where the arms part, and counters that outlive their loop. Each block's stack
+   layout is set by the first jump to reach it, and every other jump must agree with it. *)
+
+import "std/list";
+import "std/uint";
+
+storage is record {
+  owner : uint;
+  runs  : uint;
+  keys  : list(uint64);
+}
+
+view function petals(const no : uint) : uint is
+  64 + uint(storage.owner >> uint8(4 * (no - 1) % 40) & 0xf)
+
+(* Ends on a flag: five variables carried, one changed under a condition. *)
+view function flowerOf(const id : uint) : list(uint, 3) is {
+  const rounds : uint := (id - 1) / 2880;
+  var no : uint := rounds * 40 + 1;
+  var before : uint := 0;
+  var count : uint := 0;
+  var after : uint := 2880 * rounds;
+  var found : bool := false;
+  for _ : uint in 0 .. Uint.max until found do {
+    before := after;
+    count := petals(no);
+    after += count;
+    found := id > before and id <= after;
+    if not found then {
+      no += 1;
+    }
+  }
+} with [no, before, count]
+
+(* Arms that change different variables, and one that changes none. *)
+pure function weave(const seed : uint; const n : uint) : (uint, uint, uint, uint) is {
+  var a : uint := seed % 97;
+  var b : uint := seed % 89 + 1;
+  var c : uint := 0;
+  var d : uint := n;
+  for i : uint in 0 .. n do {
+    const t : uint := (a + b + i) % 7;
+    if t < 2 then {
+      a := b + i;
+    } else if t < 4 then {
+      b := a % 50 + 1;
+      c += 1;
+    } else if t = 4 then {
+      d := d + a - a % 3;
+    }
+    if c > 3 and a > b then {
+      c := 0;
+      const swap : uint := a;
+      a := b;
+      b := swap;
+    }
+  }
+} with (a, b, c, d)
+
+(* A loop inside a loop, the inner one ending early, with the outer one's variables live
+   across it. *)
+pure function nest(const seed : uint) : (uint, uint) is {
+  var sum : uint := 0;
+  var last : uint := 0;
+  for i : uint in 0 .. seed % 6 do {
+    var hit : bool := false;
+    for j : uint in 0 .. 5 until hit do {
+      hit := (seed >> (i * 5 + j)) & 1 = 1;
+      if hit then {
+        last := i * 10 + j;
+      } else {
+        sum += j + 1;
+      }
+    }
+    if not hit then {
+      sum += 100;
+    }
+  }
+} with (sum, last)
+
+(* A search: three arms that each change other variables meet twice before the loop's
+   head, which every pass but the last reaches through the same two. *)
+view function rankOf(const id : uint64) : (bool, uint) is {
+  var found : bool := false;
+  var at : uint := 0;
+  var lo : uint := 0;
+  var hi : uint := storage.keys.length;
+  for _ : uint in 0 .. 256 until lo >= hi or found do {
+    const mid : uint := (lo + hi) / 2;
+    const key : uint64 := storage.keys[mid];
+    if key = id then {
+      found := true;
+      at := mid * 3 + lo;
+    } else if key < id then {
+      lo := mid + 1;
+    } else {
+      hi := mid;
+    }
+  }
+} with (found, at)
+
+external function add(const seed : uint) is {
+  const n : uint := storage.keys.length;
+  const top : uint64 := if n = 0 then 0 else storage.keys[n - 1];
+  if n < 40 then {
+    List.push(storage.keys, top + uint64(seed % 5 + 1));
+  }
+}
+
+external view function rank(const seed : uint) : (bool, uint) is rankOf(uint64(seed % 130))
+
+external function set(const owner : uint) is {
+  storage.owner := owner;
+  storage.runs += 1;
+}
+
+external view function flower(const seed : uint) : (uint, uint, uint) is {
+  const f : list(uint, 3) := flowerOf(seed % 6000 + 1);
+} with (f[0], f[1], f[2])
+
+external view function describe(const seed : uint) : uint is {
+  const id : uint := seed % 6000 + 1;
+  const f : list(uint, 3) := flowerOf(id);
+  const g : list(uint, 3) := flowerOf(id + 70);
+} with f[0] * 1000000 + (id - f[1]) * 1000 + f[2] + g[0]
+
+external pure function woven(const seed : uint; const n : uint) : (uint, uint, uint, uint) is
+  weave(seed, n % 40)
+
+external pure function nested(const seed : uint) : (uint, uint) is nest(seed)
+
+external function all(const seed : uint) : uint is {
+  const f : list(uint, 3) := flowerOf(seed % 6000 + 1);
+  const (a, b, c, d) : (uint, uint, uint, uint) := weave(seed, seed % 23);
+  const (sum, last) : (uint, uint) := nest(seed);
+  storage.runs := storage.runs + f[0] + a + b + c + d % 1000 + sum + last;
+} with storage.runs

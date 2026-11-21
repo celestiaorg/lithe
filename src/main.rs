@@ -37,6 +37,10 @@ fn main() {
         cmd.as_str(),
         "compile" | "abi" | "facets" | "abi-tree" | "footprint" | "upgrade" | "upgrade-check"
     );
+    let timings = cmd == "compile" && take_switch(&mut args, "--timings");
+    if timings {
+        lithe::timings::enable();
+    }
     let emits = matches!(cmd.as_str(), "compile" | "abi");
     let out_dir = emits.then(|| take_flag(&mut args, "--out")).flatten();
     let interface = emits.then(|| take_flag(&mut args, "--interface")).flatten();
@@ -142,6 +146,9 @@ fn main() {
                 std::process::exit(2);
             }
         };
+        if timings {
+            eprintln!("{}", lithe::timings::line());
+        }
         finish_dir(result);
     }
     let file = Path::new(&path);
@@ -177,6 +184,9 @@ fn main() {
                 })
             }),
     };
+    if timings {
+        eprintln!("{}", lithe::timings::line());
+    }
     match result {
         Ok(text) => {
             let notes = match warnings {
@@ -283,8 +293,16 @@ fn usage_exit(msg: &str) -> ! {
 
 /// Prints `errors`, placing one with a line but no file in `file`, the file the command reads.
 fn fail(errors: &[lithe::Error], file: Option<&Path>) -> ! {
+    eprintln!("{}", fatal_text(errors, file));
+    std::process::exit(1);
+}
+
+/// Each of `errors`, and each the parser found after it, a blank line apart. `file` names
+/// an error that has a line and no file.
+fn fatal_text(errors: &[lithe::Error], file: Option<&Path>) -> String {
     let errors: Vec<String> = errors
         .iter()
+        .flat_map(lithe::Error::chain)
         .map(|err| match file {
             Some(file) if err.file.is_none() && err.line > 0 => lithe::Error {
                 file: Some(file.display().to_string()),
@@ -294,8 +312,7 @@ fn fail(errors: &[lithe::Error], file: Option<&Path>) -> ! {
             _ => err.to_string(),
         })
         .collect();
-    eprintln!("{}", errors.join("\n\n"));
-    std::process::exit(1);
+    errors.join("\n\n")
 }
 
 /// Removes `flag` and its value from `args`, returning the value.
@@ -683,6 +700,8 @@ where it explains one; it also takes
 compile also takes
        --check-specs                 a test build that checks the contract's specs as it
                                      runs, and reverts with SpecViolation(string)
+       --timings                     one `[time]` line on stderr: the milliseconds spent
+                                     loading, checking, and in each code generation phase
 
 add puts a package in lithe.toml's [dependencies] and installs it, by default at ^ its
 newest version tag; install checks out the git packages lithe.lock pins, or with --update
@@ -787,5 +806,31 @@ mod tests {
         );
         assert_eq!(args, ["x.lithe"]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The CLI prints every statement a file broke, not only the first, and names the file
+    /// on each.
+    #[test]
+    fn a_broken_file_prints_every_recovered_statement_error() {
+        let dir = std::env::temp_dir().join(format!("lithe-main-errors-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = "storage is record { count : uint; }\n\
+external function f() : uint is {\n\
+  var x : uint := ;\n\
+  var y : uint := ;\n\
+  storage.count := 5;\n\
+} with 0\n";
+        let file = dir.join("broken.lithe");
+        std::fs::write(&file, src).unwrap();
+        let errors = lithe::compile(&Sources::disk(), &file, &lithe::Options::default())
+            .err()
+            .expect("broken statements do not compile");
+        let text = fatal_text(&errors, Some(&file));
+        std::fs::remove_dir_all(&dir).unwrap();
+        let found = text.matches("expected an expression, found `;`").count();
+        assert_eq!(found, 2, "{text}");
+        let named = text.lines().filter(|l| l.contains("broken.lithe:")).count();
+        assert_eq!(named, 2, "{text}");
     }
 }

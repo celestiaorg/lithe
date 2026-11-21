@@ -39,6 +39,115 @@
 //! [`storage_diff`], [`upgrade_check`], and [`upgrade_plan`]. [`compile_dir`] and [`abi_dir`]
 //! write Foundry-style artifacts.
 
+/// Where a build's time went, for `lithe compile --timings`: each phase's time summed over
+/// every build and thread since `enable`, and the wall time since then. A build inside
+/// another's phase, as of a contract the code creates, counts under both.
+pub mod timings {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    #[derive(Clone, Copy)]
+    pub(crate) enum Phase {
+        Load,
+        Check,
+        Dispatch,
+        Lower,
+        DeadCode,
+        Emit,
+        Optimize,
+        Outline,
+        Assemble,
+        Creation,
+    }
+
+    const NAMES: [&str; 10] = [
+        "load", "check", "dispatch", "lower", "dce", "emit", "optimize", "outline", "assemble",
+        "creation",
+    ];
+    static ON: AtomicBool = AtomicBool::new(false);
+    static NANOS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
+    static START: OnceLock<Instant> = OnceLock::new();
+
+    /// Starts the clock. Nothing reads one before this: the browser's build has none.
+    pub fn enable() {
+        START.get_or_init(Instant::now);
+        ON.store(true, Relaxed);
+    }
+
+    pub(crate) fn on() -> bool {
+        ON.load(Relaxed)
+    }
+
+    pub(crate) fn add(phase: Phase, took: Duration) {
+        NANOS[phase as usize].fetch_add(took.as_nanos() as u64, Relaxed);
+    }
+
+    thread_local! {
+        /// The phases this thread has a span open for, a bit each.
+        static OPEN: std::cell::Cell<u16> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Adds the time until it drops to `phase`.
+    pub(crate) struct Span(Option<Instant>, Phase);
+
+    /// A span inside another of its phase counts nothing: checking a composed program
+    /// checks again, and that time is the outer span's already.
+    pub(crate) fn span(phase: Phase) -> Span {
+        let bit = 1 << phase as u16;
+        let outermost = on() && OPEN.get() & bit == 0;
+        if outermost {
+            OPEN.set(OPEN.get() | bit);
+        }
+        Span(outermost.then(Instant::now), phase)
+    }
+
+    impl Drop for Span {
+        fn drop(&mut self) {
+            if let Some(start) = self.0 {
+                OPEN.set(OPEN.get() & !(1 << self.1 as u16));
+                add(self.1, start.elapsed());
+            }
+        }
+    }
+
+    /// `[time] load=..ms check=..ms ... total=..ms`: every phase, always in this order.
+    pub fn line() -> String {
+        let ms = |nanos: u64| format!("{:.2}ms", nanos as f64 / 1e6);
+        let phases: Vec<String> = NAMES
+            .iter()
+            .zip(&NANOS)
+            .map(|(name, nanos)| format!("{name}={}", ms(nanos.load(Relaxed))))
+            .collect();
+        let total = START
+            .get()
+            .map_or(0, |start| start.elapsed().as_nanos() as u64);
+        format!("[time] {} total={}", phases.join(" "), ms(total))
+    }
+
+    /// The line names every phase once, in order, whatever was built.
+    #[test]
+    fn line_names_every_phase() {
+        enable();
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bench/counter.lithe");
+        crate::compile(&crate::Sources::disk(), &file, &crate::Options::default()).expect("builds");
+        let line = line();
+        let mut rest = line.strip_prefix("[time] ").expect("the prefix");
+        for name in NAMES.iter().chain(&["total"]) {
+            let (key, value) = rest.split_once(' ').unwrap_or((rest, ""));
+            let ms = key
+                .strip_prefix(&format!("{name}="))
+                .and_then(|v| v.strip_suffix("ms"));
+            assert!(
+                ms.is_some_and(|v| v.parse::<f64>().is_ok()),
+                "{name} in {line}"
+            );
+            rest = value;
+        }
+        assert!(rest.is_empty() && !line.contains("check=0.00ms"), "{line}");
+    }
+}
+
 mod asm;
 mod ast;
 mod check;
@@ -68,7 +177,7 @@ pub use config::{build_options, format_width, set_build_option, BUILD_KEYS, DEFA
 pub use format::{add_use, format_source};
 pub use index::{Completion, Def, File, Index, Kind, Ref, Signature, Span};
 pub use lint::{lint_paths, lithe_files, Lint};
-pub use modules::{import_path, Sources};
+pub use modules::{import_path, ModuleCache, Sources};
 pub use packages::{add, install, packages, Add};
 pub use prove::{serve_if_child, Proof, ProveOptions};
 pub use route::{
@@ -108,6 +217,9 @@ pub struct Error {
     pub line: u32,
     pub column: u32,
     pub message: String,
+    /// The errors the parser found in the same file after this one, having carried on past
+    /// each broken statement. Empty for an error that is the only one.
+    pub more: Vec<Error>,
 }
 
 impl Error {
@@ -116,7 +228,13 @@ impl Error {
         if self.file.is_none() && !file.is_empty() {
             self.file = Some(file.to_string());
         }
+        self.more = self.more.into_iter().map(|err| err.in_file(file)).collect();
         self
+    }
+
+    /// This error, then the ones the parser found after it.
+    pub fn chain(&self) -> impl Iterator<Item = &Error> {
+        std::iter::once(self).chain(&self.more)
     }
 }
 
@@ -172,8 +290,9 @@ pub(crate) fn shown_path(file: &str) -> String {
 impl std::error::Error for Error {}
 
 impl From<Error> for Vec<Error> {
-    fn from(err: Error) -> Self {
-        vec![err]
+    fn from(mut err: Error) -> Self {
+        let more = std::mem::take(&mut err.more);
+        std::iter::once(err).chain(more).collect()
     }
 }
 
@@ -546,7 +665,7 @@ fn part_names(
 
 /// What an editor shows for unsaved `src` at `path`.
 pub struct Analysis {
-    /// The first error, including those only code generation finds.
+    /// The first error. [`analyze_frontend`] leaves out those only code generation finds.
     pub error: Option<Error>,
     /// What `lithe lint` reports for the file, once every contract in it checks.
     pub lints: Vec<Lint>,
@@ -554,56 +673,144 @@ pub struct Analysis {
     pub index: Option<Index>,
 }
 
-/// Checks every contract `src` defines, as `lithe compile directory` does, with the build
-/// options the nearest `lithe.toml` sets.
+/// Checks every contract `src` defines and builds it, as `lithe compile directory` does,
+/// with the build options the nearest `lithe.toml` sets.
 pub fn analyze(path: &Path, src: &str) -> Analysis {
+    ModuleCache::new().analyze_full(path, src)
+}
+
+/// [`analyze`] without the build, so what an editor runs on a keystroke generates no code.
+pub fn analyze_frontend(path: &Path, src: &str) -> Analysis {
+    ModuleCache::new().analyze_frontend(path, src)
+}
+
+impl ModuleCache {
+    /// [`analyze_frontend`] with this session's parsed and checked programs.
+    pub fn analyze_frontend(&self, path: &Path, src: &str) -> Analysis {
+        analyze_in(path, src, Pass::Frontend, self).0
+    }
+
+    /// [`analyze`] with this session's parsed and checked programs.
+    pub fn analyze_full(&self, path: &Path, src: &str) -> Analysis {
+        analyze_in(path, src, Pass::Full, self).0
+    }
+
+    /// [`analyze_frontend`] without the index, and whether [`ModuleCache::index`] would
+    /// return one for `src`: an editor needs the index only once it is asked a question.
+    pub fn analyze_edit(&self, path: &Path, src: &str) -> (Analysis, bool) {
+        analyze_in(path, src, Pass::Edit, self)
+    }
+
+    /// The index [`analyze_frontend`] returns for `src`, without linting it again.
+    pub fn index(&self, path: &Path, src: &str) -> Option<Index> {
+        analyze_in(path, src, Pass::Index, self).0.index
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Pass {
+    Edit,
+    Index,
+    Frontend,
+    Full,
+}
+
+/// The analysis `pass` asks for, and whether the file has anything to index.
+fn analyze_in(path: &Path, src: &str, pass: Pass, cache: &ModuleCache) -> (Analysis, bool) {
     let (opts, mut failed) = match build_options(path) {
         Ok(opts) => (opts, None),
         Err(err) => (Options::default(), Some(err)),
     };
     let sources = Sources::disk();
-    let prog = match modules::load_source(&sources, path, src) {
+    let mut touched = Vec::new();
+    let loaded = modules::load_in(
+        &sources,
+        path,
+        Some(src),
+        Some(cache),
+        opts.evm,
+        &mut touched,
+    );
+    let prog = match loaded {
         Ok(prog) => prog,
         Err(err) => {
-            return Analysis {
+            let analysis = Analysis {
                 error: Some(err),
                 lints: Vec::new(),
                 index: None,
-            }
+            };
+            return (analysis, false);
         }
     };
+    let fingerprint = modules::fingerprint(&touched);
     let units = modules::split_units(prog);
-    let mut checked = Vec::new();
-    for unit in units.clone() {
-        let name = artifact_contract_name(&unit, path);
-        match check::check_in(unit.clone(), false, opts.evm) {
-            Ok(unit_checked) => {
-                if failed.is_none() {
-                    failed = build(&sources, path, unit, &name, &opts)
-                        .err()
-                        .filter(|err| {
-                            err.message != route::NO_ENTRIES || !declares_no_contract(src)
-                        });
-                }
-                checked.push(unit_checked);
-            }
-            Err(err) => {
-                failed.get_or_insert(err);
-            }
-        }
-    }
-    let lints = if checked.len() == units.len() {
-        lint::lint_source(src, path, units).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
     let root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    Analysis {
+    // What only code generation finds in a unit that checks.
+    let build_error = |unit: &ast::Program| {
+        let name = artifact_contract_name(unit, path);
+        build(&sources, path, unit.clone(), &name, &opts)
+            .err()
+            .filter(|err| err.message != route::NO_ENTRIES || !declares_no_contract(src))
+    };
+    // The lints and the index of the units that checked. Lint checks for the default fork,
+    // so it takes these units as checked only when they were checked for it.
+    let report = |checked: &[check::Checked], all: bool| {
+        let reuse = if opts.evm == EvmVersion::default() {
+            checked
+        } else {
+            &[]
+        };
+        let lints = if pass != Pass::Index && all {
+            lint::lint_source(src, path, units.clone(), reuse).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let indexable = !checked.is_empty();
+        let index = (pass != Pass::Edit && indexable)
+            .then(|| index::build(&root.display().to_string(), src, checked));
+        (lints, index, indexable)
+    };
+    let known = cache.with_checked(&root, fingerprint, opts.evm, |checked| {
+        report(checked, true)
+    });
+    let (lints, index, indexable) = match known {
+        Some(known) => {
+            if pass == Pass::Full {
+                failed = failed.or_else(|| units.iter().find_map(build_error));
+            }
+            known
+        }
+        None => {
+            let mut checked = Vec::new();
+            for unit in &units {
+                #[cfg(test)]
+                cache.note_check();
+                match check::check_in(unit.clone(), false, opts.evm) {
+                    Ok(unit_checked) => {
+                        if pass == Pass::Full && failed.is_none() {
+                            failed = build_error(unit);
+                        }
+                        checked.push(unit_checked);
+                    }
+                    Err(err) => {
+                        failed.get_or_insert(err);
+                    }
+                }
+            }
+            let all = checked.len() == units.len();
+            let found = report(&checked, all);
+            if all {
+                cache.store_checked(&root, fingerprint, opts.evm, checked);
+            }
+            found
+        }
+    };
+    let analysis = Analysis {
         error: failed,
         lints,
-        index: (!checked.is_empty())
-            .then(|| index::build(&root.display().to_string(), src, &checked)),
-    }
+        index,
+    };
+    (analysis, indexable)
 }
 
 /// Each external function's footprint: its writes, events, deferred calls, and errors, with
@@ -875,12 +1082,6 @@ pub fn specs(sources: &Sources, entry: &Path) -> Result<String, Error> {
         return Err(check::several_contracts(&prog));
     }
     Ok(spec::render(&spec::check(prog, evm_near(entry))?))
-}
-
-/// The same program without the optimizer, for checking that optimization preserves behavior.
-#[cfg(test)]
-pub(crate) fn compile_file_unoptimized(path: &Path) -> Result<Vec<u8>, Error> {
-    gen::codegen_unoptimized(checked(&Sources::disk(), path)?)
 }
 
 /// `upgrade` adds the proxy's `upgradeToAndCall`.
@@ -1323,6 +1524,7 @@ fn emit_dir(
         files.retain(|path| !excluded(&abi.exclude, path.strip_prefix(dir).unwrap_or(path)));
     }
     // Files compile independently, so they share the machine; the output keeps file order.
+    let sources = Sources::disk_once();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let done = std::sync::Mutex::new(Vec::new());
     let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
@@ -1333,7 +1535,7 @@ fn emit_dir(
                 .spawn_scoped(s, || loop {
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(path) = files.get(i) else { break };
-                    let out = emit_file(path, out_dir, abi, opts);
+                    let out = emit_file(&sources, path, out_dir, abi, opts);
                     done.lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .push((i, out));
@@ -1473,6 +1675,7 @@ fn facet_artifact(facet: &Facet) -> String {
 /// Builds one file of a directory build, returning the artifacts to write rather than writing
 /// them, so a clash between files writes neither.
 fn emit_file(
+    sources: &Sources,
     path: &Path,
     out_dir: &Path,
     abi: Option<&AbiDir>,
@@ -1501,16 +1704,16 @@ fn emit_file(
                 body.render(name, abi.format),
             )
         };
-        let contracts = match contract_abis(&Sources::disk(), path, opts.evm) {
+        let contracts = match contract_abis(sources, path, opts.evm) {
             Ok(contracts) => contracts,
-            Err(errors) if is_library(&Sources::disk(), path, &errors) => Vec::new(),
+            Err(errors) if is_library(sources, path, &errors) => Vec::new(),
             Err(errors) => {
                 out.failed.extend(errors.into_iter().map(failed));
                 return (out, writes, facets);
             }
         };
         if !abi.contracts_only {
-            match interface_abis(&Sources::disk(), path) {
+            match interface_abis(sources, path) {
                 Ok(abis) => writes.extend(abis.iter().map(|(name, body)| abi_file(name, body))),
                 Err(err) => {
                     out.failed.push(failed(err));
@@ -1522,9 +1725,9 @@ fn emit_file(
     }
     let compiled = match abi {
         Some(_) => None,
-        None => match compile(&Sources::disk(), path, &opts) {
+        None => match compile(sources, path, &opts) {
             Ok(compiled) => Some(compiled),
-            Err(errors) if is_library(&Sources::disk(), path, &errors) => None,
+            Err(errors) if is_library(sources, path, &errors) => None,
             Err(errors) => {
                 out.failed.extend(errors.into_iter().map(failed));
                 return (out, writes, facets);
@@ -2300,8 +2503,43 @@ pub(crate) fn error(line: u32, column: u32, message: impl Into<String>) -> Error
         line,
         column,
         message: message.into(),
+        more: Vec::new(),
     }
 }
 
 #[cfg(test)]
 mod evm;
+
+#[cfg(test)]
+mod session_cache {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn second_analysis_does_not_recheck() {
+        let cache = ModuleCache::new();
+        let path = Path::new("bench/counter.lithe");
+        let text = std::fs::read_to_string(path).expect("counter");
+        assert!(cache.analyze_frontend(path, &text).error.is_none());
+        let n = cache.check_count();
+        assert!(n > 0);
+        assert!(cache.analyze_frontend(path, &text).error.is_none());
+        assert_eq!(cache.check_count(), n);
+    }
+
+    #[test]
+    fn undo_reuses_the_checked_program() {
+        let cache = ModuleCache::new();
+        let path = Path::new("bench/counter.lithe");
+        let text = std::fs::read_to_string(path).expect("counter");
+        let edited = format!("{text}\n");
+        assert!(cache.analyze_frontend(path, &text).error.is_none());
+        assert!(cache.analyze_frontend(path, &edited).error.is_none());
+        let n = cache.check_count();
+        assert!(cache.analyze_frontend(path, &text).error.is_none());
+        assert_eq!(cache.check_count(), n);
+        assert!(cache.analyze_frontend(path, &edited).error.is_none());
+        assert_eq!(cache.check_count(), n);
+    }
+}

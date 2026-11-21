@@ -57,13 +57,11 @@ impl Checker {
                 {
                     return Err(error(*line, *col, "this value cannot be stored"));
                 }
-                let span = self.list_span(*line, *col, id, expr)?;
                 let sid = self.add_sym(Sym {
                     ty: id,
                     mutable: false,
                     storage: false,
                     slot: 0,
-                    span,
                 });
                 *sym = Some(sid);
                 if let Ok(ret) = self.op_return(*line, *col, expr) {
@@ -104,7 +102,6 @@ impl Checker {
                     mutable: true,
                     storage: false,
                     slot: 0,
-                    span: 0,
                 });
                 *sym = Some(sid);
                 self.define(*line, *col, name, sid)?;
@@ -402,7 +399,6 @@ impl Checker {
                                 mutable: false,
                                 storage: false,
                                 slot: 0,
-                                span: 0,
                             });
                             if stateful {
                                 self.state_syms.insert(sid);
@@ -414,7 +410,6 @@ impl Checker {
                                 mutable: false,
                                 storage: false,
                                 slot: 0,
-                                span: 0,
                             }));
                         }
                         ForIter::List(xs) => {
@@ -467,13 +462,11 @@ impl Checker {
                                 )
                             } else {
                                 let lt = xs.ty();
-                                let span = self.list_span(line, col, lt, xs)?;
                                 let lsid = self.add_sym(Sym {
                                     ty: lt,
                                     mutable: false,
                                     storage: false,
                                     slot: 0,
-                                    span,
                                 });
                                 if self.reads_state(xs) {
                                     self.state_syms.insert(lsid);
@@ -533,7 +526,6 @@ impl Checker {
                                 mutable: false,
                                 storage: false,
                                 slot: 0,
-                                span: 0,
                             });
                             *counter = Some(sid);
                             self.define(line, col, &counter_name, sid)?;
@@ -566,13 +558,11 @@ impl Checker {
                                 leaf: p.leaf,
                                 ty: held,
                             };
-                            let span = self.list_span(line, col, held, &init)?;
                             let esid = self.add_sym(Sym {
                                 ty: held,
                                 mutable: false,
                                 storage: false,
                                 slot: 0,
-                                span,
                             });
                             if stateful {
                                 self.state_syms.insert(esid);
@@ -587,7 +577,6 @@ impl Checker {
                                 mutable: false,
                                 storage: false,
                                 slot: 0,
-                                span: 0,
                             }));
                         }
                     }
@@ -797,7 +786,6 @@ impl Checker {
                         mutable: false,
                         storage: false,
                         slot: 0,
-                        span: 0,
                     });
                     then.syms.push(sid);
                     self.define(line, col, name, sid)?;
@@ -1497,7 +1485,6 @@ impl Checker {
                 mutable,
                 storage: false,
                 slot: 0,
-                span: 0,
             });
             part_syms.push(sid);
             if derived {

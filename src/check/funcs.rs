@@ -110,7 +110,6 @@ impl Checker {
                 mutable: p.mutable || by_slot.is_some(),
                 storage: by_slot.is_some(),
                 slot: 0,
-                span: u32::from(by_slot.is_some()),
             });
             if let Some(transient) = by_slot {
                 self.slot_syms.insert(sym, transient);
@@ -986,7 +985,6 @@ impl Checker {
                 mutable: true,
                 storage: true,
                 slot: 0,
-                span: 0,
             });
             self.define(line, col, "storage", sym)?;
         }
@@ -997,7 +995,6 @@ impl Checker {
                 mutable: true,
                 storage: true,
                 slot: bind.slot,
-                span: 0,
             });
             if bind.immutable {
                 self.imm_syms.insert(sym);

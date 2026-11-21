@@ -1,0 +1,92 @@
+(* Fuzz target: variants whose cases hold lists and records, inside records, inside lists,
+   stored whole from calldata and read back whole, one at a time and as a list; and a
+   stored one read into a constant and walked, with a store to another field after. *)
+
+import "std/list";
+
+type Span is record {
+  lo : uint;
+  hi : uint;
+}
+
+type Label is record {
+  key  : string;
+  text : string;
+}
+
+type Pick is
+  | One of uint
+  | Between of Span
+  | Among of list(uint)
+  | Labelled of list(Label)
+  | Every
+
+type Source is record {
+  from : address;
+  pick : Pick;
+}
+
+type Part is record {
+  sources : list(Source);
+  amount  : uint;
+}
+
+storage is record {
+  one   : Part;
+  pick  : Pick;
+  parts : list(Part);
+  n     : uint;
+}
+
+external function put(const p : Part) is {
+  storage.one := p;
+}
+
+external function putPick(const p : Pick) is {
+  storage.pick := p;
+}
+
+external function add(const p : Part) is {
+  List.push(storage.parts, p);
+}
+
+external function putAll(const ps : list(Part)) is {
+  storage.parts := ps;
+}
+
+external view function get() : Part is storage.one
+
+external view function getPick() : Pick is storage.pick
+
+external view function getAll() : list(Part) is storage.parts
+
+pure function weight(const pick : Pick) : uint is
+  case pick of {
+    | One(x) -> x % 7
+    | Between(span) -> span.lo % 5 + span.hi % 3
+    | Among(xs) -> xs.length
+    | Labelled(labels) -> labels.length * 2
+    | Every -> 1
+  }
+
+(* The part is read before the count is stored. *)
+external function weigh(const i : uint) : uint is {
+  var total : uint := 0;
+  if i < storage.parts.length then {
+    const part : Part := storage.parts[i];
+    for source : Source in part.sources do {
+      total += weight(source.pick);
+    }
+    total += part.amount % 11;
+  }
+  storage.n := total;
+} with total
+
+external function weighOne() : uint is {
+  const part : Part := storage.one;
+  var total : uint := part.amount % 13;
+  for source : Source in part.sources do {
+    total += weight(source.pick);
+  }
+  storage.n += total;
+} with total

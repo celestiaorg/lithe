@@ -1,0 +1,204 @@
+(* Fuzz target: a stored value under a key, kept in a variable while something else is
+   stored: another field of the same element, the value itself, the same field under a key
+   that may be the same, the whole element, another container, each also through a
+   function; a value a function answers with; and a value a call's continuation reads.
+   The variable holds the value as it was read every time. *)
+
+import "std/list";
+
+interface Sink is {
+  function take(n : uint);
+}
+
+type Pair is record {
+  a : uint;
+  b : address;
+}
+
+type Step is
+  | Take of uint
+  | Give of Pair
+  | Rest
+
+type Item is record {
+  xs    : list(uint);
+  n     : uint;
+  tag   : string;
+  steps : list(Step);
+}
+
+storage is record {
+  items : map(uint, Item);
+  rows  : list(Item);
+  other : map(uint, uint);
+  total : uint;
+}
+
+function bump(const k : uint) is {
+  storage.items[k].n += 1;
+}
+
+function grow(const k : uint; const x : uint) is {
+  List.push(storage.items[k].xs, x);
+}
+
+pure function sumOf(const xs : list(uint)) : uint is {
+  var sum : uint := 0;
+  for x : uint in xs do {
+    sum += x % 1000;
+  }
+} with sum
+
+pure function weigh(const steps : list(Step)) : uint is {
+  var sum : uint := 0;
+  for s : Step in steps do {
+    case s of {
+      | Take(n) -> {
+          sum += n % 1000;
+        }
+      | Give(p) -> {
+          sum += p.a % 1000 + 1;
+        }
+      | Rest -> {
+          sum += 7;
+        }
+    }
+  }
+} with sum
+
+function listOf(const k : uint) : list(uint) is {
+  const xs : list(uint) := storage.items[k].xs;
+  storage.items[k].n += 1;
+} with xs
+
+external function fill(const k : uint; const xs : list(uint); const tag : string) is {
+  storage.items[k % 4] := { xs = xs; n = xs.length; tag = tag; steps = []; };
+  List.push(storage.rows, { xs = xs; n = k; tag = tag; steps = []; });
+}
+
+external function step(const k : uint; const a : uint; const who : address) is {
+  List.push(storage.items[k % 4].steps, Take(a));
+  List.push(storage.items[k % 4].steps, Give { a = a; b = who; });
+  List.push(storage.items[k % 4].steps, Rest);
+  List.push(storage.rows[k % (storage.rows.length + 1)].steps, Take(a));
+}
+
+external function stepsOtherField(const k : uint; const x : uint) : (uint, uint) is {
+  const steps : list(Step) := storage.items[k % 4].steps;
+  storage.items[k % 4].n := x;
+  storage.other[k] := x;
+  bump(k % 4);
+} with (weigh(steps), steps.length)
+
+external function stepsSameField(const k : uint; const x : uint) : (uint, uint) is {
+  const steps : list(Step) := storage.items[k % 4].steps;
+  List.push(storage.items[k % 4].steps, Take(x));
+} with (weigh(steps), steps.length)
+
+external function stepsOtherKey(const k : uint; const j : uint; const x : uint) : (uint, uint) is {
+  const steps : list(Step) := storage.items[k % 4].steps;
+  List.push(storage.items[j % 4].steps, Take(x));
+} with (weigh(steps), steps.length)
+
+external function stepsInLoop(const k : uint; const x : uint) : uint is {
+  const steps : list(Step) := storage.items[k % 4].steps;
+  var sum : uint := 0;
+  for s : Step in steps do {
+    case s of {
+      | Take(n) -> {
+          sum += n % 1000;
+          storage.items[k % 4].n := sum;
+        }
+      | Give(p) -> {
+          sum += p.a % 1000;
+          storage.other[sum] := x;
+        }
+      | Rest -> {
+          storage.total += 1;
+        }
+    }
+  }
+} with sum
+
+external function stepsOfRow(const i : uint; const x : uint) : (uint, uint) is {
+  const n : uint := storage.rows.length;
+  const steps : list(Step) := storage.rows[i % (n + 1)].steps;
+  storage.rows[i % (n + 1)].n := x;
+  storage.items[i % 4].tag := "row";
+} with (weigh(steps), steps.length)
+
+external function stepsAfterCall(const k : uint; const x : uint; const sink : Sink) is {
+  const steps : list(Step) := storage.items[k % 4].steps;
+  storage.items[k % 4].n := x;
+  defer sink.take(steps.length) then {
+    | Ok -> {
+        storage.total := weigh(steps);
+      }
+    | Error(_) -> {
+        storage.total := steps.length + 1;
+      }
+  };
+}
+
+external function otherField(const k : uint) : (uint, uint, uint) is {
+  const xs : list(uint) := storage.items[k % 4].xs;
+  storage.items[k % 4].n += 1;
+  storage.other[k] := xs.length;
+} with (sumOf(xs), xs.length, storage.items[k % 4].n)
+
+external function sameField(const k : uint; const x : uint) : (uint, uint) is {
+  const xs : list(uint) := storage.items[k % 4].xs;
+  List.push(storage.items[k % 4].xs, x);
+  storage.items[k % 4].xs[0] := x;
+} with (sumOf(xs), xs.length)
+
+external function otherKey(const k : uint; const j : uint; const x : uint) : (uint, uint) is {
+  const xs : list(uint) := storage.items[k % 4].xs;
+  List.push(storage.items[j % 4].xs, x);
+} with (sumOf(xs), xs.length)
+
+external function whole(const k : uint; const xs : list(uint)) : list(uint) is {
+  const old : list(uint) := storage.items[k % 4].xs;
+  storage.items[k % 4] := { xs = xs; n = 0; tag = ""; steps = []; };
+} with old
+
+external function otherContainer(const k : uint; const v : uint) : (uint, string, list(uint)) is {
+  const item : Item := storage.items[k % 4];
+  storage.other[k] := v;
+  storage.total += 1;
+} with (item.n, item.tag, item.xs)
+
+external function throughBump(const k : uint) : (uint, uint) is {
+  const xs : list(uint) := storage.items[k % 4].xs;
+  bump(k % 4);
+} with (sumOf(xs), storage.items[k % 4].n)
+
+external function throughGrow(const k : uint; const x : uint) : (uint, uint) is {
+  const xs : list(uint) := storage.items[k % 4].xs;
+  grow(k % 4, x);
+} with (sumOf(xs), xs.length)
+
+external function answered(const k : uint; const x : uint) : (uint, uint) is {
+  const xs : list(uint) := listOf(k % 4);
+  List.push(storage.items[k % 4].xs, x);
+} with (sumOf(xs), xs.length)
+
+external function row(const i : uint; const x : uint) : (uint, uint, string) is {
+  const n : uint := storage.rows.length;
+  const item : Item := storage.rows[i % (n + 1)];
+  storage.rows[i % (n + 1)].n := x;
+  storage.total := x;
+} with (item.xs.length, item.n, item.tag)
+
+external function afterCall(const k : uint; const x : uint; const sink : Sink) is {
+  const xs : list(uint) := storage.items[k % 4].xs;
+  storage.items[k % 4].n := x;
+  defer sink.take(xs.length) then {
+    | Ok -> {
+        storage.total := xs.length;
+      }
+    | Error(_) -> {
+        storage.total := xs.length + 1;
+      }
+  };
+}

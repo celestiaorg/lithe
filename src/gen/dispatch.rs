@@ -29,127 +29,8 @@ impl Test {
 }
 
 impl<'a> Gen<'a> {
-    pub(super) fn emit(&mut self) -> Result<(), Error> {
-        let mut targets = self.targets()?;
-        let shape = self.shape;
-        // Selectors whose code reads no immutable, which a facet with immutables gets
-        // without their values.
-        let blind: std::collections::HashSet<[u8; 4]> = if shape.tails.iter().any(|t| !t.is_empty())
-        {
-            targets
-                .iter()
-                .filter(|(_, target)| !self.target_reads_immutables(target))
-                .map(|(_, target)| target.sel())
-                .collect()
-        } else {
-            Default::default()
-        };
-        let unpayable: std::collections::HashSet<[u8; 4]> = targets
-            .iter()
-            .filter(|(_, target)| !self.target_payable(target))
-            .map(|(_, target)| target.sel())
-            .collect();
-        if let Some(keep) = &shape.keep {
-            targets.retain(|(_, target)| keep.contains(&target.sel()));
-        }
-        // Entrypoints whose frames queue calls for another frame's transition get a way back
-        // in to drain them.
-        let nested: Vec<usize> = targets
-            .iter()
-            .filter_map(|(_, target)| match *target {
-                Target::Entry { index, .. } if self.queues_nested(index) => Some(index),
-                _ => None,
-            })
-            .collect();
-        self.drains = nested
-            .into_iter()
-            .map(|index| (index, self.fresh()))
-            .collect();
-        if !self.drains.is_empty() {
-            let label = self.fresh();
-            targets.push((
-                label,
-                Target::Drain {
-                    sel: selector(DRAIN_SIG),
-                },
-            ));
-        }
-        // Every selector forwarded to one facet jumps to that facet's stub.
-        let stubs: Vec<(u32, u32)> = shape
-            .parts
-            .iter()
-            .map(|_| (self.fresh(), self.fresh()))
-            .collect();
-        for &(sel, part) in &shape.forward {
-            let (stub, bare) = stubs[part];
-            let tailed = shape.tails.get(part).is_some_and(|tail| !tail.is_empty());
-            // A facet that may call hooks back reads the word after its immutables.
-            let hooked = shape.masks.get(part).is_some_and(Option::is_some);
-            let to = if tailed && !hooked && blind.contains(&sel) {
-                bare
-            } else {
-                stub
-            };
-            match self.guarding(sel)? {
-                Some(first) => {
-                    let label = self.fresh();
-                    targets.push((label, Target::Guarded { sel, to, first }));
-                }
-                None => targets.push((
-                    to,
-                    Target::Forward {
-                        sel,
-                        payable: !unpayable.contains(&sel),
-                    },
-                )),
-            }
-        }
-        let special = |kind: ItemKind| {
-            self.checked
-                .routes
-                .iter()
-                .position(|route| route.special == Some(kind))
-        };
-        let receive = special(ItemKind::Receive).map(|index| (self.fresh(), index));
-        let fallback = special(ItemKind::Fallback).map(|index| (self.fresh(), index));
-        let bad = self.dispatcher(&targets, receive.map(|(label, _)| label), fallback)?;
-        // No selector matched: the fallback follows the table, and a rejection after it.
-        if let Some((label, index)) = fallback {
-            let short = targets.iter().any(|(_, t)| t.sel()[3] == 0);
-            self.fallback_body(label, index, bad, short)?;
-            self.jumpdest(bad);
-            self.revert_empty();
-        }
-        self.entry_labels = targets.iter().map(|(label, _)| *label).collect();
-        self.entry_labels
-            .extend(receive.iter().chain(&fallback).map(|(label, _)| *label));
-        if let Some((label, index)) = receive {
-            self.entry(label, index)?;
-        }
-        for (label, target) in targets {
-            match target {
-                Target::Entry { index, .. } => self.entry(label, index)?,
-                Target::View { func, .. } => self.view_body(label, func)?,
-                Target::Migrate { func, .. } => self.migrate_body(label, func)?,
-                Target::Deploy { func, .. } => self.deploy_body(label, func)?,
-                Target::Proxiable { .. } => self.proxiable_body(label)?,
-                Target::Upgrade { .. } => self.upgrade_body(label)?,
-                Target::Drain { .. } => self.drain_entry(label)?,
-                Target::Forward { .. } => {}
-                Target::Guarded { to, first, .. } => self.guard_then_forward(label, to, first)?,
-            }
-        }
-        if !stubs.is_empty() {
-            self.forwarder(&stubs);
-        }
-        self.emit_raises()?;
-        self.emit_subs()?;
-        self.emit_fails();
-        Ok(())
-    }
-
     /// Whether an entrypoint's code, or anything it calls, reads an immutable.
-    fn target_reads_immutables(&self, target: &Target) -> bool {
+    pub(super) fn target_reads_immutables(&self, target: &Target) -> bool {
         let func = match target {
             Target::Entry { index, .. } => self.checked.routes[*index].root(),
             Target::View { func, .. } => Some(*func),
@@ -172,7 +53,7 @@ impl<'a> Gen<'a> {
     /// A router's stubs, one per facet, each pushing its facet's address, then the code they
     /// share: `delegatecall` the facet with the whole calldata, and return or revert with
     /// whatever it did. The selector is still on the stack below the address.
-    fn forwarder(&mut self, stubs: &[(u32, u32)]) {
+    pub(super) fn forwarder(&mut self, stubs: &[(u32, u32)]) {
         let go = self.fresh();
         let ok = self.fresh();
         let after = self.fresh();
@@ -237,7 +118,7 @@ impl<'a> Gen<'a> {
     }
 
     /// A forwarded selector's guard call, when its external is guarded.
-    fn guarding(&self, sel: [u8; 4]) -> Result<Option<Guarding>, Error> {
+    pub(super) fn guarding(&self, sel: [u8; 4]) -> Result<Option<Guarding>, Error> {
         let funcs = &self.checked.prog.funcs;
         let guarded = |func: usize| funcs[func].guarded.is_some();
         for (index, route) in self.checked.routes.iter().enumerate() {
@@ -264,49 +145,6 @@ impl<'a> Gen<'a> {
             }
         }
         Ok(None)
-    }
-
-    /// A router's guarded selector: the contract's check, on the arguments decoded as the
-    /// external decodes them, then on to the facet. A locked `nonreentrant` external is
-    /// rejected first, as it is when it runs in the contract.
-    fn guard_then_forward(&mut self, label: u32, to: u32, first: Guarding) -> Result<(), Error> {
-        let bad = self.fresh();
-        let (payable, locked) = match first {
-            Guarding::Func(func) => {
-                let f = &self.checked.prog.funcs[func];
-                (f.payable, f.nonreentrant)
-            }
-            Guarding::Route(index) => {
-                let route = &self.checked.routes[index];
-                (route.payable, route.nonreentrant)
-            }
-        };
-        self.enter(label, payable);
-        if locked {
-            self.push_u64(NONREENTRANT_SLOT);
-            self.op(TLOAD);
-            self.push_label(bad);
-            self.op(JUMPI);
-        }
-        self.begin_body(self.lists_in_order);
-        let call = match first {
-            Guarding::Func(func) => {
-                self.decode_params(func)?;
-                self.checked.prog.funcs[func].stmts.first().cloned()
-            }
-            Guarding::Route(index) => self.checked.routes[index].guards.first().cloned(),
-        };
-        let call =
-            call.ok_or_else(|| error(1, 1, "internal: a guarded entrypoint calls its guard"))?;
-        self.compile_stmts(&[call])?;
-        self.finish_body();
-        self.push_label(to);
-        self.op(JUMP);
-        if locked {
-            self.jumpdest(bad);
-            self.revert_empty();
-        }
-        Ok(())
     }
 
     /// Every selector the whole contract dispatches, each with a fresh label.
@@ -399,7 +237,7 @@ impl<'a> Gen<'a> {
     /// The selector table. Calldata that is empty goes to `receive`, if there is one; what
     /// matches nothing falls through to the `fallback`'s label when there is one, which the
     /// caller places next, and otherwise reverts. Returns the label that rejects a call.
-    fn dispatcher(
+    pub(super) fn dispatcher(
         &mut self,
         targets: &[(u32, Target)],
         receive: Option<u32>,
@@ -614,164 +452,7 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// Where the dispatcher sends a selector. With a payable fallback, an entry that is not
-    /// payable rejects value here, since the table no longer does.
-    fn enter(&mut self, label: u32, payable: bool) {
-        self.jumpdest(label);
-        if let (Some(bad), false) = (self.reject_value, payable) {
-            self.op(CALLVALUE);
-            self.push_label(bad);
-            self.op(JUMPI);
-        }
-    }
-
-    /// A stateful hook's way back in runs only when a facet this contract runs set the flag,
-    /// just before it called back, and clears it, so nothing the hook calls can come back in
-    /// through it. A view or pure hook's only reads: it answers whoever calls, since a static
-    /// call, as views are called, can't set a flag.
-    fn hook_gate(&mut self, index: usize) {
-        let Some(func) = self.checked.routes[index].direct else {
-            return;
-        };
-        let Some(of) = self.checked.prog.funcs[func]
-            .hook_of
-            .as_ref()
-            .filter(|of| of.form == HookForm::Entry)
-        else {
-            return;
-        };
-        let hook = crate::check::hook_fn(&of.module.name, &of.name);
-        let stateful = self
-            .checked
-            .prog
-            .funcs
-            .iter()
-            .any(|g| g.name == hook && g.kind == ItemKind::Function);
-        if !stateful {
-            return;
-        }
-        let ok = self.fresh();
-        self.op(PUSH0);
-        self.op(NOT);
-        self.op(TLOAD);
-        self.push_label(ok);
-        self.op(JUMPI);
-        self.revert_empty();
-        self.jumpdest(ok);
-        self.op(PUSH0);
-        self.op(PUSH0);
-        self.op(NOT);
-        self.op(TSTORE);
-    }
-
-    /// Calldata no entrypoint takes. A `fallback` that is not payable rejects value first
-    /// when short calldata can reach it past the table's own check.
-    fn fallback_body(
-        &mut self,
-        label: u32,
-        index: usize,
-        bad: u32,
-        short: bool,
-    ) -> Result<(), Error> {
-        let route = &self.checked.routes[index];
-        let func = route
-            .direct
-            .ok_or_else(|| error(1, 1, "internal: a fallback is a function"))?;
-        if !route.payable && short {
-            self.jumpdest(label);
-            self.op(CALLVALUE);
-            self.push_label(bad);
-            self.op(JUMPI);
-            // The body's own label follows directly.
-            let body = self.fresh();
-            return match self.checked.prog.funcs[func].forward {
-                Some(how) => self.forward_body(body, func, how, bad),
-                None => self.entry(body, index),
-            };
-        }
-        match self.checked.prog.funcs[func].forward {
-            Some(how) => self.forward_body(label, func, how, bad),
-            None => self.entry(label, index),
-        }
-    }
-
-    /// `fallback delegates to target;` or `forwards to target;`: the whole calldata goes to
-    /// the target, and what it returns or reverts with comes back unchanged. A target
-    /// without code would answer every call with success and nothing, so it is rejected.
-    fn forward_body(
-        &mut self,
-        label: u32,
-        func: usize,
-        how: Forward,
-        bad: u32,
-    ) -> Result<(), Error> {
-        let ok = self.fresh();
-        self.jumpdest(label);
-        self.begin_body(self.lists_in_order);
-        let target = self.checked.prog.funcs[func]
-            .tail
-            .clone()
-            .ok_or_else(|| error(1, 1, "internal: a forwarding `fallback` needs a target"))?;
-        self.compile_value(&target)?;
-        self.op(DUP1);
-        self.op(EXTCODESIZE);
-        self.op(ISZERO);
-        self.push_label(bad);
-        self.op(JUMPI);
-        // A forwarded call is another contract's code, run while this one is between
-        // transitions: like a deferred call, it runs under the lock.
-        let window = how == Forward::Call && self.any_nonreentrant;
-        if window {
-            self.push_u64(NONREENTRANT_SLOT);
-            self.op(TLOAD);
-            self.push_u64(1);
-            self.push_u64(NONREENTRANT_SLOT);
-            self.op(TSTORE);
-        }
-        self.op(CALLDATASIZE);
-        self.op(PUSH0);
-        self.op(PUSH0);
-        self.op(CALLDATACOPY);
-        self.op(PUSH0);
-        self.op(PUSH0);
-        self.op(CALLDATASIZE);
-        self.op(PUSH0);
-        match how {
-            Forward::Delegate => {
-                self.op(DUP1 + 4);
-                self.op(GAS);
-                self.op(DELEGATECALL);
-            }
-            Forward::Call => {
-                self.op(CALLVALUE);
-                self.op(DUP1 + if window { 6 } else { 5 });
-                self.op(GAS);
-                self.op(CALL);
-            }
-        }
-        if window {
-            self.op(SWAP1);
-            self.push_u64(NONREENTRANT_SLOT);
-            self.op(TSTORE);
-        }
-        self.op(RETURNDATASIZE);
-        self.op(PUSH0);
-        self.op(PUSH0);
-        self.op(RETURNDATACOPY);
-        self.push_label(ok);
-        self.op(JUMPI);
-        self.op(RETURNDATASIZE);
-        self.op(PUSH0);
-        self.op(REVERT);
-        self.jumpdest(ok);
-        self.op(RETURNDATASIZE);
-        self.op(PUSH0);
-        self.op(RETURN);
-        self.finish_body();
-        Ok(())
-    }
-
-    fn target_payable(&self, target: &Target) -> bool {
+    pub(super) fn target_payable(&self, target: &Target) -> bool {
         match target {
             Target::Entry { index, .. } => self.checked.routes[*index].payable,
             Target::Deploy { func, .. } => self.checked.prog.funcs[*func].payable,
@@ -788,913 +469,6 @@ impl<'a> Gen<'a> {
             Target::Drain { .. } => true,
             _ => false,
         }
-    }
-
-    /// The selector stays on the stack under each body. Nothing reads below its own values.
-    /// The dispatcher has already rejected value for non-payable entries.
-    fn entry(&mut self, label: u32, index: usize) -> Result<(), Error> {
-        let locked = self.checked.routes[index].nonreentrant;
-        let bad = self.fresh();
-        self.enter(label, self.checked.routes[index].payable);
-        self.hook_gate(index);
-        if locked {
-            self.acquire_nonreentrant(bad);
-        }
-        let route = &self.checked.routes[index];
-        let route_special = route.special;
-        let (stmts, tail) = match route.direct {
-            Some(func) => {
-                let f = &self.checked.prog.funcs[func];
-                (f.stmts.clone(), f.tail.clone())
-            }
-            None => {
-                let mut stmts = route.guards.clone();
-                stmts.extend(route.stmts.iter().cloned());
-                (stmts, route.tail.clone())
-            }
-        };
-        let (direct, mut picks) = self.body_mode(&stmts, tail.as_ref());
-        self.begin_body(direct);
-        let drain = self.drains.iter().position(|&(i, _)| i == index);
-        self.crossed = drain.is_some();
-        self.begin_queue(&stmts, tail.as_ref());
-        let route = &self.checked.routes[index];
-        // What a direct entry returns: a word held on the stack through the epilogue, or
-        // a tuple in its return buffer. Either goes back after every effect has run.
-        let mut returns: Option<(usize, usize)> = None;
-        let mut record = None;
-        let mut staged = false;
-        let mut lit = None;
-        if let Some(func) = route.direct {
-            self.decode_params(func)?;
-            let f = &self.checked.prog.funcs[func];
-            let declared = f.ret.is_some();
-            let ret = f.ret_ty;
-            // The body's last statement ends it when no value follows, or only a literal.
-            self.tail = tail.as_ref().is_none_or(|t| matches!(t, Expr::Lit { .. }));
-            self.compile_top(&stmts, &mut picks)?;
-            match tail {
-                // Encoded now, since it cannot change, and its blob held on the stack
-                // through the epilogue, as a word result is.
-                Some(tail) if declared && self.tree_ret(ret) => {
-                    let at = self.stage(&tail)?;
-                    self.encode_ret(at, ret)?;
-                    staged = true;
-                    returns = Some((func, ret));
-                }
-                Some(tail)
-                    if declared
-                        && crate::check::abi_record(&self.checked.types, ret)
-                        && decoded(&tail) =>
-                {
-                    self.write_value(&tail, self.fn_ret[func], ret)?;
-                    record = Some(self.fn_ret[func]);
-                    returns = Some((func, ret));
-                }
-                Some(tail) if declared && is_static_aggregate(&self.checked.types, ret) => {
-                    self.write_words(&tail, self.fn_ret[func])?;
-                    returns = Some((func, ret));
-                }
-                Some(tail) if declared && crate::check::abi_record(&self.checked.types, ret) => {
-                    let at = self.value_addr(&tail)?;
-                    record = Some(at);
-                    returns = Some((func, ret));
-                }
-                // A literal string or bytes value goes back laid out from code.
-                Some(tail)
-                    if declared
-                        && route_special != Some(ItemKind::Fallback)
-                        && self.lit_bytes(&tail).is_some() =>
-                {
-                    lit = self.lit_bytes(&tail);
-                    returns = Some((func, ret));
-                }
-                Some(tail) if declared => {
-                    self.compile_value(&tail)?;
-                    if !self.is_dynamic(ret) && !self.list_value(ret) {
-                        self.fit_static_word(ret);
-                    }
-                    returns = Some((func, ret));
-                }
-                Some(tail) => {
-                    self.tail = matches!(
-                        tail,
-                        Expr::Call {
-                            callee: Some(_),
-                            ..
-                        }
-                    );
-                    self.compile_effect(&tail)?;
-                    self.tail = false;
-                }
-                None => {}
-            }
-        } else {
-            let bind = route.bind;
-            let guards = route.guards.clone();
-            let stmts = route.stmts.clone();
-            let tail = route.tail.clone();
-            if let Some(sym) = bind {
-                self.decode_sym(sym)?;
-            }
-            if crate::asm::track::on() {
-                // Each dispatcher's statements, then where they end, in path order.
-                let path = self.checked.routes[index].funcs.clone();
-                let mut at = 0;
-                for f in path {
-                    let f = &self.checked.prog.funcs[f];
-                    let n = f.stmts.len().min(guards.len() - at);
-                    self.compile_top(&guards[at..at + n], &mut picks)?;
-                    at += n;
-                    let name = f.name.clone();
-                    self.certify_guard_end(&name, index);
-                }
-                self.compile_top(&guards[at..], &mut picks)?;
-            } else {
-                self.compile_top(&guards, &mut picks)?;
-            }
-            self.compile_top(&stmts, &mut picks)?;
-            if let Some(tail) = tail {
-                self.compile_effect(&tail)?;
-            }
-        }
-        self.store_image();
-        self.crossed = false;
-        match drain {
-            Some(k) => self.queue_for_owner(k, returns.is_none(), locked)?,
-            None => self.ops_then_records(|g| g.windowed_ops(locked))?,
-        }
-        self.finish_body();
-        if locked {
-            self.release_nonreentrant();
-        }
-        match returns {
-            Some(_) if lit.is_some() => self.return_lit(&lit.unwrap_or_default()),
-            Some(_) if staged => self.return_blob(),
-            Some((_, ret)) if record.is_some() => {
-                self.return_record(record.unwrap_or(0), ret)?;
-            }
-            Some((func, ret)) if is_static_aggregate(&self.checked.types, ret) => {
-                self.return_tuple(func, ret);
-            }
-            Some((_, ret)) if self.list_value(ret) => {
-                let elem = self.checked.types[self.peel_nominal(ret)].elem.unwrap_or(0);
-                self.return_list(elem)?;
-            }
-            // A `fallback`'s bytes go back as they are, not ABI-encoded.
-            Some(_) if route_special == Some(ItemKind::Fallback) => {
-                self.bytes_span();
-                self.op(RETURN);
-            }
-            Some((_, ret)) if self.is_dynamic(ret) => self.return_dynamic(),
-            Some(_) => self.return_word(),
-            None => self.op(STOP),
-        }
-        if locked {
-            self.jumpdest(bad);
-            self.revert_empty();
-        }
-        Ok(())
-    }
-
-    /// Runs the body's deferred calls. A transition running them holds the lock, so no
-    /// `nonreentrant` function can run until they finish. One that is not `nonreentrant`
-    /// restores what it found: it may itself run inside another transition's window.
-    fn windowed_ops(&mut self, locked: bool) -> Result<(), Error> {
-        let window = !locked
-            && self.any_nonreentrant
-            && self.body.as_ref().is_some_and(|b| !b.ops.is_empty());
-        if window {
-            self.push_u64(NONREENTRANT_SLOT);
-            self.op(TLOAD);
-            self.push_u64(1);
-            self.push_u64(NONREENTRANT_SLOT);
-            self.op(TSTORE);
-        }
-        self.exec_ops()?;
-        if window {
-            self.push_u64(NONREENTRANT_SLOT);
-            self.op(TSTORE);
-        }
-        Ok(())
-    }
-
-    /// The body's deferred calls, run by `run`, then its records' count put back. When all
-    /// it defers are records calls across left, which are numbered from its first, there is
-    /// nothing to run unless it has a first. A queue's head already says so.
-    pub(super) fn ops_then_records(
-        &mut self,
-        run: impl FnOnce(&mut Self) -> Result<(), Error>,
-    ) -> Result<(), Error> {
-        let body = self.body.as_ref().expect("body");
-        let first = body.first_record;
-        let only = first != 0 && !body.queued && body.ops.iter().all(|op| op.drain.is_some());
-        if !only {
-            run(self)?;
-            self.restore_records();
-            return Ok(());
-        }
-        let skip = self.fresh();
-        self.mload(first);
-        self.op(ISZERO);
-        self.push_label(skip);
-        self.op(JUMPI);
-        self.branch += 1;
-        run(self)?;
-        self.mload(first);
-        self.records_back();
-        self.op(POP);
-        self.leave_branch();
-        self.jumpdest(skip);
-        Ok(())
-    }
-
-    /// At the end of a transition or a phase, every record made since its first is drained,
-    /// so the count goes back to what it was before it. Records still waiting for an outer
-    /// owner were all made before.
-    pub(super) fn restore_records(&mut self) {
-        let first = self.body.as_ref().map_or(0, |b| b.first_record);
-        if first == 0 {
-            return;
-        }
-        let skip = self.fresh();
-        self.mload(first);
-        self.op(DUP1);
-        self.op(ISZERO);
-        self.push_label(skip);
-        self.op(JUMPI);
-        self.records_back();
-        self.jumpdest(skip);
-        self.op(POP);
-    }
-
-    /// `[first]` stays: the count goes back to one below the first record.
-    fn records_back(&mut self) {
-        self.push_u64(1);
-        self.op(DUP1 + 1);
-        self.op(SUB);
-        self.push_u64(RECORDS_SLOT);
-        self.op(NOT);
-        self.op(TSTORE);
-    }
-
-    /// The end of a body that runs in a frame called into mid-transition, the `k`th of this
-    /// code's: its calls wait for the frame that owns the transition. When it queued any, its
-    /// memory becomes a new record in transient storage, which it names for its caller: as its
-    /// return data when it has no result (`unit`), so it returns here, after `locked`'s lock
-    /// is released, or in the queued slot. The owner drains the record after its own body
-    /// commits, through `drain_entry`, which puts the memory back and jumps to the calls,
-    /// compiled here as the epilogue they would be.
-    fn queue_for_owner(&mut self, k: usize, unit: bool, locked: bool) -> Result<(), Error> {
-        let (_, drain) = self.drains[k];
-        let ret = self.fresh();
-        if self.body.as_ref().is_some_and(|b| !b.ops.is_empty()) {
-            let skip = self.fresh();
-            if self.push_ops_pending() {
-                self.op(ISZERO);
-                self.push_label(skip);
-                self.op(JUMPI);
-            }
-            self.push_u64(RECORDS_SLOT);
-            self.op(NOT);
-            self.op(TLOAD);
-            self.push_u64(1);
-            self.op(ADD);
-            self.op(DUP1);
-            self.push_u64(RECORDS_SLOT);
-            self.op(NOT);
-            self.op(TSTORE);
-            // [r]: its caller takes `first << 224 | r` with the record's layout.
-            self.op(DUP1);
-            match self.body.as_ref().map_or(0, |b| b.first_record) {
-                0 => self.op(DUP1),
-                first => {
-                    self.op(DUP1);
-                    self.mload(first);
-                    self.op(DUP1);
-                    self.op(ISZERO);
-                    self.op(SWAP1);
-                    self.op(SWAP1 + 1);
-                    self.op(MUL);
-                    self.op(ADD);
-                }
-            }
-            self.push_u64(224);
-            self.op(SHL);
-            self.op(OR);
-            self.op(SWAP1);
-            self.push_u64(32);
-            self.op(SHL);
-            // [first << 224 | r, base]: the handle names the record, the code's entrypoint that
-            // made it, and its layout.
-            self.call_sub(Sub::SaveRecord);
-            if k > 0 {
-                self.push_word(Word::from_u64(k as u64).shl(144));
-                self.op(OR);
-            }
-            self.op(OR);
-            if !unit {
-                self.push_u64(QUEUED_SLOT);
-                self.op(NOT);
-                self.op(TSTORE);
-            }
-            if unit {
-                if locked {
-                    self.release_nonreentrant();
-                }
-                self.op(PUSH0);
-                self.op(MSTORE);
-                self.push_u64(32);
-                self.op(PUSH0);
-                self.op(RETURN);
-            }
-            self.jumpdest(skip);
-        }
-        self.push_label(ret);
-        self.op(JUMP);
-        let start = self.code.len();
-        self.jumpdest(drain);
-        self.windowed_ops(false)?;
-        self.op(STOP);
-        let read: Vec<usize> = self.code[start..]
-            .iter()
-            .filter_map(|inst| match *inst {
-                Inst::Mem(addr) if addr >> REGION_SHIFT > 0 => {
-                    Some((addr >> REGION_SHIFT) as usize - 1)
-                }
-                _ => None,
-            })
-            .collect();
-        self.drain_spaces.extend(read);
-        self.jumpdest(ret);
-        Ok(())
-    }
-
-    /// `[base, ret]` becomes `[top << 96 | small end << 64 | word end << 32]`: the frame's
-    /// memory saved as the record whose slots start at `base`, with where its slots end, and
-    /// the heap's top, put back.
-    pub(super) fn sub_save_record(&mut self) {
-        self.op(SWAP1);
-        // [base]: the heap's top goes in the handle, so its word stays out of the record.
-        self.mload(self.blob_ptr);
-        self.op(PUSH0);
-        self.mstore_off(self.blob_ptr);
-        // [base, top, end]: memory past the heap is clear, so a nonzero word at its end
-        // stops the scan up to it: ones are wide, and wide words check for the end first.
-        self.op(DUP1);
-        self.push_mem(self.blob_base);
-        self.op(ADD);
-        self.op(PUSH0);
-        self.op(NOT);
-        self.op(DUP1 + 1);
-        self.op(MSTORE);
-        self.op(DUP1 + 2);
-        self.push_u64(2);
-        self.op(OR);
-        self.op(NOT);
-        self.op(DUP1 + 3);
-        self.push_u64(SMALLS);
-        self.op(OR);
-        self.op(NOT);
-        self.op(PUSH0);
-        self.push_u64(31);
-        self.op(NOT);
-        // [base, top, end, ~word key, ~small key, smalls, p]: from the bottom up, each
-        // nonzero word at offset `p` goes into the record. A word of 47 bits, or one whose
-        // last 209 are clear, is small, `p << 42 | word` or `1 << 84 | p << 42 | word >> 209`,
-        // three to a slot from `~(base | SMALLS)` down. Any other takes a slot from
-        // `~(base | 2)` down, as `p << 219 | word` when its top four bytes are clear, or
-        // `1 << 255 | p << 219 | word >> 32` when its last four are, or two: the word, then
-        // `p << 219` below it.
-        let (top, small, done, wide, shifted, full, word, low) = (
-            self.fresh(),
-            self.fresh(),
-            self.fresh(),
-            self.fresh(),
-            self.fresh(),
-            self.fresh(),
-            self.fresh(),
-            self.fresh(),
-        );
-        let next = top;
-        self.jumpdest(top);
-        self.push_u64(32);
-        self.op(ADD);
-        self.op(DUP1);
-        self.op(MLOAD);
-        self.op(ISZERO);
-        self.push_label(top);
-        self.op(JUMPI);
-        self.op(DUP1);
-        self.op(MLOAD);
-        self.op(DUP1);
-        self.push_u64(47);
-        self.op(SHR);
-        self.push_label(wide);
-        self.op(JUMPI);
-        // [~small key, smalls, p, word]: a full slot of smalls is stored first.
-        self.jumpdest(small);
-        self.op(DUP1 + 1);
-        self.push_u64(42);
-        self.op(SHL);
-        self.op(OR);
-        self.op(DUP1 + 2);
-        self.push_u64(170);
-        self.op(SHR);
-        self.push_label(full);
-        self.op(JUMPI);
-        self.op(SWAP1);
-        self.op(SWAP1 + 1);
-        self.push_u64(85);
-        self.op(SHL);
-        self.op(OR);
-        self.op(SWAP1);
-        self.push_label(next);
-        self.op(JUMP);
-        self.jumpdest(full);
-        self.op(DUP1 + 2);
-        self.op(DUP1 + 4);
-        self.op(TSTORE);
-        self.op(SWAP1 + 1);
-        self.op(POP);
-        self.op(SWAP1 + 1);
-        self.op(PUSH0);
-        self.op(NOT);
-        self.op(ADD);
-        self.op(SWAP1 + 1);
-        self.push_label(next);
-        self.op(JUMP);
-        self.jumpdest(wide);
-        self.op(DUP1 + 1);
-        self.op(DUP1 + 6);
-        self.op(EQ);
-        self.push_label(done);
-        self.op(JUMPI);
-        self.op(DUP1);
-        self.push_u64(47);
-        self.op(SHL);
-        self.op(ISZERO);
-        self.push_label(shifted);
-        self.op(JUMPI);
-        self.op(DUP1);
-        self.push_u64(224);
-        self.op(SHR);
-        self.op(ISZERO);
-        self.push_label(word);
-        self.op(JUMPI);
-        self.op(DUP1);
-        self.push_u64(224);
-        self.op(SHL);
-        self.op(ISZERO);
-        self.push_label(low);
-        self.op(JUMPI);
-        self.op(DUP1 + 4);
-        self.op(TSTORE);
-        self.op(DUP1);
-        self.push_u64(219);
-        self.op(SHL);
-        self.op(DUP1 + 4);
-        self.op(PUSH0);
-        self.op(NOT);
-        self.op(ADD);
-        self.op(TSTORE);
-        self.op(SWAP1 + 2);
-        self.push_u64(2);
-        self.op(SWAP1);
-        self.op(SUB);
-        self.op(SWAP1 + 2);
-        self.push_label(next);
-        self.op(JUMP);
-        self.jumpdest(shifted);
-        self.push_u64(209);
-        self.op(SHR);
-        self.push_u64(1);
-        self.push_u64(84);
-        self.op(SHL);
-        self.op(OR);
-        self.push_label(small);
-        self.op(JUMP);
-        self.jumpdest(low);
-        self.push_u64(32);
-        self.op(SHR);
-        self.push_u64(1);
-        self.push_u64(255);
-        self.op(SHL);
-        self.op(OR);
-        self.jumpdest(word);
-        self.op(DUP1 + 1);
-        self.push_u64(219);
-        self.op(SHL);
-        self.op(OR);
-        self.op(DUP1 + 4);
-        self.op(TSTORE);
-        self.op(SWAP1 + 2);
-        self.op(PUSH0);
-        self.op(NOT);
-        self.op(ADD);
-        self.op(SWAP1 + 2);
-        self.push_label(next);
-        self.op(JUMP);
-        self.jumpdest(done);
-        self.op(POP);
-        self.op(PUSH0);
-        self.op(SWAP1);
-        self.op(MSTORE);
-        // [base, top, end, ~word key, ~small key, smalls]: the last smalls' slot.
-        let stored = self.fresh();
-        self.op(DUP1);
-        self.op(ISZERO);
-        self.push_label(stored);
-        self.op(JUMPI);
-        self.op(DUP1 + 1);
-        self.op(TSTORE);
-        self.op(PUSH0);
-        self.op(NOT);
-        self.op(ADD);
-        self.op(PUSH0);
-        self.jumpdest(stored);
-        self.op(POP);
-        // [ret, base, top, end, ~word key, ~small key]: the heap's top and the slots past
-        // each kind's last.
-        let ends = Word::from_u64(u64::from(u32::MAX));
-        self.op(NOT);
-        self.push_word(ends);
-        self.op(AND);
-        self.push_u64(64);
-        self.op(SHL);
-        self.op(SWAP1);
-        self.op(NOT);
-        self.push_word(ends);
-        self.op(AND);
-        self.push_u64(32);
-        self.op(SHL);
-        self.op(OR);
-        self.op(SWAP1);
-        self.op(POP);
-        self.op(SWAP1);
-        self.op(DUP1);
-        self.mstore_off(self.blob_ptr);
-        self.push_u64(96);
-        self.op(SHL);
-        self.op(OR);
-        self.op(SWAP1);
-        self.op(POP);
-        self.op(SWAP1);
-        self.op(JUMP);
-    }
-
-    /// Pushes whether the body queued any call, or returns false when it always does: a
-    /// call outside every branch.
-    fn push_ops_pending(&mut self) -> bool {
-        let body = self.body.as_ref().expect("body");
-        if body.queued {
-            let head = body.queue;
-            self.mload(head);
-            return true;
-        }
-        if body.ops.iter().any(|op| op.fired.is_none()) {
-            return false;
-        }
-        // Records calls across left are numbered from the body's first.
-        if body.first_record != 0 && body.ops.iter().all(|op| op.drain.is_some()) {
-            let first = body.first_record;
-            self.mload(first);
-            return true;
-        }
-        let flags: Vec<i32> = body.ops.iter().filter_map(|op| op.fired).collect();
-        for (i, &flag) in flags.iter().enumerate() {
-            self.mload(flag);
-            if i > 0 {
-                self.op(OR);
-            }
-        }
-        true
-    }
-
-    /// The way back in for the owner of a transition to drain a record of calls one of this
-    /// code's frames queued: its memory goes back, then the frame's calls run. The contract's
-    /// answers only while the hook flag is set, as its hooks' ways back in do; a facet's is
-    /// reached only by `delegatecall` from contract code, and a record a direct call finds
-    /// empty reverts.
-    fn drain_entry(&mut self, label: u32) -> Result<(), Error> {
-        self.enter(label, true);
-        if !self.shape.part {
-            let ok = self.fresh();
-            self.op(PUSH0);
-            self.op(NOT);
-            self.op(TLOAD);
-            self.push_label(ok);
-            self.op(JUMPI);
-            self.revert_empty();
-            self.jumpdest(ok);
-            self.op(PUSH0);
-            self.op(PUSH0);
-            self.op(NOT);
-            self.op(TSTORE);
-        }
-        let ends = Word::from_u64(u64::from(u32::MAX));
-        // [handle, ~(base | 1)]: each slot is cleared as it is read back. Slot `~(base | j)`
-        // is `~(base | 1) + 1 - j`.
-        self.push_u64(4);
-        self.op(CALLDATALOAD);
-        self.op(DUP1);
-        self.push_word(ends);
-        self.op(AND);
-        self.push_u64(32);
-        self.op(SHL);
-        self.push_u64(1);
-        self.op(OR);
-        self.op(NOT);
-        self.op(DUP1 + 1);
-        self.push_u64(32);
-        self.op(SHR);
-        self.push_word(ends);
-        self.op(AND);
-        self.push_u64(2);
-        self.op(SWAP1);
-        self.op(SUB);
-        self.op(DUP1 + 1);
-        self.op(SUB);
-        // [handle, ~(base | 1), ~key]: up from the last word's slot to `~(base | 2)`.
-        let (top, put, big, next, words) = (
-            self.fresh(),
-            self.fresh(),
-            self.fresh(),
-            self.fresh(),
-            self.fresh(),
-        );
-        self.op(DUP1 + 1);
-        self.op(DUP1 + 1);
-        self.op(EQ);
-        self.push_label(words);
-        self.op(JUMPI);
-        self.jumpdest(top);
-        self.take_slot();
-        // [.., ~key, x]
-        self.op(DUP1);
-        self.push_u64(219);
-        self.op(SHR);
-        self.push_word(Word::from_u64(0xf_ffff_ffe0));
-        self.op(AND);
-        self.op(SWAP1);
-        self.op(DUP1);
-        self.push_u64(32);
-        self.op(SHL);
-        self.op(SWAP1);
-        self.push_u64(255);
-        self.op(SHR);
-        self.push_label(put);
-        self.op(JUMPI);
-        self.push_u64(32);
-        self.op(SHR);
-        self.op(DUP1);
-        self.op(ISZERO);
-        self.push_label(big);
-        self.op(JUMPI);
-        // [.., ~key, p, word]
-        self.jumpdest(put);
-        self.op(SWAP1);
-        self.op(MSTORE);
-        self.jumpdest(next);
-        self.push_u64(1);
-        self.op(ADD);
-        self.op(DUP1 + 1);
-        self.op(DUP1 + 1);
-        self.op(SUB);
-        self.push_label(top);
-        self.op(JUMPI);
-        self.push_label(words);
-        self.op(JUMP);
-        self.jumpdest(big);
-        self.op(POP);
-        self.op(SWAP1);
-        self.push_u64(1);
-        self.op(ADD);
-        self.take_slot();
-        self.op(SWAP1);
-        self.op(SWAP1 + 1);
-        self.op(MSTORE);
-        self.push_label(next);
-        self.op(JUMP);
-        self.jumpdest(words);
-        self.op(POP);
-        // [handle, ~(base | 1)]: then up from the last smalls' slot to `~(base | SMALLS)`.
-        let (slots, small, done) = (self.fresh(), self.fresh(), self.fresh());
-        self.op(DUP1 + 1);
-        self.push_u64(64);
-        self.op(SHR);
-        self.push_word(ends);
-        self.op(AND);
-        self.push_u64(2);
-        self.op(SWAP1);
-        self.op(SUB);
-        self.op(DUP1 + 1);
-        self.op(SUB);
-        self.op(SWAP1);
-        self.push_u64(SMALLS - 2);
-        self.op(SWAP1);
-        self.op(SUB);
-        self.op(SWAP1);
-        // [handle, ~(base | SMALLS) + 1, ~key]
-        self.op(DUP1 + 1);
-        self.op(DUP1 + 1);
-        self.op(EQ);
-        self.push_label(done);
-        self.op(JUMPI);
-        self.jumpdest(slots);
-        self.take_slot();
-        // [.., ~key, x]: `p << 42 | word`, shifted up by 209 when bit 84 is set.
-        self.jumpdest(small);
-        self.op(DUP1);
-        self.push_word(Word::from_u64(1).shl(85).wrapping_sub(Word::from_u64(1)));
-        self.op(AND);
-        self.op(DUP1);
-        self.push_u64(42);
-        self.op(SHR);
-        self.push_word(Word::from_u64(0x3ff_ffff_ffe0));
-        self.op(AND);
-        self.op(SWAP1);
-        self.op(DUP1);
-        self.push_word(Word::from_u64((1 << 47) - 1));
-        self.op(AND);
-        self.op(SWAP1);
-        self.push_u64(84);
-        self.op(SHR);
-        self.push_u64(209);
-        self.op(MUL);
-        self.op(SHL);
-        self.op(SWAP1);
-        self.op(MSTORE);
-        self.push_u64(85);
-        self.op(SHR);
-        self.op(DUP1);
-        self.push_label(small);
-        self.op(JUMPI);
-        self.op(POP);
-        self.push_u64(1);
-        self.op(ADD);
-        self.op(DUP1 + 1);
-        self.op(DUP1 + 1);
-        self.op(SUB);
-        self.push_label(slots);
-        self.op(JUMPI);
-        self.jumpdest(done);
-        self.op(POP);
-        self.op(POP);
-        // The heap's top goes back through its own word, so what places allocations knows
-        // nothing of it here.
-        self.op(DUP1);
-        self.push_u64(96);
-        self.op(SHR);
-        self.push_word(Word::from_u64((1 << 48) - 1));
-        self.op(AND);
-        self.mstore_off(self.blob_ptr);
-        self.push_u64(144);
-        self.op(SHR);
-        self.push_u64(0xffff);
-        self.op(AND);
-        let drains: Vec<u32> = self.drains.iter().map(|&(_, label)| label).collect();
-        if let [only] = drains[..] {
-            self.push_label(only);
-            self.op(JUMP);
-            return Ok(());
-        }
-        for (k, &label) in drains.iter().enumerate() {
-            self.op(DUP1);
-            self.push_u64(k as u64);
-            self.op(EQ);
-            self.push_label(label);
-            self.op(JUMPI);
-        }
-        self.revert_empty();
-        Ok(())
-    }
-
-    /// `[slot]` to `[slot, word]`: the word in the slot, which is cleared.
-    fn take_slot(&mut self) {
-        self.op(DUP1);
-        self.op(TLOAD);
-        self.op(PUSH0);
-        self.op(DUP1 + 2);
-        self.op(TSTORE);
-    }
-
-    fn acquire_nonreentrant(&mut self, bad: u32) {
-        self.push_u64(NONREENTRANT_SLOT);
-        self.op(TLOAD);
-        self.push_label(bad);
-        self.op(JUMPI);
-        self.push_u64(1);
-        self.push_u64(NONREENTRANT_SLOT);
-        self.op(TSTORE);
-    }
-
-    fn release_nonreentrant(&mut self) {
-        self.op(PUSH0);
-        self.push_u64(NONREENTRANT_SLOT);
-        self.op(TSTORE);
-    }
-
-    fn view_body(&mut self, label: u32, func: usize) -> Result<(), Error> {
-        let bad = self.fresh();
-        self.enter(label, false);
-        // A `nonreentrant` view only checks the lock: it must also run under `STATICCALL`.
-        if self.checked.prog.funcs[func].nonreentrant {
-            self.push_u64(NONREENTRANT_SLOT);
-            self.op(TLOAD);
-            self.push_label(bad);
-            self.op(JUMPI);
-        }
-        // A view cannot write, so reading storage in place is always equivalent.
-        self.begin_body(self.lists_in_order);
-        self.reading = true;
-        self.decode_params(func)?;
-        let stmts = self.checked.prog.funcs[func].stmts.clone();
-        let tail = self.checked.prog.funcs[func]
-            .tail
-            .clone()
-            .ok_or_else(|| error(1, 1, "view is missing a value"))?;
-        self.compile_seq(&stmts)?;
-        let ret = self.checked.prog.funcs[func].ret_ty;
-        if self.tree_ret(ret) {
-            let at = self.stage(&tail)?;
-            self.return_tree(at, ret)?;
-        } else if crate::check::abi_record(&self.checked.types, ret) {
-            let at = if decoded(&tail) {
-                self.stage(&tail)?
-            } else {
-                self.value_addr(&tail)?
-            };
-            self.return_record(at, ret)?;
-        } else if self.list_value(ret) {
-            // Nothing runs after the return, so a `var`'s list goes back without a copy.
-            match &tail {
-                Expr::Ident { sym: Some(sym), .. } if self.stored_place(&tail).is_none() => {
-                    self.mload(self.local[*sym]);
-                }
-                _ => self.compile_value(&tail)?,
-            }
-            let elem = self.checked.types[self.peel_nominal(ret)].elem.unwrap_or(0);
-            self.return_list(elem)?;
-        } else if let Some(bytes) = self.lit_bytes(&tail) {
-            self.return_lit(&bytes);
-        } else if self.is_dynamic(ret) {
-            self.compile_value(&tail)?;
-            self.return_dynamic();
-        } else if is_static_aggregate(&self.checked.types, ret) {
-            self.write_words(&tail, self.fn_ret[func])?;
-            self.return_tuple(func, ret);
-        } else {
-            self.compile_value(&tail)?;
-            self.fit_static_word(ret);
-            self.return_word();
-        }
-        self.finish_body();
-        self.jumpdest(bad);
-        self.revert_empty();
-        Ok(())
-    }
-
-    fn migrate_body(&mut self, label: u32, func: usize) -> Result<(), Error> {
-        let bad = self.fresh();
-        self.enter(label, false);
-        self.push_u64(UPGRADE_SLOT);
-        self.op(TLOAD);
-        self.push_u64(1);
-        self.op(EQ);
-        self.op(ISZERO);
-        self.push_label(bad);
-        self.op(JUMPI);
-        self.once_body(func, bad)
-    }
-
-    /// An upgradeable contract's `deploy` runs only while the proxy calling it has no code
-    /// yet: inside the proxy's constructor, against the proxy's storage.
-    fn deploy_body(&mut self, label: u32, func: usize) -> Result<(), Error> {
-        let bad = self.fresh();
-        self.enter(label, self.checked.prog.funcs[func].payable);
-        self.op(ADDRESS);
-        self.op(EXTCODESIZE);
-        self.push_label(bad);
-        self.op(JUMPI);
-        self.once_body(func, bad)
-    }
-
-    fn once_body(&mut self, func: usize, bad: u32) -> Result<(), Error> {
-        self.begin_body(self.func_direct_ok(func));
-        self.decode_params(func)?;
-        let stmts = self.checked.prog.funcs[func].stmts.clone();
-        let tail = self.checked.prog.funcs[func].tail.clone();
-        self.compile_seq(&stmts)?;
-        if let Some(tail) = tail {
-            self.compile_effect(&tail)?;
-        }
-        self.store_image();
-        self.finish_body();
-        self.op(STOP);
-        self.jumpdest(bad);
-        self.revert_empty();
-        Ok(())
     }
 
     pub(super) fn deploy_func(&self) -> Option<usize> {
@@ -1776,345 +550,125 @@ impl<'a> Gen<'a> {
         self.op(JUMP);
     }
 
-    /// Creation code that runs `deploy` on the arguments appended to it, then returns the
-    /// runtime code with its immutables written in.
-    pub(super) fn emit_init(
-        &mut self,
-        func: Option<usize>,
-        runtime: Vec<u8>,
-        marks: &[Mark],
-    ) -> Result<(), Error> {
-        self.init = true;
-        let words = self.checked.transient_from - self.checked.immutable_from;
-        if words > 0 {
-            self.imm_mem = self.region(Region::Immutables, words as u32 * 32);
-            self.init_immutable_values()?;
-        }
-        for part in self.shape.prerequisites() {
-            self.push_word(part);
-            self.op(EXTCODESIZE);
-            self.op(ISZERO);
-            self.revert_if_true()?;
-        }
-        let len = runtime.len() as u64;
-        let code = self.data_marker();
-        self.data.push((code, runtime, String::new()));
-        self.code_end = self.data_marker();
-        self.data.push((self.code_end, Vec::new(), String::new()));
-        // Without a `deploy`, the creation code only writes what its immutables' zero values
-        // leave after the code.
-        let Some(func) = func else {
-            return self.return_init(code, len, marks);
-        };
-        if !self.checked.prog.funcs[func].payable {
-            self.op(CALLVALUE);
-            self.revert_if_true()?;
-        }
-        // The arguments follow the code: copied to memory, where decoding reads them.
-        if !self.checked.prog.funcs[func].params.is_empty() {
-            self.push_word(self.code_end);
-            self.op(CODESIZE);
-            self.op(SUB);
-            self.op(DUP1);
-            self.alloc_blob()?;
-            self.push_u64(32);
-            self.op(ADD);
-            self.op(DUP1);
-            self.push_u64(4);
-            self.op(SWAP1);
-            self.op(SUB);
-            self.mstore_off(self.code_args);
-            self.push_word(self.code_end);
-            self.op(SWAP1);
-            self.op(CODECOPY);
-        }
-        self.begin_body(self.func_direct_ok(func));
-        self.decode_params(func)?;
-        let stmts = self.checked.prog.funcs[func].stmts.clone();
-        let tail = self.checked.prog.funcs[func].tail.clone();
-        self.compile_seq(&stmts)?;
-        if let Some(tail) = tail {
-            self.compile_effect(&tail)?;
-        }
-        self.store_image();
-        self.finish_body();
-        self.return_init(code, len, marks)
-    }
-
-    /// Returns the runtime, `len` bytes at `code`, with its immutables written in, then the
-    /// code the creation code's own calls and failures jump to.
-    fn return_init(&mut self, code: Word, len: u64, marks: &[Mark]) -> Result<(), Error> {
-        if marks.is_empty() {
-            self.push_u64(len);
-            self.op(DUP1);
-            self.push_word(code);
-            self.op(PUSH0);
-            self.op(CODECOPY);
-            self.op(PUSH0);
-            self.op(RETURN);
-        } else {
-            self.return_patched(code, len, marks)?;
-        }
-        self.emit_raises()?;
-        self.emit_subs()?;
-        self.emit_fails();
-        Ok(())
-    }
-
     pub(super) fn data_marker(&self) -> Word {
         Word::from_u64(0xda7a)
             .shl(240)
             .wrapping_add(Word::from_u64(self.data.len() as u64))
     }
-
-    /// `CALLDATALOAD`, or its equivalent over the arguments of creation code.
-    pub(super) fn cd_load(&mut self) {
-        if self.init {
-            self.mload(self.code_args);
-            self.op(ADD);
-            self.op(MLOAD);
-        } else {
-            self.op(CALLDATALOAD);
-        }
-    }
-
-    pub(super) fn cd_size(&mut self) {
-        if self.init {
-            self.push_word(self.code_end);
-            self.op(CODESIZE);
-            self.op(SUB);
-            self.push_u64(4);
-            self.op(ADD);
-        } else {
-            self.op(CALLDATASIZE);
-        }
-    }
-
-    pub(super) fn cd_copy(&mut self) {
-        if self.init {
-            self.op(SWAP1);
-            self.mload(self.code_args);
-            self.op(ADD);
-            self.op(SWAP1);
-            self.op(MCOPY);
-        } else {
-            self.op(CALLDATACOPY);
-        }
-    }
-
-    /// OpenZeppelin's `notDelegated`: only the implementation itself answers, so a proxy
-    /// can't be upgraded to another proxy.
-    fn proxiable_body(&mut self, label: u32) -> Result<(), Error> {
-        let context = self.fresh();
-        self.enter(label, false);
-        self.push_self();
-        self.op(ADDRESS);
-        self.op(XOR);
-        self.push_label(context);
-        self.op(JUMPI);
-        self.push_word(crate::keccak::erc1967_implementation());
-        self.return_word();
-        self.jumpdest(context);
-        self.revert_selector(selector("UUPSUnauthorizedCallContext()"), false);
-        Ok(())
-    }
-
-    /// Reverts with an error that has no parameters, or one word on the stack.
-    fn revert_selector(&mut self, sel: [u8; 4], arg: bool) {
-        let size = if arg {
-            self.push_u64(32);
-            self.op(MSTORE);
-            36
-        } else {
-            4
-        };
-        self.push_selector(sel);
-        self.op(PUSH0);
-        self.op(MSTORE);
-        self.push_u64(size);
-        self.push_u64(28);
-        self.op(REVERT);
-    }
-
-    /// OpenZeppelin 5.1's `upgradeToAndCall`, in its order: the arguments decode, the call
-    /// runs through a proxy that points at this implementation (`onlyProxy`), the guard
-    /// passes, and the new implementation's `proxiableUUID` is the implementation slot.
-    fn upgrade_body(&mut self, label: u32) -> Result<(), Error> {
-        let bad = self.fail_label(None);
-        let skip = self.fresh();
-        let context = self.fresh();
-        let invalid = self.fresh();
-        let unsupported = self.fresh();
-        let unpaid = self.fresh();
-        let done = self.fresh();
-        let failed = self.fresh();
-        let slot = crate::keccak::erc1967_implementation();
-        self.enter(label, true);
-        self.push_u64(68);
-        self.op(CALLDATASIZE);
-        self.op(LT);
-        self.push_u64(4);
-        self.op(CALLDATALOAD);
-        self.push_u64(160);
-        self.op(SHR);
-        self.op(OR);
-        self.push_label(bad);
-        self.op(JUMPI);
-        self.push_u64(36);
-        self.check_bytes_arg()?;
-        self.op(POP);
-        self.push_self();
-        self.op(DUP1);
-        self.op(ADDRESS);
-        self.op(EQ);
-        self.op(SWAP1);
-        self.push_word(slot);
-        self.op(SLOAD);
-        self.op(XOR);
-        self.op(OR);
-        self.push_label(context);
-        self.op(JUMPI);
-        let direct = self
-            .checked
-            .prog
-            .guard
-            .as_ref()
-            .is_some_and(|guard| self.direct_ok(&guard.stmts, None));
-        self.begin_body(direct);
-        let guard = self
-            .checked
-            .prog
-            .guard
-            .clone()
-            .ok_or_else(|| error(1, 1, "upgradeable contract requires an upgrade guard"))?;
-        self.compile_stmts(&guard.stmts)?;
-        self.store_image();
-        self.finish_body();
-        // A failed call is ERC1967InvalidImplementation; a result too short to decode reverts
-        // empty, as Solidity's `try` does.
-        self.push_selector(selector("proxiableUUID()"));
-        self.push_mem(self.args_buf);
-        self.op(MSTORE);
-        self.push_u64(32);
-        self.push_mem(self.args_buf);
-        self.push_u64(4);
-        self.push_mem(self.args_buf + 28);
-        self.push_u64(4);
-        self.op(CALLDATALOAD);
-        self.op(GAS);
-        self.op(STATICCALL);
-        self.op(ISZERO);
-        self.push_label(invalid);
-        self.op(JUMPI);
-        self.push_u64(32);
-        self.op(RETURNDATASIZE);
-        self.op(LT);
-        self.push_label(bad);
-        self.op(JUMPI);
-        self.mload(self.args_buf);
-        self.push_word(slot);
-        self.op(XOR);
-        self.push_label(unsupported);
-        self.op(JUMPI);
-        self.push_u64(4);
-        self.op(CALLDATALOAD);
-        self.op(DUP1);
-        self.push_word(slot);
-        self.op(SSTORE);
-        // ERC-1967's `Upgraded(address indexed implementation)`, before the migration runs.
-        self.push_word(Word::from_be_bytes(crate::keccak::keccak256(
-            b"Upgraded(address)",
-        )));
-        self.push_u64(0);
-        self.push_u64(0);
-        self.op(LOG0 + 2);
-        // The migration's calldata, copied to the heap's top, as `Address.functionDelegateCall`
-        // copies its `bytes`: [pos, len, top], `pos` its length word in calldata.
-        self.push_u64(36);
-        self.op(CALLDATALOAD);
-        self.push_u64(4);
-        self.op(ADD);
-        self.op(DUP1);
-        self.op(CALLDATALOAD);
-        self.op(DUP1);
-        self.op(ISZERO);
-        self.push_label(skip);
-        self.op(JUMPI);
-        // The flag a migration checks is set only for the migration's call, so no one can
-        // call one later in the transaction.
-        self.push_u64(1);
-        self.push_u64(UPGRADE_SLOT);
-        self.op(TSTORE);
-        self.mload(self.blob_ptr);
-        self.push_mem(self.blob_base);
-        self.op(ADD);
-        self.op(DUP1 + 1);
-        self.op(DUP1 + 3);
-        self.push_u64(32);
-        self.op(ADD);
-        self.op(DUP1 + 2);
-        self.op(CALLDATACOPY);
-        self.op(PUSH0);
-        self.op(PUSH0);
-        self.op(DUP1 + 3);
-        self.op(DUP1 + 3);
-        self.push_u64(4);
-        self.op(CALLDATALOAD);
-        self.op(GAS);
-        self.op(DELEGATECALL);
-        self.push_label(done);
-        self.op(JUMPI);
-        // A failed migration's revert data goes back as it is, or `FailedCall()` when it has
-        // none, as OpenZeppelin's `Address` bubbles it. A call that succeeds needs no
-        // `AddressEmptyCode` check: the implementation answered `proxiableUUID` in this
-        // transaction, and code only goes away at a transaction's end.
-        self.op(RETURNDATASIZE);
-        self.op(ISZERO);
-        self.push_label(failed);
-        self.op(JUMPI);
-        self.op(RETURNDATASIZE);
-        self.op(PUSH0);
-        self.op(PUSH0);
-        self.op(RETURNDATACOPY);
-        self.op(RETURNDATASIZE);
-        self.op(PUSH0);
-        self.op(REVERT);
-        self.jumpdest(failed);
-        self.revert_selector(selector("FailedCall()"), false);
-        self.jumpdest(done);
-        self.op(PUSH0);
-        self.push_u64(UPGRADE_SLOT);
-        self.op(TSTORE);
-        self.op(STOP);
-        // With no migration to take it, value is refused, as `ERC1967Utils` refuses it.
-        self.jumpdest(skip);
-        self.op(CALLVALUE);
-        self.push_label(unpaid);
-        self.op(JUMPI);
-        self.op(STOP);
-        self.jumpdest(unpaid);
-        self.revert_selector(selector("ERC1967NonPayable()"), false);
-        self.jumpdest(context);
-        self.revert_selector(selector("UUPSUnauthorizedCallContext()"), false);
-        self.jumpdest(invalid);
-        self.push_u64(4);
-        self.op(CALLDATALOAD);
-        self.revert_selector(selector("ERC1967InvalidImplementation(address)"), true);
-        self.jumpdest(unsupported);
-        self.mload(self.args_buf);
-        self.revert_selector(selector("UUPSUnsupportedProxiableUUID(bytes32)"), true);
-        Ok(())
-    }
 }
 
-/// A value decoded from ABI data, which has no memory of its own until it is written.
-fn decoded(e: &Expr) -> bool {
-    matches!(
-        e,
-        Expr::Query { .. }
-            | Expr::Call {
-                builtin: Some(Builtin::AbiDecode),
-                ..
+impl<'a> Gen<'a> {
+    /// How contract code calls `idx`, a function of a module its facet runs: across, with
+    /// `delegatecall` unless it is pure, or `None` where it runs in the contract: a constant,
+    /// which folds into it, or a function that writes an immutable, which only `deploy` and
+    /// migrations call, where the contract's immutables are written. `Err` says why it can't
+    /// be called across.
+    pub(super) fn crossing(&self, idx: usize) -> Result<Option<bool>, String> {
+        let f = &self.checked.prog.funcs[idx];
+        let pure = f.kind == ItemKind::Pure;
+        if pure && f.params.is_empty() && f.type_params.is_empty() {
+            return Ok(None);
+        }
+        let immutables = &self.checked.immutable_syms;
+        let writes = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Assign { root: Some(sym), .. }) if immutables.contains(sym));
+        if self.func_any(idx, &writes, &mut Vec::new()) {
+            return Ok(None);
+        }
+        if !f.type_params.is_empty() {
+            return Err("it is generic".to_string());
+        }
+        for p in &f.params {
+            if p.storage
+                || p.sym
+                    .is_some_and(|s| self.checked.slot_syms.contains_key(&s))
+            {
+                return Err(format!("its parameter `{}` is a storage reference", p.name));
             }
-    )
+            if let Some(what) = self.not_abi(p.ty_id) {
+                return Err(format!("its parameter `{}` is {what}", p.name));
+            }
+        }
+        if let Some(what) = self.not_abi(f.ret_ty) {
+            return Err(format!("its result is {what}"));
+        }
+        let calldata = |node: Node<'_>| {
+            matches!(
+                node,
+                Node::Expr(Expr::Call {
+                    builtin: Some(Builtin::Calldata | Builtin::Selector),
+                    ..
+                })
+            )
+        };
+        if self.func_any(idx, &calldata, &mut Vec::new()) {
+            return Err(
+                "it reads the call's calldata, which its facet sees as its own".to_string(),
+            );
+        }
+        Ok(Some(!pure))
+    }
+
+    /// Hooks without a result this facet calls back, through a call whose arguments aren't
+    /// all inert. Every other call tests the hook's bit before its arguments.
+    pub(super) fn find_untested_hooks(&self) -> HashSet<usize> {
+        let found = std::cell::RefCell::new(HashSet::new());
+        let note = |node: Node<'_>| {
+            if let Node::Expr(Expr::Call {
+                callee: Some(idx),
+                args,
+                ..
+            }) = node
+            {
+                if self.skippable_hook(*idx).is_some() && !args.iter().all(|a| self.inert(a)) {
+                    found.borrow_mut().insert(*idx);
+                }
+            }
+            false
+        };
+        let mut seen = Vec::new();
+        for idx in 0..self.checked.prog.funcs.len() {
+            self.func_any(idx, &note, &mut seen);
+        }
+        found.into_inner()
+    }
+
+    /// The bit of a hook without a result this facet calls back, which the contract may
+    /// leave unimplemented.
+    pub(super) fn skippable_hook(&self, idx: usize) -> Option<u32> {
+        let bit = self.shape.cross.get(&idx)?.bit?;
+        let ret = self.checked.prog.funcs[idx].ret_ty;
+        (self.checked.types[ret].kind == TyKind::Unit).then_some(bit)
+    }
+
+    /// Whether `idx` is a stateful hook this facet calls back, whose implementation the
+    /// contract writes and may defer.
+    pub(super) fn calls_back_stateful(&self, idx: usize) -> bool {
+        self.shape.cross.get(&idx).is_some_and(|c| c.bit.is_some())
+            && self.checked.prog.funcs[idx].kind == ItemKind::Function
+    }
+
+    /// Whether a call across to `idx` may leave calls queued in transient storage: a stateful
+    /// hook called back, or a module function that defers or reaches a hook that does.
+    pub(super) fn queues_across(&self, idx: usize) -> bool {
+        let defers = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Defer { .. }));
+        self.shape.cross.get(&idx).is_some_and(|c| c.delegate)
+            && self.checked.prog.funcs[idx].kind == ItemKind::Function
+            && (self.calls_back_stateful(idx) || self.func_any(idx, &defers, &mut Vec::new()))
+    }
+
+    /// Whether the entrypoint of route `index` runs in a frame called into mid-transition and
+    /// may queue calls there: a stateful hook's way back in, or a facet's entrypoint for a
+    /// module function.
+    pub(super) fn queues_nested(&self, index: usize) -> bool {
+        let Some(func) = self.checked.routes[index].direct else {
+            return false;
+        };
+        let f = &self.checked.prog.funcs[func];
+        let nested = match &f.hook_of {
+            Some(of) => of.form == HookForm::Entry,
+            None => self.shape.part && crate::split::is_hidden(&f.name),
+        };
+        let defers = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Defer { .. }));
+        nested && f.kind == ItemKind::Entry && self.func_any(func, &defers, &mut Vec::new())
+    }
 }

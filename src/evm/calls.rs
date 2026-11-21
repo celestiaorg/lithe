@@ -2785,27 +2785,21 @@ external function go(const a : E; const b : E) is {
 }
 external view function log() : uint is storage.log
 ";
-    for force in [None, Some(true), Some(false)] {
-        crate::gen::FORCE_STATIC_HEAP.set(force);
-        let built = compile(src);
-        crate::gen::FORCE_STATIC_HEAP.set(None);
-        let runtime = deploy(&built.expect("compile")).expect("deploy");
-        let echo = Word::from_u64(0xcd);
-        let out = call(&runtime, "go(address,address)", &[echo, echo]);
-        assert!(!out.reverted, "{force:?}: {}", pretty(&out.returndata));
-        let read = exec(
-            &runtime,
-            &word_data("log()", &[]),
-            out.storage,
-            Word::from_u64(7),
-            Word::from_u64(0),
-            Word::from_u64(0),
-        )
-        .expect("log");
-        assert_eq!(
-            Word::from_be_bytes(read.returndata[..32].try_into().expect("a word")),
-            Word::from_u64(1_011_011),
-            "{force:?}"
-        );
-    }
+    let runtime = deploy(&compile(src).expect("compile")).expect("deploy");
+    let echo = Word::from_u64(0xcd);
+    let out = call(&runtime, "go(address,address)", &[echo, echo]);
+    assert!(!out.reverted, "{}", pretty(&out.returndata));
+    let read = exec(
+        &runtime,
+        &word_data("log()", &[]),
+        out.storage,
+        Word::from_u64(7),
+        Word::from_u64(0),
+        Word::from_u64(0),
+    )
+    .expect("log");
+    assert_eq!(
+        Word::from_be_bytes(read.returndata[..32].try_into().expect("a word")),
+        Word::from_u64(1_011_011)
+    );
 }

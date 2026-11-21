@@ -1699,26 +1699,17 @@ fn check_type(ty: &Ty) -> Vec<String> {
 
 #[test]
 fn every_type_works_in_every_place() {
-    matrix(None);
+    matrix();
 }
 
-/// Again with constants forwarded and allocations placed statically wherever they can be.
-#[test]
-fn every_type_works_in_every_place_with_a_static_heap() {
-    matrix(Some(true));
-}
-
-fn matrix(static_heap: Option<bool>) {
+fn matrix() {
     let failures: Vec<String> = std::thread::scope(|s| {
         let handles: Vec<_> = TYPES
             .iter()
             .map(|ty| {
                 std::thread::Builder::new()
                     .stack_size(64 << 20)
-                    .spawn_scoped(s, move || {
-                        crate::gen::FORCE_STATIC_HEAP.set(static_heap);
-                        check_type(ty)
-                    })
+                    .spawn_scoped(s, move || check_type(ty))
                     .expect("spawn")
             })
             .collect();

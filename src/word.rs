@@ -38,6 +38,7 @@ impl Word {
     }
 
     /// Solidity's short `string` / `bytes` slot: data left-aligned, low byte `len * 2`.
+    #[cfg(test)]
     pub(crate) fn short_dyn(data: &[u8]) -> Self {
         let mut raw = [0u8; 32];
         let n = data.len().min(31);

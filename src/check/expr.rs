@@ -1101,7 +1101,6 @@ impl Checker {
                                 mutable: false,
                                 storage: false,
                                 slot: 0,
-                                span: 0,
                             });
                             arm.bind_sym = Some(whole);
                             let names = arm.tuple_names.clone();
@@ -1114,7 +1113,6 @@ impl Checker {
                                     mutable: false,
                                     storage: false,
                                     slot: 0,
-                                    span: 0,
                                 });
                                 self.field_of.insert(sym, (whole, i));
                                 arm.tuple_syms.push(sym);
@@ -1149,7 +1147,6 @@ impl Checker {
                                     mutable: false,
                                     storage: false,
                                     slot: 0,
-                                    span: 0,
                                 });
                                 arm.bind_sym = Some(sym);
                                 self.define(arm.line, arm.col, name, sym)?;
@@ -1884,16 +1881,6 @@ impl Checker {
                 Ok(TY_BOOL)
             }
         }
-    }
-
-    pub(super) fn list_span(
-        &self,
-        _line: u32,
-        _col: u32,
-        _id: usize,
-        _expr: &Expr,
-    ) -> Result<u32, Error> {
-        Ok(0)
     }
 
     /// A list held in memory: a fixed list inline, or a dynamic list behind a pointer.

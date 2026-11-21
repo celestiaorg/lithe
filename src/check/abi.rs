@@ -287,16 +287,6 @@ pub(crate) fn is_value(types: &[RType], ty: usize) -> bool {
     }
 }
 
-/// An option of a string or bytes: a tag word, then the value's word.
-pub(crate) fn bytes_option(types: &[RType], ty: usize) -> bool {
-    let t = &types[peel_id(types, ty)];
-    t.kind == TyKind::Option
-        && t.elem.is_some_and(|e| {
-            let e = &types[peel_id(types, e)];
-            e.kind == TyKind::String || (e.kind == TyKind::Bytes && e.bits == 0)
-        })
-}
-
 /// A value the ABI can carry: any value with no option in it, nor a map in a variant's payload.
 pub(crate) fn abi_value(types: &[RType], ty: usize) -> bool {
     is_value(types, ty) && !has_option(types, ty)
@@ -375,42 +365,6 @@ pub(crate) fn is_stored_aggregate(types: &[RType], ty: usize) -> bool {
     }
 }
 
-/// A record with strings, bytes, or lists among its fields, which the ABI carries as the
-/// values of its fields in order, each dynamic one after an offset.
-pub(crate) fn abi_record(types: &[RType], ty: usize) -> bool {
-    let id = peel_id(types, ty);
-    types[id].kind == TyKind::Record
-        && types[id].flat.is_some()
-        && !is_static_value(types, id)
-        && !has_option(types, id)
-        && abi_fields(types, id, "").is_ok()
-}
-
-/// A record whose fields the existing return path lays out: words, strings, bytes, and lists
-/// of static elements, each one argument.
-pub(crate) fn flat_record(types: &[RType], ty: usize) -> bool {
-    let id = peel_id(types, ty);
-    abi_record(types, id)
-        && types[id].fields.iter().all(|f| {
-            let fid = peel_id(types, f.ty);
-            let ft = &types[fid];
-            match ft.kind {
-                TyKind::List => {
-                    ft.bits == 0
-                        && ft.elem.is_some_and(|e| {
-                            !abi_dynamic(types, e)
-                                || matches!(
-                                    types[peel_id(types, e)].kind,
-                                    TyKind::String | TyKind::Bytes
-                                )
-                        })
-                }
-                TyKind::Record | TyKind::Tuple => false,
-                _ => ft.words == 1,
-            }
-        })
-}
-
 /// Whether an option appears anywhere in a value, a variant's payloads included, which
 /// keeps it out of the ABI.
 pub(crate) fn has_option(types: &[RType], ty: usize) -> bool {
@@ -426,16 +380,6 @@ pub(crate) fn has_option(types: &[RType], ty: usize) -> bool {
         TyKind::List => t.elem.is_some_and(|e| has_option(types, e)),
         _ => false,
     }
-}
-
-/// A static value's ABI type as it appears in a signature: a record or tuple is a
-/// Solidity tuple, `(uint256,address)`. `None` for dynamic or unsupported values.
-/// A record or tuple of static values, returned as consecutive words.
-pub(crate) fn is_static_aggregate(types: &[RType], ty: usize) -> bool {
-    matches!(
-        types[peel_id(types, ty)].kind,
-        TyKind::Record | TyKind::Tuple
-    ) && static_abi(types, ty).is_some()
 }
 
 pub(crate) fn static_abi(types: &[RType], ty: usize) -> Option<String> {

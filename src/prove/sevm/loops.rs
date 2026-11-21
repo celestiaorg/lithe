@@ -24,13 +24,13 @@ use super::{note, End, Hooks, Machine, Mem, Path, Sort, Step, Went, GHOST_W, MAX
 use crate::word::Word;
 
 /// How many times a summary runs its loop's iterations before it gives up.
-const MAX_ROUNDS: usize = 8;
+const MAX_ROUNDS: usize = 16;
 /// How many times a path forks at the exit test of a loop without invariants before the
 /// loop is summarized: runs of no iterations and of one stay exact, as a spec of a
 /// one-element list needs.
 const COUNTED_TURNS: usize = 2;
 /// The stack words nearest the top that a counter may be bounded by.
-const BOUND_REACH: usize = 4;
+const BOUND_REACH: usize = 8;
 
 /// A loop proved by induction at its head.
 #[derive(Clone, Debug)]
@@ -47,6 +47,9 @@ pub(crate) struct LoopHint {
     /// A loop without invariants: it runs turn by turn until the path has forked at its
     /// exit test `COUNTED_TURNS` times, and is summarized at its head after that.
     pub counted: bool,
+    /// How far under the top of the stack the certificate says the counter is at the
+    /// head: no other word that steps by one is looked for a bound.
+    pub counter: Option<usize>,
 }
 
 /// A loop a path is in, as its summary runs it.
@@ -172,6 +175,7 @@ impl Machine {
             id: None,
             label: format!("the loop at byte {pc} of the code"),
             counted: false,
+            counter: None,
         };
         p.pc = pc;
         self.summarize(p, &hint, hooks)
@@ -305,7 +309,10 @@ impl Machine {
             let (start, k) = self.head_state(&entry, &vary, sid, hint, hooks);
             let (backs, exits) = self.round(start.clone(), sid, hooks);
             let mut next = vary.clone();
-            let halt = self.absorb(&mut next, &vary, &entry, &start, &backs, sid);
+            let counter = hint
+                .counter
+                .and_then(|under| start.stack.len().checked_sub(under + 1));
+            let halt = self.absorb(&mut next, &vary, &entry, &start, &backs, sid, counter);
             let rewind = |m: &mut Machine| {
                 m.leaves.truncate(mark.0);
                 m.commits.truncate(mark.1);
@@ -594,6 +601,7 @@ impl Machine {
         start: &Path,
         backs: &[Path],
         sid: usize,
+        counter: Option<usize>,
     ) -> Option<Halt> {
         for b in backs {
             if b.stack.len() != start.stack.len() {
@@ -661,10 +669,17 @@ impl Machine {
         }
         let grown = self.summaries[sid].grown.clone();
         merge(&mut next.written, &grown);
-        next.kept = if next.memory {
-            self.kept_words(entry, sid)
-        } else {
-            Vec::new()
+        // A word a round could not keep is not tried again: the solver may show a write
+        // misses it one round and run out of time the next, and the rounds would not settle.
+        next.kept = match (next.memory, vary.memory) {
+            (false, _) => Vec::new(),
+            (true, false) => self.kept_words(entry, sid),
+            (true, true) if vary.kept.is_empty() => Vec::new(),
+            (true, true) => {
+                let mut kept = self.kept_words(entry, sid);
+                kept.retain(|w| vary.kept.contains(w));
+                kept
+            }
         };
         next.rising = match &entry.mem {
             Mem::Map(map) if next.memory => {
@@ -697,6 +712,7 @@ impl Machine {
                 Some(c) => {
                     if next.affine.insert(j, c).is_none()
                         && (c == Word::from_u64(1) || c.wrapping_neg() == Word::from_u64(1))
+                        && counter.is_none_or(|at| at == j)
                     {
                         let up = c == Word::from_u64(1);
                         let n = start.stack.len();

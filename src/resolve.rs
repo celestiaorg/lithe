@@ -14,7 +14,7 @@ use crate::{error, Error};
 /// The words a state path starts with: `storage.x`, `transient.x`, `immutable.x`.
 pub(crate) const STATE_KINDS: [&str; 3] = ["storage", "transient", "immutable"];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Cat {
     Type,
     Error,
@@ -43,7 +43,7 @@ impl Cat {
 
 /// A declaration of a type, error, error set, event, interface, function, or module at the
 /// top of a file or a contract.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct Decl {
     pub cat: Cat,
     pub origin: String,
@@ -57,14 +57,14 @@ pub(crate) struct Decl {
 }
 
 /// What one name in a scope refers to, and the import that brought it, if any.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash)]
 pub(crate) struct Entry {
     pub decl: usize,
     pub import: Option<usize>,
 }
 
 /// An `import` line of a file, and what it names.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub(crate) struct Import {
     pub decl: UseDecl,
     /// The imported file of declarations. `None` for a file of contracts.
@@ -74,7 +74,7 @@ pub(crate) struct Import {
 }
 
 /// The names one file sees, or one contract of a file of contracts.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Hash)]
 pub(crate) struct Scope {
     pub names: BTreeMap<String, Vec<Entry>>,
     pub modules: BTreeMap<String, Entry>,
@@ -92,7 +92,7 @@ pub(crate) struct Scope {
 pub(crate) type Key = (String, Option<String>);
 
 /// Every scope of one program, over its declarations.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Hash)]
 pub(crate) struct Scopes {
     pub decls: Vec<Decl>,
     pub scopes: BTreeMap<Key, Scope>,

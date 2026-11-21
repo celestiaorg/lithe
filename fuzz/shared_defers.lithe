@@ -1,0 +1,219 @@
+(* Fuzz target: functions that defer or query, compiled once and called from several
+   entrypoints, from loops, under conditions, and from each other. One that defers gives
+   back the list of the calls it deferred, and they must run after the body that called
+   it, in the order they were deferred, between that body's own. In a module, so that a
+   facet of it defers in a frame that leaves its calls for the contract's transition, with
+   a hook back in the contract among them. The interpreter answers 0xcd with the call's
+   own arguments, 0xee reverts with them, 0xef reverts empty, and 0x1 with one malformed
+   byte. Address 2 is the SHA-256 precompile, which answers any query with a word. *)
+
+import "std/abi";
+import "std/crypto";
+import "std/evm";
+import "std/list";
+
+use Book exposing { view function sums() : (uint, uint, uint, uint); } with {
+  hook settled(const id : uint) is {
+    storage.settles += 1;
+    if id % 2 = 0 then {
+      defer Evm.call(address(0xcd), Abi.encode(id)) then (answer : bytes) {
+        storage.echo += answer.length;
+      };
+    }
+  }
+}
+
+interface Oracle is {
+  view function price(amount : uint) : uint;
+}
+
+module Book is {
+  storage book at "fuzz.book" is record {
+    sum    : uint;
+    last   : uint;
+    failed : uint;
+    count  : uint;
+    held   : map(address, uint);
+    marks  : list(uint);
+  }
+
+  error Big of uint;
+
+  event Posted of record {
+    indexed who : address;
+    amount      : uint;
+  }
+
+  hook settled(const id : uint);
+
+  (* Heavy enough to be compiled once: stores, a call deferred outside any loop with both
+     outcomes handled, one under a condition, and a hook back in the contract. *)
+  function post(const to : address; const seed : uint) raises Big is {
+    const who : address := Evm.sender();
+    const full : uint := uint(Crypto.keccak256(Abi.encode(seed, who)));
+    const part : uint := full % 100000 + seed % 17;
+    assert(part < 100010, Big(part));
+    storage.book.held[who] += part;
+    storage.book.count += 1;
+    if seed % 3 = 0 then {
+      storage.book.sum := storage.book.sum + part * 2;
+    } else {
+      storage.book.sum := storage.book.sum + part;
+    }
+    defer Evm.call(to, Abi.encode(full, part)) then {
+      | Ok(answer : bytes) -> {
+          storage.book.last := (storage.book.last ^ full) + answer.length;
+          storage.book.held[who] += answer.length;
+        }
+      | Error(reason : bytes) -> { storage.book.failed := storage.book.failed + reason.length + 1; }
+    };
+    if seed % 4 < 2 then {
+      defer Evm.call(address(0xcd), Abi.encode(seed, storage.book.count)) then (answer : bytes) {
+        storage.book.sum += answer.length + seed % 5;
+      };
+    }
+    emit Posted { who = who; amount = part; };
+    settled(seed);
+  }
+
+  (* Defers in a loop: its calls wait in a list whether it is copied or compiled once. *)
+  function spread(const to : address; const n : uint) is {
+    for i : uint in 0 .. n % 4 do {
+      defer Evm.call(to, Abi.encode(i, n)) then {
+        | Ok(answer : bytes) -> { storage.book.sum += answer.length + i; }
+        | Error(reason : bytes) -> { storage.book.failed += reason.length + 1; }
+      };
+    }
+    List.push(storage.book.marks, n % 1000);
+  }
+
+  (* Calls both: its list holds theirs. *)
+  function both(const to : address; const seed : uint) raises Big is {
+    post(to, seed);
+    if seed % 5 <> 0 then {
+      spread(to, seed);
+    }
+    post(address(0xcd), seed + 1);
+    storage.book.last += 1;
+  }
+
+  (* Takes and gives back a list, so its calls and its callers share the arena. *)
+  function tally(const to : address; const xs : list(uint)) : list(uint) raises Big is {
+    var out : list(uint) := [];
+    for x : uint in xs do {
+      if x % 2 = 0 then {
+        post(to, x);
+      }
+      List.push(out, x % 100 + storage.book.count);
+    }
+    defer Evm.call(to, Abi.encode(out.length, xs.length));
+  } with out
+
+  external view function sums() : (uint, uint, uint, uint) is
+    (storage.book.sum, storage.book.last, storage.book.failed, storage.book.count)
+}
+
+storage is record {
+  settles : uint;
+  echo    : uint;
+  quoted  : uint;
+}
+
+(* Queries, and stores nothing. *)
+view function quote(const at : address; const amount : uint) : uint is {
+  const o : Oracle := Oracle(at);
+  const p : uint := query o.price(amount);
+  const q : uint := query o.price(amount + storage.settles);
+  const base : uint := (p % 1000) * 3 + q % 7;
+  const more : uint := if amount % 2 = 0 then base + storage.echo % 11 else base * 2;
+} with more + storage.quoted
+
+external function postOne(const to : address; const seed : uint) raises Big is Book.post(to, seed)
+
+external function postTwice(const to : address; const seed : uint) raises Big is {
+  Book.post(to, seed);
+  storage.quoted += 1;
+  Book.post(to, seed / 2);
+}
+
+(* The calls its own body defers run before and after those the function listed. *)
+external function postBetween(const to : address; const seed : uint) raises Big is {
+  defer Evm.call(address(0xcd), Abi.encode(seed, 1)) then (answer : bytes) {
+    storage.echo := storage.echo * 3 + answer.length;
+  };
+  Book.post(to, seed);
+  defer Evm.call(address(0xcd), Abi.encode(seed, 2)) then (answer : bytes) {
+    storage.echo := storage.echo * 5 + answer.length + 1;
+  };
+}
+
+(* A list that may hold nothing. *)
+external function postIf(const to : address; const seed : uint) raises Big is {
+  if seed % 2 = 1 then {
+    Book.post(to, seed);
+  }
+  storage.quoted += seed % 3;
+}
+
+external function postMany(const to : address; const n : uint) raises Big is {
+  for i : uint in 0 .. n % 4 do {
+    Book.post(to, n + i);
+    defer Evm.call(address(0xcd), Abi.encode(i)) then (answer : bytes) {
+      storage.echo += answer.length + i;
+    };
+  }
+}
+
+external function spreadOne(const to : address; const n : uint) is Book.spread(to, n)
+
+external function spreadTwo(const to : address; const n : uint) is {
+  Book.spread(to, n);
+  Book.spread(address(0xcd), n + 1);
+}
+
+external function bothOnce(const to : address; const seed : uint) raises Big is Book.both(to, seed)
+
+external function bothMany(const to : address; const n : uint) raises Big is {
+  for i : uint in 0 .. n % 3 do {
+    Book.both(to, n * 7 + i);
+  }
+  Book.spread(to, n);
+}
+
+external function tallyOne(const to : address; const xs : list(uint)) : uint raises Big is {
+  const out : list(uint) := Book.tally(to, xs);
+} with out.length
+
+external function tallyTwo(const to : address; const xs : list(uint)) : uint raises Big is {
+  const first : list(uint) := Book.tally(to, xs);
+  const second : list(uint) := Book.tally(address(0xcd), first);
+  var sum : uint := 0;
+  for x : uint in second do {
+    sum += x;
+  }
+} with sum % 1000000
+
+external function quoteOne(const amount : uint) : uint is {
+  const got : uint := quote(address(2), amount);
+  storage.quoted := got % 1000;
+} with got
+
+external function quoteTwo(const amount : uint) : uint is {
+  const a : uint := quote(address(2), amount);
+  const b : uint := quote(address(2), amount + 1);
+  storage.quoted := (a + b) % 1000;
+} with a ^ b
+
+external view function quoteMany(const n : uint) : uint is {
+  var sum : uint := 0;
+  for i : uint in 0 .. n % 4 do {
+    sum += quote(address(2), i) % 1000;
+  }
+} with sum
+
+external function quoteThenPost(const to : address; const amount : uint) : uint raises Big is {
+  const got : uint := quote(address(2), amount);
+  Book.post(to, got % 97);
+} with got % 97
+
+external view function seen() : (uint, uint, uint) is (storage.settles, storage.echo, storage.quoted)

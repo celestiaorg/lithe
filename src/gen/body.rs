@@ -178,10 +178,23 @@ impl<'a> Gen<'a> {
         stmts: &[Stmt],
         tail: Option<&Expr>,
     ) -> (bool, Vec<((u32, u32), Expr)>) {
+        self.body_mode_as(stmts, tail, None)
+    }
+
+    /// As `body_mode`. With `tests`, the queries a `defer` is given are taken too; a
+    /// constant bound before the body's first store is as good as a parameter to them;
+    /// and so are the queries of a condition's first arm, when what the condition tests
+    /// is known that early: `tests` takes the condition of each.
+    pub(super) fn body_mode_as(
+        &mut self,
+        stmts: &[Stmt],
+        tail: Option<&Expr>,
+        tests: Option<&mut HashMap<(u32, u32), Expr>>,
+    ) -> (bool, Vec<((u32, u32), Expr)>) {
         if self.direct_ok(stmts, tail) {
             return (true, Vec::new());
         }
-        let picks = self.hoistable(stmts);
+        let picks = self.hoistable(stmts, tests);
         if picks.is_empty() {
             return (false, Vec::new());
         }
@@ -204,7 +217,12 @@ impl<'a> Gen<'a> {
     }
 
     /// A query issued early would miss a transient write made before it, so none follows one.
-    fn hoistable(&self, stmts: &[Stmt]) -> Vec<((u32, u32), Expr)> {
+    fn hoistable(
+        &self,
+        stmts: &[Stmt],
+        mut tests: Option<&mut HashMap<(u32, u32), Expr>>,
+    ) -> Vec<((u32, u32), Expr)> {
+        let wide = tests.is_some();
         let mut picks = Vec::new();
         let mut defined = Vec::new();
         // Constants bound to a settled value, which a query issued early reads in their place.
@@ -238,11 +256,38 @@ impl<'a> Gen<'a> {
                 break;
             }
             let mut found = Vec::new();
-            if let Stmt::Const { expr, .. } | Stmt::Var { expr, .. } | Stmt::Call { expr, .. } = st
+            stmt_eager(st, wide, &mut found);
+            let plain = found.len();
+            let mut test = None;
+            if let (
+                true,
+                Stmt::If {
+                    cond, then_body, ..
+                },
+            ) = (wide, st)
             {
-                eager_queries(expr, &mut false, &mut found);
+                let known = |e: &Expr| self.settled(e, &defined, &written.borrow(), &known);
+                let fixed = match cond {
+                    Expr::Binary {
+                        op: BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge,
+                        left,
+                        right,
+                        ..
+                    } => known(left) && known(right),
+                    cond => known(cond),
+                };
+                // Only up to the arm's first store: what a query is given must not have
+                // been written by then.
+                let writes = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Assign { root: Some(sym), .. }) if self.checked.syms[*sym].storage);
+                for inner in then_body.iter().filter(|_| fixed) {
+                    stmt_eager(inner, true, &mut found);
+                    if self.stmt_any(inner, &writes, &mut Vec::new()) {
+                        break;
+                    }
+                }
+                test = Some(cond);
             }
-            for (line, col, call, qty) in found {
+            for (i, (line, col, call, qty)) in found.into_iter().enumerate() {
                 // An answer or argument in a blob isn't kept for later, nor is an optional
                 // answer, which depends on the return data's size.
                 let dynamic = |ty: usize| self.is_dynamic(ty) || self.list_value(ty);
@@ -268,6 +313,9 @@ impl<'a> Gen<'a> {
                         .all(|e| self.settled(e, &defined, &written, &known))
                     {
                         picks.push(((line, col), substitute(call, &known)));
+                        if let (Some(tests), Some(test), true) = (&mut tests, test, i >= plain) {
+                            tests.insert((line, col), substitute(test, &known));
+                        }
                     }
                 }
             }
@@ -281,7 +329,10 @@ impl<'a> Gen<'a> {
                     known.insert(*sym, substitute(expr, &known));
                 }
             }
-            if let Stmt::Const { sym: Some(sym), .. } | Stmt::Var { sym: Some(sym), .. } = st {
+            let early = wide && matches!(st, Stmt::Const { .. }) && written.borrow().is_empty();
+            if let (Stmt::Const { sym: Some(sym), .. } | Stmt::Var { sym: Some(sym), .. }, false) =
+                (st, early)
+            {
                 defined.push(*sym);
             }
             self.stmt_any(st, &record, &mut Vec::new());
@@ -366,76 +417,6 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// A body's own statements. Queries it runs early are issued just before the first
-    /// statement that can write storage; one reached before that runs where it is.
-    pub(super) fn compile_top(
-        &mut self,
-        stmts: &[Stmt],
-        pending: &mut Vec<((u32, u32), Expr)>,
-    ) -> Result<(), Error> {
-        let checked = self.checked;
-        let writes = |node: Node<'_>| matches!(node, Node::Stmt(Stmt::Assign { root: Some(sym), .. }) if checked.syms[*sym].storage && !checked.is_transient(*sym));
-        let tail = std::mem::replace(&mut self.tail, false);
-        for (i, st) in stmts.iter().enumerate() {
-            if !pending.is_empty() {
-                if self.stmt_any(st, &writes, &mut Vec::new()) {
-                    let picks = std::mem::take(pending);
-                    self.issue_queries(&picks)?;
-                } else {
-                    let mut here = Vec::new();
-                    if let Stmt::Const { expr, .. }
-                    | Stmt::Var { expr, .. }
-                    | Stmt::Call { expr, .. } = st
-                    {
-                        eager_queries(expr, &mut false, &mut here);
-                    }
-                    pending.retain(|(at, _)| !here.iter().any(|q| (q.0, q.1) == *at));
-                }
-            }
-            if tail && self.share_tail(&stmts[i..]) {
-                break;
-            }
-            self.tail = tail && i + 1 == stmts.len();
-            self.compile_stmt(st)?;
-        }
-        self.tail = false;
-        Ok(())
-    }
-
-    /// Issues queries ahead of the body's writes. A failed call or a short answer still
-    /// reverts where the query was written.
-    fn issue_queries(&mut self, picks: &[((u32, u32), Expr)]) -> Result<(), Error> {
-        for (at, call) in picks {
-            let Expr::Call {
-                base: Some(base),
-                args,
-                iface: Some(iface),
-                method: Some(method),
-                ..
-            } = call
-            else {
-                continue;
-            };
-            let sel = selector(&self.checked.ifaces[iface][*method].sig);
-            self.return_sites += 1;
-            let buf = self.region(Region::Returned(self.return_sites), 64);
-            self.query_call(base, sel, args, buf + 32)?;
-            self.push_u64(32);
-            self.op(RETURNDATASIZE);
-            self.op(LT);
-            self.op(ISZERO);
-            self.op(AND);
-            self.mstore_off(buf);
-            self.hoisted.insert(*at, buf);
-        }
-        Ok(())
-    }
-
-    pub(super) fn func_direct_ok(&self, func: usize) -> bool {
-        let f = &self.checked.prog.funcs[func];
-        self.direct_ok(&f.stmts, f.tail.as_ref())
-    }
-
     /// Each stored fixed list of scalars must sit at `base + i / per`, `(i % per) * width`
     /// bytes in, so a dynamic index can find its element.
     pub(super) fn stored_lists_in_order(&self) -> bool {
@@ -494,270 +475,6 @@ impl<'a> Gen<'a> {
         };
         (self.checked.leaf_keys[first as usize], pack, per)
     }
-
-    /// Starts a body. Its storage loads are placed here once `finish_body` knows what it reads.
-    pub(super) fn begin_body(&mut self, direct: bool) {
-        self.direct = direct;
-        self.reading = false;
-        self.bodies += 1;
-        let id = self.bodies;
-        let mut body = Body {
-            id,
-            prologue: self.code.len(),
-            ..Body::default()
-        };
-        body.arena = self.region(Region::Arena(id), 0);
-        self.body = Some(body);
-        self.branch = 0;
-        self.slot_cache.clear();
-        self.val_cache.clear();
-        self.facts.clear();
-    }
-
-    pub(super) fn body_mut(&mut self) -> Option<&mut Body> {
-        self.body.as_mut()
-    }
-
-    /// Drops what the body turned out not to need, then loads the leaves it reads.
-    pub(super) fn finish_body(&mut self) {
-        self.val_cache.clear();
-        let Some(body) = self.body.take() else {
-            return;
-        };
-        let mut edits: Vec<(usize, usize, Vec<Inst>)> = Vec::new();
-        for &(leaf, at) in &body.flags {
-            if body.always.contains(&leaf) {
-                edits.push((at, 3, Vec::new()));
-            }
-        }
-        if body.ops.len() <= MAX_OPS {
-            for &(at, len) in &body.op_checks {
-                edits.push((at, len, Vec::new()));
-            }
-        }
-        if body.queued && body.ops.is_empty() {
-            edits.push((body.queue_init.0, body.queue_init.1, Vec::new()));
-        }
-        if !body.journal_stores {
-            for &at in &body.journal_loads {
-                edits.push((at, 4, vec![Inst::Op(SLOAD)]));
-            }
-        }
-        // A leaf this body never writes cannot change while it runs: queries are static
-        // calls, and its own writes wait for the end. It reads storage in place, unless it
-        // is read in more than one place: one load then serves the rest from memory.
-        let direct: std::collections::BTreeSet<u32> = body
-            .reads
-            .iter()
-            .copied()
-            .filter(|leaf| {
-                !body.writes.contains(leaf)
-                    && !body.pinned.contains(leaf)
-                    && body.read_sites.iter().filter(|(l, _)| l == leaf).count() < 2
-            })
-            .collect();
-        for &(leaf, at) in &body.read_sites {
-            if direct.contains(&leaf) {
-                let read = self.side_code(|g| g.sload_leaf(leaf));
-                edits.push((at, 2, read));
-            }
-        }
-        edits.sort_by_key(|e| std::cmp::Reverse(e.0));
-        for (at, len, with) in edits {
-            self.code.splice(at..at + len, with);
-        }
-        // Each leaf loads just before its first use, still inside the body, so a check that
-        // reverts first skips the loads after it.
-        let mut placed: Vec<(usize, u32)> = body
-            .reads
-            .difference(&direct)
-            .map(|&leaf| (self.first_use(body.prologue, leaf), leaf))
-            .collect();
-        placed.sort_by(|a, b| b.cmp(a));
-        self.body = Some(Body {
-            id: body.id,
-            ..Body::default()
-        });
-        for (at, leaf) in placed {
-            let load = self.side_code(|g| {
-                g.sload_leaf(leaf);
-                g.push_mem(g.image + leaf as i32 * 32);
-                g.op(MSTORE);
-            });
-            self.code.splice(at..at, load);
-        }
-        // A continuation's memory still holds the earlier phase's journal and dirty flags.
-        // Clear what this phase relies on, so it starts from storage alone.
-        if body.nested && !self.direct {
-            let clear = self.side_code(|g| {
-                if body.journal_stores || !body.journal_loads.is_empty() {
-                    g.op(PUSH0);
-                    g.mstore_off(g.journal_len);
-                }
-                for leaf in body.writes.difference(&body.always) {
-                    g.op(PUSH0);
-                    g.push_mem(g.dirty + *leaf as i32 * 32);
-                    g.op(MSTORE);
-                }
-            });
-            let at = body.prologue;
-            self.code.splice(at..at, clear);
-        }
-        self.body = None;
-    }
-
-    /// For `PUSH bad JUMPI PUSH ok JUMP bad: ... ok:` at `i`, an assertion that jumps over
-    /// its failure block, where past `ok` the scan may go on: the block reads nothing from
-    /// the image, calls only helpers, jumps only within itself or to the shared failure
-    /// blocks, and ends by reverting, and nothing else jumps to `ok`.
-    fn past_failure(
-        &self,
-        i: usize,
-        bad: u32,
-        fail: &dyn Fn(u32) -> bool,
-        sub: &dyn Fn(u32) -> bool,
-    ) -> Option<usize> {
-        let code = &self.code;
-        let (Some(Inst::PushLabel(ok)), Some(Inst::Op(JUMP)), Some(Inst::Label(at))) =
-            (code.get(i + 2), code.get(i + 3), code.get(i + 4))
-        else {
-            return None;
-        };
-        if *at != bad {
-            return None;
-        }
-        let end = i
-            + 5
-            + code[i + 5..]
-                .iter()
-                .position(|inst| *inst == Inst::Label(*ok))?;
-        let block = &code[i + 5..end];
-        let inner: Vec<u32> = block
-            .iter()
-            .filter_map(|inst| match inst {
-                Inst::Label(l) => Some(*l),
-                _ => None,
-            })
-            .collect();
-        let leaves = self.checked.leaves as i32;
-        for (k, inst) in block.iter().enumerate() {
-            match inst {
-                Inst::Mem(addr) => {
-                    let addr = *addr as i32;
-                    if addr >= self.image && addr < self.image + leaves * 32 {
-                        return None;
-                    }
-                }
-                Inst::PushLabel(l) => {
-                    let jumps = matches!(block.get(k + 1), Some(Inst::Op(JUMP | JUMPI)));
-                    let returns = matches!(block.get(k + 1), Some(Inst::PushLabel(h)) if sub(*h));
-                    if jumps && !inner.contains(l) && !fail(*l) && !sub(*l) {
-                        return None;
-                    }
-                    if !jumps && !returns && !inner.contains(l) && !sub(*l) {
-                        return None;
-                    }
-                }
-                _ => {}
-            }
-        }
-        let exits = match block.last() {
-            Some(Inst::Op(REVERT)) => true,
-            Some(Inst::Op(JUMP)) => {
-                matches!(block.len().checked_sub(2).map(|k| block[k]), Some(Inst::PushLabel(l)) if fail(l))
-            }
-            _ => false,
-        };
-        let once = code
-            .iter()
-            .filter(|inst| **inst == Inst::PushLabel(*ok))
-            .count()
-            == 1;
-        (exits && once).then_some(end + 1)
-    }
-
-    /// Instructions `emit` produces, without adding them to the code. The caller splices
-    /// them where it chooses, which need not follow what was emitted last, so they neither
-    /// use nor keep words read from storage: a slot word kept by one leaf's load would
-    /// serve another leaf of the slot whose load lands earlier in the code.
-    fn side_code(&mut self, emit: impl FnOnce(&mut Self)) -> Vec<Inst> {
-        let saved = std::mem::take(&mut self.code);
-        let vals = std::mem::take(&mut self.val_cache);
-        emit(self);
-        self.val_cache = vals;
-        std::mem::replace(&mut self.code, saved)
-    }
-
-    /// The latest point from `from` where `leaf` can still be loaded before anything uses
-    /// it, on every path. The scan runs through straight-line code: calls that do not touch
-    /// the leaf, conditional jumps to the shared failure blocks, which read no storage, and
-    /// an assertion's own failure block when it reads no leaf. It stops at the leaf's first
-    /// access, a dynamic index into the image, a call that touches the leaf, any other jump
-    /// or label, or an exit.
-    fn first_use(&self, from: usize, leaf: u32) -> usize {
-        let leaves = self.checked.leaves as i32;
-        let mine = self.image + leaf as i32 * 32;
-        let fail = |l: u32| {
-            self.fails.iter().any(|(_, have)| *have == l)
-                || self.raises.iter().any(|(_, have, _)| *have == l)
-        };
-        let sub = |l: u32| self.subs.iter().any(|(_, have, _)| *have == l);
-        let code = &self.code;
-        let mut i = from;
-        while i < code.len() {
-            // A call: `PUSH ret PUSH helper JUMP ret:`.
-            if let (
-                Inst::PushLabel(r),
-                Some(Inst::PushLabel(h)),
-                Some(Inst::Op(JUMP)),
-                Some(Inst::Label(r2)),
-            ) = (code[i], code.get(i + 1), code.get(i + 2), code.get(i + 3))
-            {
-                if r == *r2 && (sub(*h) || self.funcs.values().any(|f| f.label == *h)) {
-                    let touches = self.funcs.values().any(|f| {
-                        f.label == *h && (f.reads.contains(&leaf) || f.writes.contains(&leaf))
-                    });
-                    if touches {
-                        return i;
-                    }
-                    i += 4;
-                    continue;
-                }
-            }
-            match code[i] {
-                Inst::Label(_) => return i,
-                Inst::Mem(addr) => {
-                    let addr = addr as i32;
-                    let exact = matches!(code.get(i + 1), Some(Inst::Op(MLOAD | MSTORE)));
-                    if addr >= self.image
-                        && addr < self.image + leaves * 32
-                        && (addr == mine || !exact)
-                    {
-                        return i;
-                    }
-                }
-                Inst::PushLabel(l) => match code.get(i + 1) {
-                    Some(Inst::Op(JUMPI)) if fail(l) => {
-                        i += 2;
-                        continue;
-                    }
-                    Some(Inst::Op(JUMPI)) => match self.past_failure(i, l, &fail, &sub) {
-                        Some(next) => {
-                            i = next;
-                            continue;
-                        }
-                        None => return i,
-                    },
-                    Some(Inst::Op(JUMP)) => return i,
-                    _ => {}
-                },
-                Inst::Op(STOP | RETURN | REVERT | JUMP) => return i,
-                _ => {}
-            }
-            i += 1;
-        }
-        from
-    }
 }
 
 /// `e` with each constant in `known` replaced by the value it was bound to.
@@ -776,12 +493,47 @@ fn substitute(e: &Expr, known: &HashMap<usize, Expr>) -> Expr {
             *arg = substitute(arg, known);
         }
     }
+    if let Expr::Binary { left, right, .. } = &mut out {
+        **left = substitute(left, known);
+        **right = substitute(right, known);
+    }
     out
+}
+
+/// The queries a statement always evaluates before it runs anything else. `wide` looks in
+/// what a `defer` is given too.
+pub(super) fn stmt_eager<'e>(st: &'e Stmt, wide: bool, out: &mut Vec<(u32, u32, &'e Expr, usize)>) {
+    let mut called = false;
+    match st {
+        Stmt::Const { expr, .. } | Stmt::Var { expr, .. } | Stmt::Call { expr, .. } => {
+            eager_queries(expr, &mut called, out)
+        }
+        Stmt::Defer {
+            expr: Expr::Call { base, args, .. },
+            value,
+            ..
+        } if wide => {
+            let base = base.iter().map(|b| b.as_ref());
+            // A module's name is no value.
+            for e in base
+                .filter(|b| !matches!(b, Expr::Ident { .. }))
+                .chain(args)
+                .chain(value)
+            {
+                eager_queries(e, &mut called, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The queries an expression always runs, before any function it calls has run: its
 /// answer, and the arguments of calls and operators that evaluate every operand.
-fn eager_queries<'e>(e: &'e Expr, called: &mut bool, out: &mut Vec<(u32, u32, &'e Expr, usize)>) {
+pub(super) fn eager_queries<'e>(
+    e: &'e Expr,
+    called: &mut bool,
+    out: &mut Vec<(u32, u32, &'e Expr, usize)>,
+) {
     match e {
         // A gas limit is evaluated where the query is, so a query with one stays there.
         Expr::Query {
@@ -828,5 +580,89 @@ fn eager_queries<'e>(e: &'e Expr, called: &mut bool, out: &mut Vec<(u32, u32, &'
         }
         // Anything else may run code first, or only sometimes.
         _ => *called = true,
+    }
+}
+
+impl<'a> Gen<'a> {
+    /// Whether a write through `e` copies the list there first.
+    fn copied_list(&self, e: &Expr) -> bool {
+        self.list_value(e.ty()) && (matches!(e, Expr::Index { .. }) || self.nested_mem(e))
+    }
+
+    /// The local a place starts from, and its fields and indexes after that.
+    fn place_path(&self, e: &Expr) -> Option<(usize, String)> {
+        match e {
+            Expr::Ident {
+                sym: Some(sym),
+                builtin: None,
+                ..
+            } => Some((*sym, String::new())),
+            Expr::Field { base, name, .. } => self
+                .place_path(base)
+                .map(|(sym, path)| (sym, path + "." + name)),
+            Expr::Index { base, .. } => self.place_path(base).map(|(sym, path)| (sym, path + "[]")),
+            _ => None,
+        }
+    }
+
+    /// The locals whose lists some nested write copies, and the paths to those lists.
+    pub(super) fn find_owners(&self) -> HashMap<usize, Vec<String>> {
+        let found = std::cell::RefCell::new(HashMap::<usize, Vec<String>>::new());
+        let note = |node: Node<'_>| {
+            if let Node::Stmt(Stmt::Assign {
+                target: Some(target),
+                root: Some(root),
+                expr,
+                ..
+            }) = node
+            {
+                let mut lists = Vec::new();
+                self.path_lists(target, &mut lists);
+                if matches!(
+                    expr,
+                    Expr::Call {
+                        builtin: Some(Builtin::ListPop),
+                        ..
+                    }
+                ) && self.copied_list(target)
+                {
+                    lists.push(target.as_ref());
+                }
+                for list in lists
+                    .into_iter()
+                    .filter(|_| !self.checked.syms[*root].storage)
+                {
+                    if let Some((sym, path)) = self.place_path(list) {
+                        let paths = found.borrow_mut();
+                        let mut paths =
+                            std::cell::RefMut::map(paths, |f| f.entry(sym).or_default());
+                        if !paths.contains(&path) {
+                            paths.push(path);
+                        }
+                    }
+                }
+            }
+            false
+        };
+        let mut seen = Vec::new();
+        for f in &self.checked.prog.funcs {
+            for st in &f.stmts {
+                self.stmt_any(st, &note, &mut seen);
+            }
+            if let Some(tail) = &f.tail {
+                self.expr_any(tail, &note, &mut seen);
+            }
+        }
+        found.into_inner()
+    }
+
+    /// The lists `own_path` copies on the way to `e`.
+    fn path_lists<'e>(&self, e: &'e Expr, out: &mut Vec<&'e Expr>) {
+        if let Expr::Index { base, .. } | Expr::Field { base, .. } = e {
+            self.path_lists(base, out);
+            if self.copied_list(base) {
+                out.push(base);
+            }
+        }
     }
 }

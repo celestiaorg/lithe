@@ -1,0 +1,59 @@
+(* Fuzz target: rows of ten small numbers kept one row to a slot. Rows come as a calldata
+   list of fixed lists of words, are checked and narrowed into a row built in place, and
+   pushed; a row is read back as a list of words, and one is taken off, the last in its
+   place. A row a pass changes after another variable took it leaves that one as it was. *)
+
+import "std/list";
+
+type Row is list(uint16, 10);
+
+error TooBig;
+error NoRow;
+
+storage is record {
+  rows  : list(Row);
+  taken : uint;
+}
+
+pure function wide(const row : Row) : list(uint) is {
+  var out : list(uint) := [];
+  for n : uint16 in row do {
+    List.push(out, uint(n));
+  }
+} with out
+
+external function add(const rows : list(list(uint, 10))) raises TooBig is {
+  for words : list(uint, 10) in rows do {
+    var row : Row := [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for (i, n) : (uint, uint) in words do {
+      assert(n % 16 <> 0, TooBig);
+      row[i] := uint16(n % 2 ** 16);
+    }
+    List.push(storage.rows, row);
+  }
+}
+
+external function take(const seed : uint) : list(uint) raises NoRow is {
+  const n : uint := storage.rows.length;
+  assert(n > 0, NoRow);
+  const at : uint := seed % n;
+  const row : Row := storage.rows[at];
+  storage.rows[at] := storage.rows[n - 1];
+  List.pop(storage.rows);
+  storage.taken += 1;
+} with wide(row)
+
+external pure function shifted(const words : list(uint, 10); const by : uint) : (list(uint, 10), list(uint, 10)) is {
+  var row : list(uint, 10) := words;
+  var first : list(uint, 10) := words;
+  for i : uint in 0 .. 10 do {
+    if i = by % 10 then {
+      first := row;
+    }
+    row[i] := words[(i + by) % 10] % 1000;
+  }
+} with (row, first)
+
+external view function row(const index : uint) : list(uint) is wide(storage.rows[index])
+
+external view function count() : uint is storage.rows.length

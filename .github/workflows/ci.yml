@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
@@ -78,7 +78,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.95.0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -94,7 +94,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.95.0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -115,13 +115,49 @@ jobs:
           done
           exit $status
 
+  # A compile that got twice as slow fails. `--timings` reports the time, so starting the
+  # process is not in it, and the best of seven runs stands for the compiler, not the runner.
+  perf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release --locked
+      - name: erc20_full compiles within 2x its baseline
+        # simplify: the baseline is this job's own best of seven on a hosted runner, a wall
+        # time, so a change of runner hardware moves it. If the job starts failing with no
+        # compiler change, set it again from the job's log, or compare against a reference
+        # binary built in the same job.
+        run: |
+          baseline_ms=27
+          limit_ms=$((baseline_ms * 2))
+          best=999999
+          for i in 1 2 3 4 5 6 7; do
+            line=$(LITHE_CACHE_DIR='' target/release/lithe compile bench/erc20_full.lithe --timings 2>&1 >/dev/null | grep '^\[time\] ') || { echo "run $i printed no [time] line"; exit 1; }
+            echo "run $i: $line"
+            ms=${line##* total=}
+            ms=${ms%ms}
+            best=$(printf '%s\n' "$best" "$ms" | sort -n | head -n 1)
+          done
+          echo "erc20_full: best ${best} ms, baseline ${baseline_ms} ms, limit ${limit_ms} ms"
+          if [ "$(printf '%s\n' "$best" "$limit_ms" | sort -n | head -n 1)" != "$best" ]; then
+            echo "::error file=bench/erc20_full.lithe::compile took ${best} ms, over 2x the ${baseline_ms} ms baseline"
+            exit 1
+          fi
+
   docs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.95.0
           targets: wasm32-unknown-unknown
@@ -149,7 +185,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.95.0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -170,7 +206,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: 1.95.0
           targets: wasm32-unknown-unknown
@@ -208,7 +244,7 @@ jobs:
   # tests the published release rather than the change.
   success:
     if: always()
-    needs: [lint, test, prove, docs, hardhat, playground]
+    needs: [lint, test, prove, perf, docs, hardhat, playground]
     runs-on: ubuntu-24.04
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
