@@ -1,0 +1,68 @@
+(* Fuzz target: text longer than a word. Strings are escaped for JSON and for HTML with
+   stretches that need no escape around the bytes that do, alone and quoted; and a table
+   of bytes joined once is read in a loop, two bytes at a time, through a function, with
+   a piece joined once used several times in each line. *)
+
+import "std/bytes";
+import "std/list";
+import "std/string";
+import "std/uint";
+
+pure function table() : bytes is
+  Bytes.concat(
+    0x00ab003e00af001f00b60000008f0071009d005500ad003900640098007a0082,
+    0xfff500b6001500b1003400aeffbd00a9ffdc00aefffb00b6ff8b008bffa7009a,
+    0xff4f002aff5d0046ff680064ff4bfff0ff4f000fff50002fff59ffb8ff53ffd7
+  )
+
+pure function entry(const data : bytes; const base : uint; const i : uint) : string is
+  Uint.toString(base + uint(bytes32(data[i * 2:i * 2 + 2])) >> 240)
+
+external pure function escaped(const s : string) : string is
+  String.escapeJson(
+    String.concat(
+      s,
+      "a stretch of plain text that fills more than one word of memory, then \"a quote\", a back\\slash,",
+      s,
+      " a tab\tand a line\nbreak, and plain text again to the end of the string and past it"
+    )
+  )
+
+external pure function marked(const s : string; const t : string) : string is
+  String.escapeHtml(
+    String.concat(
+      "plain text that runs for longer than a single word does <b>",
+      s,
+      "</b> & 'more' of the \"same\" with nothing to escape for a good while after it ",
+      t
+    )
+  )
+
+external pure function plain(const s : string) : (string, string) is
+  (String.escapeJson(s), String.escapeHtml(s))
+
+external pure function lines(const n : uint; const x : uint; const y : uint) : string is {
+  const data : bytes := table();
+  const center : string := String.concat(Uint.toString(x % 1000), ",", Uint.toString(y % 1000));
+  var out : list(string) := [];
+  for i : uint in 0 .. n % 12 do {
+    List.push(
+      out,
+      String.concat(
+        "<path d=\"M",
+        center,
+        "C",
+        center,
+        " ",
+        entry(data, x % 1000, i * 3),
+        ",",
+        entry(data, y % 1000, i * 3 + 1),
+        " ",
+        entry(data, x % 1000, i * 3 + 2),
+        " ",
+        center,
+        "Z\"></path>"
+      )
+    );
+  }
+} with String.join(out)

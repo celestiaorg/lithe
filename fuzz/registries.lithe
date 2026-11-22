@@ -1,0 +1,173 @@
+(* Fuzz target: lists of addresses kept by kind in a map. An address joins a kind's list
+   after the contract it names answers two queries, and leaves by giving its place to the
+   last; the lists of a kind are read one after the other into one list; and a function
+   several entrypoints call defers a call to each address of a kind, with what to do when
+   one fails. Kinds are numbers below three, so most calls name one; address 0xcd answers
+   a query with its argument. *)
+
+import "std/abi";
+import "std/evm";
+import "std/list";
+
+type Kind is uint8;
+
+interface Member is {
+  view function accepts(flag : bool) : bool;
+  view function mayLeave(flag : bool) : bool;
+  view function heir(who : address) : address;
+  function moved(a : address; b : address; n : uint);
+  function made(n : uint; who : address);
+}
+
+error Listed;
+error Refused;
+error NotListed;
+error Kept;
+
+storage is record {
+  members : map(Kind, list(address));
+  fixed   : map(Kind, list(address));
+  listed  : map(Kind, map(address, bool));
+  free    : map(Kind, map(address, bool));
+  count   : uint;
+}
+
+event Joined of record {
+  indexed kind : Kind;
+  indexed who  : address;
+}
+
+pure function kindOf(const n : uint) : Kind is Kind(uint8(n % 3))
+
+function add(const kind : Kind; const who : address; const flag : bool)
+  raises Listed | Refused
+is {
+  assert(not storage.listed[kind][who], Listed);
+  const member : Member := Member(address(0xcd));
+  assert(query member.accepts(true), Refused);
+  const free : bool := query member.mayLeave(flag);
+  List.push(storage.members[kind], who);
+  storage.listed[kind][who] := true;
+  storage.free[kind][who] := free;
+  emit Joined { kind = kind; who = who; };
+}
+
+function remove(const kind : Kind; const who : address)
+  raises NotListed | Kept
+is {
+  assert(storage.listed[kind][who], NotListed);
+  assert(storage.free[kind][who], Kept);
+  const n : uint := storage.members[kind].length;
+  var found : bool := false;
+  for i : uint in 0 .. n until found do {
+    if storage.members[kind][i] = who then {
+      storage.members[kind][i] := storage.members[kind][n - 1];
+      List.pop(storage.members[kind]);
+      found := true;
+    }
+  }
+  delete storage.listed[kind][who];
+  delete storage.free[kind][who];
+}
+
+function tell(const kind : Kind; const data : bytes) raises forwarded is {
+  for who : address in storage.members[kind] do {
+    defer Evm.call(who, data) then {
+      | Ok(_ : bytes) -> {
+          skip
+        }
+      | Error(reason : bytes) -> {
+          forward reason;
+        }
+    };
+  }
+}
+
+view function any(const kind : Kind) : bool is storage.members[kind].length > 0
+
+function tellMoved(const a : address; const b : address; const n : uint) raises forwarded is {
+  if any(kindOf(0)) then {
+    tell(kindOf(0), Abi.encodeCall(Member.moved, a, b, n));
+  }
+}
+
+function tellMade(const n : uint; const who : address) raises forwarded is {
+  if any(kindOf(1)) then {
+    tell(kindOf(1), Abi.encodeCall(Member.made, n, who));
+  }
+}
+
+external function fix(const n : uint; const who : address) is {
+  List.push(storage.fixed[kindOf(n)], who);
+  storage.listed[kindOf(n)][who] := true;
+}
+
+external function join(const n : uint; const who : address; const flag : bool)
+  raises Listed | Refused
+is
+  add(kindOf(n), who, flag)
+
+external function leave(const n : uint; const who : address)
+  raises NotListed | Kept
+is
+  remove(kindOf(n), who)
+
+external function leaveSelf(const n : uint)
+  raises NotListed | Kept
+is
+  remove(kindOf(n), Evm.sender())
+
+external view function all(const n : uint) : list(address) is {
+  var out : list(address) := storage.fixed[kindOf(n)];
+  for who : address in storage.members[kindOf(n)] do {
+    List.push(out, who);
+  }
+} with out
+
+external view function isListed(const n : uint; const who : address) : bool is
+  storage.listed[kindOf(n)][who]
+
+external function move(const a : address; const b : address; const n : uint) raises forwarded is {
+  storage.count += n % 1000;
+  tellMoved(a, b, n);
+}
+
+external function make(const n : uint) raises forwarded is {
+  storage.count += 1;
+  tellMade(storage.count, Evm.sender());
+  tellMoved(Evm.sender(), Evm.self(), n);
+}
+
+external function makeTwo(const n : uint; const who : address) raises forwarded is {
+  tellMade(n, who);
+  storage.count += 2;
+  tellMade(n + 1, who);
+}
+
+(* Stores, then a query only one arm of a condition runs, with a store after it there:
+   the query finds storage as the call found it on that arm, and the stores are made on
+   both. *)
+external function noteJoin(const n : uint; const who : address; const flag : bool) is {
+  storage.count += n % 7;
+  List.push(storage.fixed[kindOf(n)], who);
+  if flag then {
+    storage.free[kindOf(n)][who] := query Member(address(0xcd)).mayLeave(flag);
+    storage.count += 1;
+  }
+}
+
+(* Stores in a loop, then under a condition a call deferred to an address a query answers:
+   nothing the query is given changes and the condition is known before the loop, so the
+   query runs there, where the condition holds, and the stores are made where they are
+   written. *)
+external function noteAll(const n : uint; const who : address) raises Refused is {
+  assert(query Member(address(0xcd)).accepts(n % 5 <> 0), Refused);
+  const some : uint := n % 3;
+  for i : uint in 0 .. n % 4 do {
+    storage.count += i;
+    storage.free[kindOf(i)][who] := true;
+  }
+  if some > 0 then {
+    defer Member(query Member(address(0xcd)).heir(who)).made(some, who);
+  }
+}

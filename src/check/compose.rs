@@ -790,7 +790,7 @@ pub(super) fn supports_interface(
         checked.prog.contract_line.max(1),
         checked.prog.contract_col.max(1),
     );
-    let mut source = checked.source.clone();
+    let mut source = checked.source;
     let supports = std::mem::take(&mut source.supports);
     source
         .funcs

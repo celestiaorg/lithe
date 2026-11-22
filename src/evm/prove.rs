@@ -1013,8 +1013,12 @@ fn a_miscompiled_store_fails_at_the_bytecode_level() {
     let source = prove(&src, &specs);
     assert_eq!((source.failed, source.unknown), (0, 0), "{}", source.text);
     let mut code = vault_runtime();
-    // `total := total + value`: `PUSH0 SLOAD CALLVALUE ...`, with the value made zero.
-    let at = find_ops(&code, &[0x5f, 0x54, 0x34]).expect("the total's update") + 2;
+    // `total := total + value`: `PUSH0 SLOAD CALLVALUE ...`, or with the value pushed
+    // first, with the value made zero.
+    let at = find_ops(&code, &[0x5f, 0x54, 0x34])
+        .map(|at| at + 2)
+        .or_else(|| find_ops(&code, &[0x34, 0x5f, 0x54]))
+        .expect("the total's update");
     code[at] = 0x5f;
     let proof = prove_code(&src, &specs, Some(code));
     let ledger = outcome(&proof, "ledger", "deposit");
@@ -1343,8 +1347,16 @@ spec for bump is partial { ensures new.storage.a = new.storage.b; }
         "{src}external function weird() is {{ storage.a := storage.a + 5; bump(); storage.b := storage.b + 5; }}\n"
     );
     let shared = prove_code(&weird, spec, None);
+    // Whether the build inlines the copies or compiles the function once, no claim of the
+    // spec is proved.
+    let section = shared
+        .text
+        .split("spec for bump\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n").next())
+        .unwrap_or_default();
     assert!(
-        !outcome(&shared, "spec for bump", "every claim").starts_with("proved"),
+        !section.is_empty() && !section.lines().any(|row| row.starts_with("  proved")),
         "{}",
         shared.text
     );
@@ -1431,10 +1443,16 @@ external function walk(const n : uint) is {
         });
         cell.into_inner()
     };
-    // `PUSH0 SLOAD PUSH1 1 DUP2 ADD`: the word at slot 0, and 1 added.
-    let at = find_ops(&runtime, &[0x5f, 0x54, 0x60, 0x01, 0x81, 0x01]).expect("the increment");
+    // `PUSH0 SLOAD PUSH1 1 DUP2 ADD`, or with the 1 pushed first: the word at slot 0, and 1
+    // added.
+    let (one, add) = find_ops(&runtime, &[0x5f, 0x54, 0x60, 0x01, 0x81, 0x01])
+        .map(|at| (at + 3, at + 5))
+        .or_else(|| {
+            find_ops(&runtime, &[0x60, 0x01, 0x5f, 0x54, 0x81, 0x01]).map(|at| (at + 1, at + 5))
+        })
+        .expect("the increment");
     let mut mutants = 0;
-    for (k, to) in [(at + 3, 0x02), (at + 5, 0x03)] {
+    for (k, to) in [(one, 0x02), (add, 0x03)] {
         // The creation code returns the same change.
         let patch = |b: &mut crate::prove::Built| {
             let embedded = b
@@ -1493,6 +1511,186 @@ external function walk(const n : uint) is {
         "{}",
         proof.text
     );
+}
+
+/// A loop without invariants whose body alone can raise from its fourth pass on, so what a
+/// spec says of the raise rests on the loop's summary and not on its first passes.
+const SCAN: &str = r#"
+error Bad;
+
+external pure function scan(const xs : list(uint); const limit : uint) : uint raises Bad is {
+  var last : uint := 0;
+  for (i, x) : (uint, uint) in xs do {
+    assert(i < limit or i < 3, Bad);
+    last := x;
+  }
+} with last
+"#;
+const SCAN_TRUE: &str = "spec for scan is { raises Bad when xs.length > limit and xs.length > 3; }";
+/// False: a list one longer than `limit` raises too.
+const SCAN_FALSE: &str =
+    "spec for scan is { raises Bad when xs.length > limit + 1 and xs.length > 3; }";
+
+/// `SCAN` built by the MIR pipeline, whose loops test at the bottom and fall through to a
+/// jump to the exit, and proved against `spec` with its certificates changed first.
+fn prove_scan(spec: &str, change: impl FnOnce(&mut crate::prove::Built)) -> crate::Proof {
+    prove_changed(SCAN, spec, change)
+}
+
+/// Whether the half of the spec that rests on the loop's body came out proved: that `Bad`
+/// is raised in no other case, which is false of `SCAN_FALSE`.
+fn only_when_proved(proof: &crate::Proof) -> bool {
+    let row = proof
+        .text
+        .lines()
+        .find(|l| l.contains("raises Bad only when"))
+        .unwrap_or_else(|| panic!("no such claim:\n{}", proof.text));
+    row.trim_start().starts_with("proved")
+}
+
+/// The exit a certificate names is where a loop's turns are counted from, at the test that
+/// leaves for it directly or by a jump right after. A certificate that names another place
+/// only changes when the summary starts: the claim the body breaks is never proved.
+#[test]
+fn a_wrong_exit_of_a_bottom_tested_loop_never_proves() {
+    let cell = std::cell::RefCell::new((Vec::new(), Vec::new()));
+    let proof = prove_scan(SCAN_TRUE, |b| {
+        *cell.borrow_mut() = (b.runtime.clone(), b.loops.clone())
+    });
+    assert!(only_when_proved(&proof), "{}", proof.text);
+    let (runtime, loops) = cell.into_inner();
+    let [cert] = &loops[..] else {
+        panic!("one loop, certified: {loops:?}")
+    };
+    // `JUMPI`, then `PUSH1 d JUMP` or `PUSH2 d JUMP`: each place such a test goes on to.
+    let hops: Vec<usize> = (0..runtime.len().saturating_sub(4))
+        .filter(|&at| runtime[at] == 0x57)
+        .filter_map(|at| match runtime[at + 1..] {
+            [0x60, d, 0x56, ..] => Some(usize::from(d)),
+            [0x61, hi, lo, 0x56, ..] => Some(usize::from(hi) << 8 | usize::from(lo)),
+            _ => None,
+        })
+        .collect();
+    let exit = cert.exit.expect("the loop's exit");
+    assert!(
+        hops.contains(&exit),
+        "the test jumps on to the exit: {hops:?}"
+    );
+    assert!(!only_when_proved(&prove_scan(SCAN_FALSE, |_| {})));
+    let mut wrong: Vec<Option<usize>> = vec![None, Some(cert.head), Some(exit + 1)];
+    wrong.extend(hops.iter().filter(|&&d| d != exit).map(|&d| Some(d)));
+    for exit in wrong {
+        let proof = prove_scan(SCAN_FALSE, |b| b.loops[0].exit = exit);
+        assert!(!only_when_proved(&proof), "exit {exit:?}:\n{}", proof.text);
+    }
+}
+
+/// A loop whose changes reach one more local on every pass has a summary that cannot
+/// settle in the rounds a summary gets: the prover says so, and proves nothing that rests
+/// on the loop, the false claim least of all.
+#[test]
+fn a_summary_that_cannot_settle_proves_nothing() {
+    use std::fmt::Write;
+    let links = 20;
+    let mut src = String::from(
+        "storage is record { last : uint; }\nexternal function drift(const seed : uint; const n : uint) is {\n",
+    );
+    for k in 1..=links {
+        let _ = writeln!(src, "  var x{k} : uint := 0;");
+    }
+    src.push_str("  for _ : uint in 0 .. n do {\n");
+    for k in (2..=links).rev() {
+        let _ = writeln!(src, "    x{k} := x{};", k - 1);
+    }
+    let _ = write!(
+        src,
+        "    x1 := seed;\n  }}\n  storage.last := x{links};\n}}\n"
+    );
+    // False: twenty passes bring `seed` to the last local.
+    let spec = "spec for drift is partial {\n  ensures new.storage.last = 0;\n}\n";
+    let proof = prove_changed(&src, spec, |_| {});
+    let row = proof
+        .text
+        .lines()
+        .find(|l| l.contains("ensures new.storage.last = 0"))
+        .unwrap_or_else(|| panic!("no such claim:\n{}", proof.text));
+    assert!(row.trim_start().starts_with("unknown"), "{}", proof.text);
+    assert!(
+        proof
+            .text
+            .contains("its iterations change more each time the prover runs them"),
+        "{}",
+        proof.text
+    );
+    assert_eq!(proof.failed, 0, "{}", proof.text);
+}
+
+/// A summary keeps the words of memory no pass writes, and only those. A loop that pushes
+/// onto one list leaves another list's length as it found it, and a claim that reads the
+/// length proves; where a pass may also write that list, the length is not kept, and the
+/// same claim, now false, does not prove.
+#[test]
+fn a_word_a_pass_may_write_is_not_kept() {
+    let body = |also: &str| {
+        format!(
+            r#"import "std/list";
+storage is record {{ total : uint; }}
+external function build(const n : uint) is {{
+  var ys : list(uint) := [];
+  List.push(ys, n);
+  List.push(ys, n);
+  var xs : list(uint) := [];
+  for i : uint in 0 .. n bound 100 invariant xs.length = i do {{
+    List.push(xs, i);{also}
+  }}
+  storage.total := xs.length + ys.length;
+}}
+"#
+        )
+    };
+    let spec = "spec for build is partial {\n  ensures new.storage.total = n + 2;\n}\n";
+    let kept = prove_changed(&body(""), spec, |_| {});
+    assert_eq!((kept.failed, kept.unknown), (0, 0), "{}", kept.text);
+    let written = prove_changed(
+        &body("\n    if i = 5 then { ys[1] := i; List.pop(ys); }"),
+        spec,
+        |_| {},
+    );
+    let row = written
+        .text
+        .lines()
+        .find(|l| l.contains("ensures new.storage.total = n + 2"))
+        .unwrap_or_else(|| panic!("no such claim:\n{}", written.text));
+    assert!(!row.trim_start().starts_with("proved"), "{}", written.text);
+}
+
+/// The word a certificate names as the counter is the one a bound is looked for; the bound
+/// is then shown to hold of the code. A certificate that names another word, or none, loses
+/// the bound and with it what rested on it: the claim the body breaks is never proved.
+#[test]
+fn a_wrong_counter_of_a_bottom_tested_loop_never_proves() {
+    let cell = std::cell::Cell::new(None);
+    let proof = prove_scan(SCAN_TRUE, |b| cell.set(b.loops[0].counter));
+    assert!(only_when_proved(&proof), "{}", proof.text);
+    let right = cell.into_inner();
+    let under = right.expect("the counter is on the stack");
+    for counter in [
+        None,
+        Some(0),
+        Some(under + 1),
+        Some(under + 2),
+        Some(under + 40),
+    ] {
+        if counter == right {
+            continue;
+        }
+        let proof = prove_scan(SCAN_FALSE, |b| b.loops[0].counter = counter);
+        assert!(
+            !only_when_proved(&proof),
+            "counter {counter:?}:\n{}",
+            proof.text
+        );
+    }
 }
 
 fn example(name: &str) -> (String, String) {
@@ -1795,8 +1993,12 @@ external function add(const n : uint) raises TooBig is {
         "{src}external function addTwice(const n : uint; const to : address) raises TooBig is {{\n  bump(to, n);\n  bump(Evm.sender(), n + 1);\n}}\n"
     );
     let proof = prove_code(&twice, spec, None);
+    // Two copies whose code the build merged are not told apart; a build that compiles the
+    // function once instead proves its specs of that one body.
+    let merged = proof.text.contains("every claim")
+        && outcome(&proof, "spec for bump", "every claim").contains("merged");
     assert!(
-        outcome(&proof, "spec for bump", "every claim").contains("merged"),
+        merged || (proof.failed, proof.unknown) == (0, 0),
         "{}",
         proof.text
     );

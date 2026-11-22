@@ -1,0 +1,98 @@
+(* Fuzz target: calls with more to carry than usual. A deferred call of more words than
+   the scratch area holds, with a string among them, whose continuation reads a list
+   built before it; a call deferred from a continuation, whose own continuation reads
+   what the first call answered with; a loop whose counter is signed; and a function of
+   many parameters, strings and a list among them, called from two entrypoints. Address
+   0xcd answers a call with its arguments, 0xee refuses with them, 0xef refuses with
+   nothing. *)
+
+import "std/evm";
+import "std/list";
+
+interface Sink is {
+  function take(a : uint; b : uint; c : uint; d : uint; e : uint; f : uint; g : uint; h : uint; note : string);
+  function give(to : address; n : uint; data : bytes);
+}
+
+storage is record {
+  total : uint;
+  last  : bytes;
+  seen  : list(uint);
+}
+
+pure function counted(const xs : list(uint)) : list(uint) is {
+  var out : list(uint) := xs;
+  List.push(out, xs.length);
+} with out
+
+external function spread(const sink : Sink; const xs : list(uint); const note : string) is {
+  const kept : list(uint) := counted(xs);
+  defer sink.take(1, 2, 3, kept.length, 5, 6, 7, 8, note) then {
+    | Ok -> {
+        storage.seen := kept;
+      }
+    | Error(_) -> {
+        storage.total += kept.length;
+      }
+  };
+}
+
+external function retry(const sink : Sink; const to : address; const n : uint) raises forwarded is {
+  defer sink.give(to, n, "first") then {
+    | Ok -> {
+        storage.total += 1;
+      }
+    | Error(reason : bytes) -> {
+        defer sink.give(to, n % 1000 + 1, "second") then {
+          | Ok -> {
+              storage.last := reason;
+            }
+          | Error(_) -> {
+              forward reason;
+            }
+        };
+      }
+  };
+}
+
+external pure function span(const a : int; const b : int) : int is {
+  const lo : int := a % 50;
+  const hi : int := lo + b % 20;
+  var sum : int := 0;
+  for j : int in lo .. hi do {
+    sum += j * 3 - 1;
+  }
+} with sum
+
+pure function mix(
+  const a : uint;
+  const s : string;
+  const b : uint;
+  const t : string;
+  const c : uint;
+  const xs : list(uint);
+  const d : uint;
+  const e : uint;
+  const f : uint;
+  const g : uint;
+  const h : uint
+) : uint is {
+  var sum : uint := a % 1000 + s.length;
+  var odd : uint := b % 1000 + t.length;
+  for (i, x) : (uint, uint) in xs do {
+    if x % 2 = 0 then {
+      sum += x % 1000 + i + c % 7;
+    } else {
+      odd += x % 1000 + d % 5 + s.length;
+    }
+  }
+  const both : uint := sum * (e % 9 + 1) + odd * (f % 9 + 1);
+} with both + g % 100 + h % 100 + t.length * xs.length
+
+external pure function mixed(const s : string; const t : string; const xs : list(uint); const k : uint) : uint is
+  mix(k, s, k / 3, t, k / 5, xs, k / 7, k / 11, k / 13, k / 17, k / 19)
+
+external function mixedAgain(const s : string; const xs : list(uint); const k : uint) : uint is {
+  const n : uint := mix(1, s, 2, s, 3, xs, 4, 5, 6, 7, k);
+  storage.total := n;
+} with n + mix(k, "plain", 9, s, 8, xs, 7, 6, 5, 4, 3)

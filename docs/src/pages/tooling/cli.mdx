@@ -59,6 +59,18 @@ For such a chain, build with `--evm-version prague`, or set `evm-version = "prag
 
 Code reads the target as [`Evm.osaka`](/language/builtins#target-fork).
 
+### Timings
+
+`lithe compile` also takes `--timings`, which prints one line to stderr saying where the time went:
+
+```text
+[time] load=2.97ms check=7.92ms dispatch=0.21ms lower=0.67ms dce=0.05ms emit=0.20ms optimize=2.65ms outline=2.59ms assemble=0.04ms creation=1.02ms total=17.25ms
+```
+
+`load` reads and parses the file and what it imports, and `check` resolves and type-checks it. The rest is code generation, in order: the selector table, lowering each function to a graph, removing dead code, writing stack code, the bytecode passes, sharing repeated runs, assembling the runtime code, and building the creation code. `total` is the time since the command started.
+
+The line always names every phase, in this order. A phase's time is summed over everything built, so a directory, a contract with facets, or one that creates another shows the sum for all of them, and with several threads the phases can add up to more than `total`. A build answered from the cache shows only the front end.
+
 ## Building
 
 ### `lithe compile file.lithe`
@@ -72,6 +84,8 @@ cast send --private-key $KEY --create $(lithe compile counter.lithe)
 A contract with `delegated` modules prints a JSON deployment plan instead: each facet's `CREATE2` transaction, then the router's creation code. It also prints a note on stderr. A contract that creates one with facets prints a plan too, because those facets must exist first. See [Deploying](/tooling/deploying#a-contract-with-facets).
 
 A contract or facet over the size limit still prints its bytecode or plan, and warns on stderr. See [Over the limit](/tooling/size-limit#over-the-limit).
+
+A file that does not parse reports every statement that is broken, in file order, and builds nothing. Any other error is reported once, the first for each contract.
 
 ### `lithe compile directory`
 
@@ -287,7 +301,7 @@ allow = ["reentry", "stale-capture"]
 
 ### `lithe lsp`
 
-Runs a language server on stdin and stdout. As you type, it reports the first error, for each contract in the file, and what [`lithe lint`](#linting) finds, honoring `lithe-ignore` comments you have not saved yet. A finding `lithe lint --fix` can fix is offered as a quick fix, and so is the import a name needs when another file or the standard library declares it, and the `use` a module needs when the contract's code reads its state or calls a function of it that isn't `pure`, added to the contract's grouped `use`. Formatting the document formats it as [`lithe fmt`](#formatting) does. Imports resolve from the file's saved location. An error inside an imported file is shown on the `import` that brings the file in, or on the first `import` when it comes in through another file, with the imported file's path, line, and column in the message. The VS Code extension and the Recur bundle run it; see [Editors](/tooling/editors) to install them.
+Runs a language server on stdin and stdout. As you type, it reports every statement that does not parse, or else the first error, for each contract in the file, and what [`lithe lint`](#linting) finds, honoring `lithe-ignore` comments you have not saved yet. An error only code generation finds is reported when you save; see [When errors appear](/tooling/editors#when-errors-appear). A finding `lithe lint --fix` can fix is offered as a quick fix, and so is the import a name needs when another file or the standard library declares it, and the `use` a module needs when the contract's code reads its state or calls a function of it that isn't `pure`, added to the contract's grouped `use`. Formatting the document formats it as [`lithe fmt`](#formatting) does. Imports resolve from the file's saved location. An error inside an imported file is shown on the `import` that brings the file in, or on the first `import` when it comes in through another file, with the imported file's path, line, and column in the message. The VS Code extension and the Recur bundle run it; see [Editors](/tooling/editors) to install them.
 
 It also answers from the last version of the file that checked, so answers survive a half-typed line:
 

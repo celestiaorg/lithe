@@ -1,21 +1,15 @@
-//! Direct codegen. Storage is written in the epilogue, then operations run.
-//!
-//! A body that runs no query reads and writes storage in place: no other code can
-//! run before it ends, so nothing can tell. A body with a query works on an image
-//! instead: it loads only the leaves it reads and writes back only the ones it may
-//! change. Events and deferred calls are captured where they happen and replayed
-//! after storage. Memory is laid out last, hottest words first, with regions that
-//! no body shares overlapping.
+//! Codegen. `mir` turns each function of the checked program into stack code; the modules
+//! beside it hold what it is built around: `dispatch` writes the selector dispatch and the
+//! routing to facets, `body` answers what a body does with storage and queries, `types`
+//! what a type's layout and ABI are, `walk` visits the program into the functions it calls,
+//! `peers` builds the contracts a contract creates, `immutable` places immutables, and
+//! `certify` records what a build tells the prover.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 use crate::asm::{self, Inst, Mark};
 use crate::ast::*;
-use crate::check::{
-    is_enum, is_static_aggregate, is_stored_aggregate, is_sum, option_flip, Checked, Flip, Pack,
-    TyKind, TAG_FIELD,
-};
+use crate::check::{is_sum, Checked, Pack, TyKind};
 use crate::error;
 use crate::keccak::selector;
 use crate::split::{Cross, Facet, Shape};
@@ -23,27 +17,15 @@ use crate::word::Word;
 use crate::Error;
 pub(crate) use immutable::ImmutableRefs;
 
-mod abi;
-mod blob;
 mod body;
-mod calls;
 pub(crate) mod certify;
-mod decode;
+mod code;
 mod dispatch;
-mod errors;
-mod expr;
-mod helpers;
 mod immutable;
-mod list;
-mod plan;
-mod precompile;
-mod range;
-mod stmt;
-mod storage;
-mod stored_bytes;
-mod tree;
-use errors::{raised_args, FLAT_ARGS};
-use tree::Addr;
+pub(crate) mod mir;
+mod peers;
+mod types;
+mod walk;
 
 const KECCAK: u8 = 0x20;
 const ADD: u8 = 0x01;
@@ -97,12 +79,10 @@ const NUMBER: u8 = 0x43;
 const PREVRANDAO: u8 = 0x44;
 const GASLIMIT: u8 = 0x45;
 const CHAINID: u8 = 0x46;
-const SELFBALANCE: u8 = 0x47;
 const BASEFEE: u8 = 0x48;
 const BLOBHASH: u8 = 0x49;
 const BLOBBASEFEE: u8 = 0x4a;
 const MCOPY: u8 = 0x5e;
-const MSIZE: u8 = 0x59;
 const POP: u8 = 0x50;
 const MLOAD: u8 = 0x51;
 const MSTORE: u8 = 0x52;
@@ -111,26 +91,8 @@ const SLOAD: u8 = 0x54;
 const SSTORE: u8 = 0x55;
 const TLOAD: u8 = 0x5c;
 const TSTORE: u8 = 0x5d;
-/// Transient slot for the contract-wide `nonreentrant` lock. It is set while a transition
-/// runs its deferred calls, and for the whole of a `nonreentrant` one. It is the slot most
-/// contracts touch, so its key is `PUSH0`.
-const NONREENTRANT_SLOT: u64 = 0;
 /// Transient slot an upgrade sets while its `migrate` call runs.
 pub(crate) const UPGRADE_SLOT: u64 = 1;
-/// Calls a frame called into mid-transition defers wait for the frame that owns the
-/// transition in transient storage. Each such frame that queued any saves the nonzero words of
-/// its memory as record `r`, in slots `~(r << 32 | j)`: small words three to a slot from
-/// `j = SMALLS`, the rest from `j = 2`. Its handle, `first << 224 | k << 144 | heap top << 96 |
-/// small end << 64 | word end << 32 | r`, says where the slots end and which of the code's
-/// entrypoints made it, and `first` is the lowest record made in the frame or the frames nested
-/// in it. The frame returns the handle when its function has no result, and leaves it in slot
-/// `~QUEUED_SLOT` for its caller to take when it has one. `~RECORDS_SLOT` counts the live
-/// records. Draining a record clears its slots, and the transition's owner puts the count back,
-/// so nothing is left when it ends. The hook flag is at `~0`.
-const QUEUED_SLOT: u64 = 1;
-const RECORDS_SLOT: u64 = 2;
-/// Where a record's slots of small words start, past its slots of whole words.
-const SMALLS: u64 = 1 << 31;
 /// The hidden entrypoint a record is drained through, which no source can name.
 const DRAIN_SIG: &str = "#drain(uint256)";
 const JUMP: u8 = 0x56;
@@ -147,26 +109,6 @@ const REVERT: u8 = 0xfd;
 const LOG0: u8 = 0xa0;
 const STOP: u8 = 0x00;
 
-/// How the names of values kept from calldata, which no store changes, begin.
-const CALLDATA_VALUE: &str = "@cd";
-/// Rounds of one-function outline toggles against the cheapest build.
-const MAX_TOGGLE_ROUNDS: usize = 16;
-/// How much more than the start a toggle can cost and still be tried in the next round.
-const RETRY_COST: f64 = 500.0;
-/// The most outlined functions whose every pair is also tried toggled together.
-const MAX_PAIRED: usize = 6;
-/// What a build over the size limit adds to its cost, so that any build that fits is cheaper.
-const OVER_LIMIT: f64 = 1e15;
-/// Gas a call to an outlined function adds: pushes, jumps and jumpdests there and back.
-const CALL_GAS: f64 = 24.0;
-/// Gas each argument of an outlined call adds, stored for the body to load.
-const ARG_GAS: f64 = 12.0;
-const MAX_OPS: usize = 8;
-const MAX_JOURNAL: i32 = 8;
-const TOPIC_WORDS: u32 = 8;
-/// A memory address before layout is `(region + 1) << REGION_SHIFT | offset`.
-const REGION_SHIFT: u32 = 16;
-
 /// Compiled code: the creation code, the runtime code it deploys, where the creation code
 /// writes immutables into the runtime, and the facets of contracts it creates, which must be
 /// deployed before it can create them.
@@ -177,672 +119,9 @@ pub(crate) struct Built {
     pub needs: Vec<Facet>,
 }
 
-#[cfg(test)]
-thread_local! {
-    /// Keeps only the builds that forward constants and place allocations statically
-    /// (`Some(true)`), or only those that do neither, so a test can compare the two.
-    pub(crate) static FORCE_STATIC_HEAP: std::cell::Cell<Option<bool>> =
-        const { std::cell::Cell::new(None) };
-    /// Specializes every outlined function some call passes a constant (`Some(true)`), or
-    /// none (`Some(false)`), so a test can compare the two.
-    pub(crate) static FORCE_SPECIALIZE: std::cell::Cell<Option<bool>> =
-        const { std::cell::Cell::new(None) };
-}
-
 /// The creation code, and the runtime code it deploys, for the entrypoints `shape` keeps.
 pub(crate) fn codegen(checked: &Checked, shape: &Shape) -> Result<Built, Error> {
-    let imm_consts = init_constants(checked, shape);
-    // The first pass inlines every call and measures what each function costs. What it
-    // learns of the blobs calls pass and return lets it see further, so it runs again
-    // while that grows.
-    let (plan, inlined) = {
-        let mut known = Plan::default();
-        loop {
-            let mut g = Gen::new(checked, known.clone(), shape)?;
-            g.imm_consts = imm_consts.clone();
-            g.emit()?;
-            let plan = g.plan();
-            let grew = plan.blob_params.len() + plan.blob_rets.len()
-                > known.blob_params.len() + known.blob_rets.len();
-            if !grew {
-                break (plan, g.code.len());
-            }
-            known = Plan {
-                blob_params: plan.blob_params,
-                blob_rets: plan.blob_rets,
-                ..Plan::default()
-            };
-        }
-    };
-    let emit = |plan: &Plan| -> Result<(Emitted, Vec<Facet>, Decides), Error> {
-        let mut g = Gen::new(checked, plan.clone(), shape)?;
-        g.imm_consts = imm_consts.clone();
-        g.emit()?;
-        g.drop_unread_caches();
-        g.promote();
-        let code = g.resolve()?;
-        let mut leaves: Vec<(u32, usize)> = g.func_leaves_by_label().into_iter().collect();
-        leaves.sort_unstable();
-        let emitted = Emitted {
-            code,
-            entries: std::mem::take(&mut g.entry_labels),
-            leaves,
-            data: std::mem::take(&mut g.data),
-            tail_blobs: std::mem::take(&mut g.tail_blobs),
-            heap: g.heap,
-        };
-        let decides = Decides {
-            frames: g.frames_decide,
-            raises: g.raises_decide,
-        };
-        Ok((emitted, std::mem::take(&mut g.needs), decides))
-    };
-    let limit = shape.opts.size_limit;
-    let finish_with = |e: &Emitted, both: bool, again: bool| -> Result<Finished, Error> {
-        let mut code = e.code.clone();
-        asm::optimize(&mut code);
-        let leaves: HashMap<u32, usize> = e.leaves.iter().copied().collect();
-        asm::outline(&mut code, &e.entries, both, again, |code| {
-            asm::track::pass(code, |c| asm::tail_calls(c, &leaves));
-            asm::track::pass(code, asm::rotate_loops);
-            asm::track::pass(code, asm::hoist);
-            asm::track::pass(code, asm::rotate_exits);
-        });
-        let gas = asm::gas(&code, &e.entries, e.heap);
-        let (runtime, marks) = match immutable::place_runtime(&code, &e.data, &e.tail_blobs) {
-            Ok(placed) => placed,
-            Err(err) if err.line == 0 && err.message == "contract too large" => {
-                return Ok(Finished {
-                    runtime: Vec::new(),
-                    marks: Vec::new(),
-                    gas,
-                    bytes: usize::MAX,
-                    cost: 2.0 * OVER_LIMIT,
-                });
-            }
-            Err(err) => return Err(err),
-        };
-        let bytes = runtime.len();
-        let over = if bytes > limit { OVER_LIMIT } else { 0.0 };
-        let cost = gas + bytes as f64 * asm::byte_gas() + over;
-        Ok(Finished {
-            runtime,
-            marks,
-            gas,
-            bytes,
-            cost,
-        })
-    };
-    // The search ranks plans by builds that share runs in one round and are not optimized
-    // again after, which cost a fraction as much. One that looks over the limit is finished
-    // in full, so that what fits is judged by real sizes.
-    let finish = |e: &Emitted, both: bool| -> Result<Finished, Error> {
-        let built = finish_with(e, both, both)?;
-        if both || built.bytes <= limit {
-            return Ok(built);
-        }
-        finish_with(e, false, true)
-    };
-    // Plans often emit the same program, which is optimized once.
-    let done = std::sync::Mutex::new(HashMap::<Arc<Emitted>, Arc<Finished>>::new());
-    // The outline sets of builds over the limit. Inlining more only grows code, so later
-    // rounds skip the sets that inline at least as much, whose builds are also the slowest.
-    let too_big = std::sync::Mutex::new(Vec::<Big>::new());
-    // Each plan's build, or the error building it hit. Builds over the limit are noted by
-    // `note_big`, only once the search uses them.
-    let build_raw = |plans: &[Plan]| -> Vec<Result<Candidate, Error>> {
-        let emitted: Vec<Result<(Arc<Emitted>, Vec<Facet>, Decides), Error>> =
-            parallel_map(plans, emit)
-                .into_iter()
-                .map(|e| e.map(|(e, needs, decides)| (Arc::new(e), needs, decides)))
-                .collect();
-        let todo: Vec<&Arc<Emitted>> = {
-            let done = done.lock().unwrap_or_else(|e| e.into_inner());
-            let mut seen = HashSet::new();
-            emitted
-                .iter()
-                .flatten()
-                .map(|(e, ..)| e)
-                .filter(|&e| !done.contains_key(e) && seen.insert(e))
-                .collect()
-        };
-        let finished = parallel_map(&todo, |e| finish(e, false));
-        let mut failed = HashMap::new();
-        let mut done = done.lock().unwrap_or_else(|e| e.into_inner());
-        for (e, f) in todo.into_iter().zip(finished) {
-            match f {
-                Ok(f) => {
-                    done.insert(e.clone(), Arc::new(f));
-                }
-                Err(err) => {
-                    failed.insert(e.clone(), err);
-                }
-            }
-        }
-        plans
-            .iter()
-            .zip(emitted)
-            .map(|(plan, e)| {
-                let (e, needs, decides) = e?;
-                let Some(built) = done.get(&e).cloned() else {
-                    return Err(failed[&e].clone());
-                };
-                Ok(Candidate {
-                    plan: plan.clone(),
-                    built,
-                    emitted: e,
-                    needs,
-                    decides,
-                })
-            })
-            .collect()
-    };
-    let note_big = |c: &Candidate| {
-        if c.built.bytes > limit {
-            let mut too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
-            too_big.push(c.plan.outline.clone());
-        }
-    };
-    let build_each = |plans: &[Plan]| -> Vec<Result<Candidate, Error>> {
-        let built = build_raw(plans);
-        built.iter().flatten().for_each(note_big);
-        built
-    };
-    // Each move in turn, kept when the build costs less. Most are kept, so every move left
-    // is built at once, each with all those before it kept; one not kept leaves the builds
-    // after it to be done again. A failed build is not kept where `fatal` is false.
-    let chain = |mut best: Candidate, moves: &[&Move], fatal: bool| -> Result<Candidate, Error> {
-        let mut i = 0;
-        while i < moves.len() {
-            let mut p = best.plan.clone();
-            let plans: Vec<Plan> = moves[i..]
-                .iter()
-                .map(|m| {
-                    m.apply(&mut p);
-                    p.clone()
-                })
-                .collect();
-            for c in build_raw(&plans) {
-                i += 1;
-                let c = match c {
-                    Ok(c) => c,
-                    Err(err) if fatal => return Err(err),
-                    Err(_) => break,
-                };
-                note_big(&c);
-                if c.cost() >= best.cost() {
-                    break;
-                }
-                best = c;
-            }
-        }
-        Ok(best)
-    };
-    let build_all = |plans: &[Plan]| -> Result<Vec<Candidate>, Error> {
-        build_each(plans).into_iter().collect()
-    };
-    // A tight site can keep the outliner from sharing it. A shared slice helper can cost
-    // bytes where the outliner would have shared the inlined copies instead, so slices that
-    // could share are built both ways.
-    let mut slices = vec![plan.shared_slice];
-    if plan.shared_slice.contains(&true) {
-        slices.push([false; 2]);
-    }
-    // The outlining plan prices a call by its jumps and argument stores alone, so the
-    // builds that inline the functions called in loops, or every function, are tried too.
-    let mut outlines = vec![plan.outline.clone()];
-    if !plan.looped.is_empty() {
-        outlines.push(&plan.outline - &plan.looped);
-    }
-    if outlines.last().is_some_and(|o| !o.is_empty()) {
-        outlines.push(Default::default());
-    }
-    let variant_moves = |c: &Candidate| -> Vec<Vec<Move>> {
-        let p = &c.plan;
-        let too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
-        let mut dims = vec![
-            outlines
-                .iter()
-                .filter(|o| **o != p.outline && !too_big.iter().any(|b| o.is_subset(b)))
-                .cloned()
-                .map(Move::Outline)
-                .collect(),
-            slices
-                .iter()
-                .filter(|s| **s != p.shared_slice)
-                .copied()
-                .map(Move::Slice)
-                .collect(),
-            vec![Move::Tight(!p.tight)],
-        ];
-        // A flag that decided nothing builds the same program turned the other way.
-        if c.decides.frames {
-            dims.push(vec![Move::Frames(!p.frames)]);
-        }
-        // Slots stay kept, and sinking and lone raises out of line, once on, stay on: across
-        // the bench, examples and fuzz programs, turning them off never built cheaper.
-        if !p.sink {
-            dims.push(vec![Move::Sink(true)]);
-        }
-        if p.tight && !p.outline_raises && c.decides.raises {
-            dims.push(vec![Move::OutlineRaises(true)]);
-        }
-        dims
-    };
-    // Then each function the plan outlines, inlined or outlined alone.
-    let mut funcs: Vec<usize> = plan.outline.iter().copied().collect();
-    funcs.sort_unstable();
-    // A round builds each move alone. Several moves that each beat the start can cost more
-    // together, so they are then added one at a time, the cheapest first, each kept when
-    // the build gets cheaper. The cheapest program by `asm::byte_gas` wins; ties keep the
-    // start, which keeps slots and tight sites.
-    let round = |from: Candidate, dims: &[Vec<Move>]| -> Result<(Candidate, Vec<f64>), Error> {
-        let tried: Vec<(usize, &Move)> = dims
-            .iter()
-            .enumerate()
-            .flat_map(|(d, moves)| moves.iter().map(move |m| (d, m)))
-            .collect();
-        let plans: Vec<Plan> = tried.iter().map(|(_, m)| m.applied(&from.plan)).collect();
-        // When inlining everything takes more instructions than the limit has bytes, an
-        // outline set inside another tried with it, which inlines more, is built after that
-        // one, and not at all if that one is over the limit. Elsewhere waiting would cost
-        // time for builds that fit.
-        fn outline(m: &Move) -> Option<&std::collections::HashSet<usize>> {
-            match m {
-                Move::Outline(o) => Some(o),
-                _ => None,
-            }
-        }
-        let later: Vec<bool> = tried
-            .iter()
-            .map(|(_, m)| {
-                inlined > limit
-                    && outline(m).is_some_and(|o| {
-                        let mut sets = tried.iter().filter_map(|(_, t)| outline(t));
-                        sets.any(|b| o.is_subset(b) && o != b)
-                    })
-            })
-            .collect();
-        let mut built: Vec<Option<Candidate>> = plans.iter().map(|_| None).collect();
-        for wave in [false, true] {
-            let picked: Vec<usize> = {
-                let too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
-                (0..plans.len())
-                    .filter(|&i| later[i] == wave)
-                    .filter(|&i| !wave || !too_big.iter().any(|b| plans[i].no_smaller(b)))
-                    .collect()
-            };
-            if picked.is_empty() {
-                continue;
-            }
-            let wave: Vec<Plan> = picked.iter().map(|&i| plans[i].clone()).collect();
-            for (i, c) in picked.into_iter().zip(build_all(&wave)?) {
-                built[i] = Some(c);
-            }
-        }
-        let mut chosen: Vec<Option<(f64, &Move)>> = vec![None; dims.len()];
-        let mut best = None::<Candidate>;
-        let mut deltas = vec![f64::INFINITY; dims.len()];
-        for (&(d, m), c) in tried.iter().zip(built) {
-            let Some(c) = c else { continue };
-            deltas[d] = deltas[d].min(c.cost() - from.cost());
-            if c.cost() >= from.cost() {
-                continue;
-            }
-            if chosen[d].is_none_or(|(cost, _)| c.cost() < cost) {
-                chosen[d] = Some((c.cost(), m));
-            }
-            if best.as_ref().is_none_or(|b| c.cost() < b.cost()) {
-                best = Some(c);
-            }
-        }
-        let Some(best) = best else {
-            return Ok((from, deltas));
-        };
-        let mut better: Vec<(f64, &Move)> = chosen.into_iter().flatten().collect();
-        better.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let rest: Vec<&Move> = better[1..].iter().map(|&(_, m)| m).collect();
-        Ok((chain(best, &rest, true)?, deltas))
-    };
-    #[cfg(test)]
-    let forced = FORCE_STATIC_HEAP.get();
-    #[cfg(not(test))]
-    let forced: Option<bool> = None;
-    let on = forced == Some(true);
-    #[cfg(test)]
-    let forced_specs = FORCE_SPECIALIZE.get();
-    #[cfg(not(test))]
-    let forced_specs: Option<bool> = None;
-    let start = Plan {
-        cache_slots: true,
-        tight: true,
-        frames: true,
-        sink: false,
-        forward_consts: on,
-        static_heap: on,
-        every_bump: on,
-        stage: on,
-        specialize: match forced_specs {
-            Some(true) => plan.specializable.clone(),
-            _ => Default::default(),
-        },
-        ..plan.clone()
-    };
-    // One round of variant moves: across the bench, examples and fuzz programs, a second round
-    // from the moves kept saved a byte in two programs.
-    let variant_round = |best: Candidate| -> Result<Candidate, Error> {
-        let moves = variant_moves(&best);
-        Ok(round(best, &moves)?.0)
-    };
-    let mut best = build_all(std::slice::from_ref(&start))?
-        .pop()
-        .expect("a build");
-    best = variant_round(best)?;
-    // Outlined functions some calls pass constants are also tried compiled once per set of
-    // constants their calls pass.
-    let mut specs: Vec<usize> = match forced_specs {
-        Some(_) => Vec::new(),
-        None => plan.specializable.iter().copied().collect(),
-    };
-    specs.sort_unstable();
-    // Later rounds try again the functions a round left as they were and whose toggle cost
-    // little more than the start, as the moves kept since can make it pay.
-    for _ in 0..MAX_TOGGLE_ROUNDS {
-        let cost = best.cost();
-        let was = (best.plan.outline.clone(), best.plan.specialize.clone());
-        specs.retain(|f| best.plan.outline.contains(f));
-        let dims: Vec<Vec<Move>> = funcs
-            .iter()
-            .map(|&f| vec![Move::Toggle(f)])
-            .chain(specs.iter().map(|&f| vec![Move::Specialize(f)]))
-            .collect();
-        let (next, deltas) = round(best, &dims)?;
-        let (toggled, specialized) = deltas.split_at(funcs.len());
-        funcs = funcs
-            .into_iter()
-            .zip(toggled)
-            .filter(|&(f, &d)| {
-                d < RETRY_COST && was.0.contains(&f) == next.plan.outline.contains(&f)
-            })
-            .map(|(f, _)| f)
-            .collect();
-        specs = specs
-            .into_iter()
-            .zip(specialized)
-            .filter(|&(f, &d)| {
-                d < RETRY_COST && was.1.contains(&f) == next.plan.specialize.contains(&f)
-            })
-            .map(|(f, _)| f)
-            .collect();
-        best = next;
-        if best.cost() >= cost || funcs.is_empty() && specs.is_empty() {
-            break;
-        }
-    }
-    // Two functions can pay inlined only together.
-    let mut outlined: Vec<usize> = best.plan.outline.iter().copied().collect();
-    outlined.sort_unstable();
-    if outlined.len() <= MAX_PAIRED {
-        let pairs: Vec<Plan> = outlined
-            .iter()
-            .enumerate()
-            .flat_map(|(i, &f)| outlined[i + 1..].iter().map(move |&g| (f, g)))
-            .map(|(f, g)| {
-                let mut p = best.plan.clone();
-                Move::Toggle(f).apply(&mut p);
-                Move::Toggle(g).apply(&mut p);
-                p
-            })
-            .collect();
-        for c in build_all(&pairs)? {
-            if c.cost() < best.cost() {
-                best = c;
-            }
-        }
-    }
-    // Holding words across blocks that abandon the stack changes the code every other
-    // choice sees, and a search that starts with it can end worse than one without it. So
-    // it is tried on the plan found, and kept only where cheaper, with the variants tried
-    // again from there.
-    let held = build_all(&[Move::Abandon(true).applied(&best.plan)])?
-        .pop()
-        .expect("a build");
-    if held.cost() < best.cost() {
-        best = variant_round(held)?;
-    }
-    // A build over the limit outlines more. Each function alone is outlined, then the sets
-    // that add them in order of bytes saved per gas added, and the cheapest set that fits
-    // wins, or failing that the smallest, which the next round starts from.
-    let fell_back = best.built.bytes > limit;
-    for pass in 0..2 {
-        // The variants were chosen while every build was over the limit, so once outlining has
-        // shrunk it, a build still over tries them again, then outlines more.
-        if pass > 0 {
-            if best.built.bytes <= limit {
-                break;
-            }
-            best = variant_round(best)?;
-        }
-        while best.built.bytes > limit {
-            let mut rest: Vec<usize> = (&plan.outlinable - &best.plan.outline)
-                .into_iter()
-                .collect();
-            rest.sort_unstable();
-            let moves: Vec<Move> = rest.into_iter().map(Move::Toggle).collect();
-            let alone: Vec<Plan> = moves.iter().map(|m| m.applied(&best.plan)).collect();
-            let (b0, g0) = (best.built.bytes, best.built.gas);
-            let mut order: Vec<(f64, &Move)> = moves
-                .iter()
-                .zip(build_each(&alone))
-                .filter_map(|(m, c)| Some((m, c.ok()?)))
-                .filter(|(_, c)| c.built.bytes < b0)
-                .map(|(m, c)| ((b0 - c.built.bytes) as f64 / (c.built.gas - g0).max(1.0), m))
-                .collect();
-            order.sort_by(|a, b| b.0.total_cmp(&a.0));
-            let mut sets: Vec<Plan> = (1..=order.len())
-                .map(|k| {
-                    let mut p = best.plan.clone();
-                    order[..k].iter().for_each(|(_, m)| m.apply(&mut p));
-                    p
-                })
-                .collect();
-            // Moves that don't shrink the build alone can together: every one at once.
-            if order.len() < moves.len() {
-                let mut p = best.plan.clone();
-                moves.iter().for_each(|m| m.apply(&mut p));
-                sets.push(p);
-            }
-            let rank = |c: &Candidate| match c.built.bytes {
-                b if b <= limit => c.cost(),
-                b => OVER_LIMIT + b as f64,
-            };
-            let Some(next) = build_each(&sets)
-                .into_iter()
-                .flatten()
-                .min_by(|a, b| rank(a).total_cmp(&rank(b)))
-                .filter(|c| c.built.bytes < b0)
-            else {
-                break;
-            };
-            best = next;
-        }
-    }
-    // Once one fits, each function it outlines is built inlined again, skipping the sets
-    // known to be over the limit. Those that cost less are brought back one at a time, the
-    // most gas saved per byte added first, each kept while the build still costs less.
-    if fell_back && best.built.bytes <= limit {
-        let mut outlined: Vec<usize> = best.plan.outline.iter().copied().collect();
-        outlined.sort_unstable();
-        let (moves, alone): (Vec<Move>, Vec<Plan>) = {
-            let too_big = too_big.lock().unwrap_or_else(|e| e.into_inner());
-            outlined
-                .into_iter()
-                .map(Move::Toggle)
-                .map(|m| {
-                    let p = m.applied(&best.plan);
-                    (m, p)
-                })
-                .filter(|(_, p)| !too_big.iter().any(|b| p.outline.is_subset(b)))
-                .unzip()
-        };
-        let (b0, g0) = (best.built.bytes as f64, best.built.gas);
-        let mut order: Vec<(f64, &Move)> = moves
-            .iter()
-            .zip(build_each(&alone))
-            .filter_map(|(m, c)| Some((m, c.ok()?)))
-            .filter(|(_, c)| c.cost() < best.cost())
-            .map(|(m, c)| ((g0 - c.built.gas) / (c.built.bytes as f64 - b0).max(1.0), m))
-            .collect();
-        order.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let moves: Vec<&Move> = order.into_iter().map(|(_, m)| m).collect();
-        best = chain(best, &moves, false)?;
-    }
-    // Staging, constants and static allocations are tried on the chosen plan only: across
-    // every move they would double the builds for a few more bytes. Staging also makes a
-    // call's copies alike, which can tip a near tie in the search toward inlining helpers
-    // whose branches facts at the call sites decide, which the model overrates.
-    if forced.is_none() {
-        let staged = build_all(&[Move::Stage.applied(&best.plan)])?
-            .pop()
-            .expect("a build");
-        if staged.cost() < best.cost() {
-            best = staged;
-        }
-        let tries = [Move::ForwardConsts, Move::StaticHeap].map(|m| m.applied(&best.plan));
-        for c in build_all(&tries)? {
-            if c.cost() < best.cost() {
-                best = c;
-            }
-        }
-    }
-    // The search leaves the exact copies out, which the chosen plan gets.
-    let built = finish(&best.emitted, true)?;
-    if built.bytes == usize::MAX {
-        return Err(error(0, 0, "contract too large"));
-    }
-    let (code, more) = creation(
-        checked,
-        &best.plan,
-        built.runtime.clone(),
-        &built.marks,
-        true,
-        shape,
-    )?;
-    if certify::wanted() {
-        // The chosen plan again, with the passes noting where its loops go. The same plan
-        // builds the same bytes, which the certificates must describe.
-        let mut certs = certify::Certs::default();
-        asm::track::start();
-        let again = emit(&best.plan).and_then(|(e, ..)| finish(&e, true));
-        if let (Some(t), Ok(again)) = (asm::track::take(), again) {
-            if std::env::var_os("LITHE_PROVE_DEBUG").is_some() {
-                let inlined = t
-                    .sites
-                    .iter()
-                    .filter(|s| s.kind == asm::track::Kind::Inline)
-                    .count();
-                let placed = t
-                    .sites
-                    .iter()
-                    .filter(|s| {
-                        s.kind == asm::track::Kind::Inline
-                            && t.mark_pcs.contains_key(&s.top)
-                            && t.mark_pcs.contains_key(&s.done)
-                    })
-                    .count();
-                eprintln!(
-                    "certify: {} sites, same runtime {}, inlined copies {inlined}, placed {placed}, renamed {}, pos {}",
-                    t.sites.len(),
-                    again.runtime == built.runtime,
-                    t.renamed.len(),
-                    t.pos.len()
-                );
-            }
-            if again.runtime == built.runtime {
-                let made = certify::certs(&t, false);
-                certs.loops.extend(made.loops);
-                certs.funcs.extend(made.funcs);
-                certs.inlines.extend(made.inlines);
-                certs.guards.extend(made.guards);
-                certs.lost.extend(made.lost);
-            }
-        }
-        asm::track::start();
-        let again = creation(
-            checked,
-            &best.plan,
-            built.runtime.clone(),
-            &built.marks,
-            true,
-            shape,
-        );
-        if let (Some(t), Ok((again, _))) = (asm::track::take(), again) {
-            if again == code {
-                let made = certify::certs(&t, true);
-                certs.loops.extend(made.loops);
-                certs.funcs.extend(made.funcs);
-                certs.inlines.extend(made.inlines);
-                certs.guards.extend(made.guards);
-                certs.lost.extend(made.lost);
-            }
-        }
-        certify::keep(certs);
-    }
-    let mut needs = best.needs;
-    needs.extend(more);
-    Ok(Built {
-        code,
-        immutables: immutable::references(checked, &built.marks),
-        runtime: built.runtime,
-        needs,
-    })
-}
-
-/// A plan's program before the bytecode passes, and what placing it needs.
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct Emitted {
-    code: Vec<Inst>,
-    entries: Vec<u32>,
-    leaves: Vec<(u32, usize)>,
-    data: Vec<(Word, Vec<u8>, String)>,
-    tail_blobs: Vec<(Word, Vec<u32>)>,
-    heap: Option<asm::Heap>,
-}
-
-/// The outline sets of builds over the size limit.
-type Big = std::collections::HashSet<usize>;
-
-/// An optimized runtime, and its estimated gas plus bytes weighed by `asm::byte_gas`, plus
-/// `OVER_LIMIT` when it is over the size limit, twice that when it can't be assembled at all.
-struct Finished {
-    runtime: Vec<u8>,
-    marks: Vec<Mark>,
-    gas: f64,
-    /// `usize::MAX` when it can't be assembled.
-    bytes: usize,
-    cost: f64,
-}
-
-/// A plan and the runtime it builds.
-struct Candidate {
-    plan: Plan,
-    emitted: Arc<Emitted>,
-    built: Arc<Finished>,
-    needs: Vec<Facet>,
-    decides: Decides,
-}
-
-/// Which of a plan's flags changed what its build emitted.
-#[derive(Clone, Copy)]
-struct Decides {
-    frames: bool,
-    raises: bool,
-}
-
-impl Plan {
-    fn no_smaller(&self, big: &Big) -> bool {
-        self.outline.is_subset(big)
-    }
+    mir::codegen(checked, shape)
 }
 
 impl Shape {
@@ -857,170 +136,6 @@ impl Shape {
         }
         out
     }
-}
-
-impl Candidate {
-    fn cost(&self) -> f64 {
-        self.built.cost
-    }
-}
-
-/// A change to a plan that `codegen` tries.
-#[derive(Clone)]
-enum Move {
-    Outline(std::collections::HashSet<usize>),
-    Slice([bool; 2]),
-    Tight(bool),
-    Frames(bool),
-    Sink(bool),
-    Abandon(bool),
-    OutlineRaises(bool),
-    /// Forward stored constants.
-    ForwardConsts,
-    /// Forward stored constants, and place allocations at constant addresses.
-    StaticHeap,
-    /// Stage calls in `Region::Stage`.
-    Stage,
-    /// Inline the function if the plan outlines it, else outline it.
-    Toggle(usize),
-    /// Specialize an outlined function to the constants its calls pass, or stop.
-    Specialize(usize),
-}
-
-impl Move {
-    fn apply(&self, p: &mut Plan) {
-        match self {
-            Move::Outline(o) => p.outline = o.clone(),
-            Move::Slice(s) => p.shared_slice = *s,
-            Move::Tight(b) => p.tight = *b,
-            Move::Frames(b) => p.frames = *b,
-            Move::Sink(b) => p.sink = *b,
-            Move::Abandon(b) => p.abandon = *b,
-            Move::OutlineRaises(b) => p.outline_raises = *b,
-            Move::ForwardConsts => p.forward_consts = true,
-            Move::Stage => p.stage = true,
-            Move::StaticHeap => {
-                p.forward_consts = true;
-                p.static_heap = true;
-            }
-            Move::Toggle(f) => {
-                if !p.outline.remove(f) {
-                    p.outline.insert(*f);
-                }
-            }
-            Move::Specialize(f) => {
-                if !p.specialize.remove(f) {
-                    p.specialize.insert(*f);
-                }
-            }
-        }
-        // Only tight builds outline lone raises.
-        p.outline_raises &= p.tight;
-    }
-
-    fn applied(&self, p: &Plan) -> Plan {
-        let mut p = p.clone();
-        self.apply(&mut p);
-        p
-    }
-}
-
-/// `f` of each item, in order, on at most one thread per core, each with the caller's
-/// byte weight.
-fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let byte_gas = asm::byte_gas();
-    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let done = std::sync::Mutex::new(Vec::with_capacity(items.len()));
-    let work = || loop {
-        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let Some(item) = items.get(i) else { break };
-        let out = f(item);
-        done.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push((i, out));
-    };
-    std::thread::scope(|s| {
-        for _ in 1..workers.min(items.len()) {
-            std::thread::Builder::new()
-                .stack_size(64 << 20)
-                .spawn_scoped(s, || asm::with_byte_gas(byte_gas, work))
-                .expect("spawn a codegen thread");
-        }
-        work();
-    });
-    let mut done = done.into_inner().unwrap_or_else(|e| e.into_inner());
-    done.sort_by_key(|(i, _)| *i);
-    done.into_iter().map(|(_, out)| out).collect()
-}
-
-/// The creation code for a runtime: a `deploy` compiled around it, or a plain copy. A
-/// router's creation code first checks that each of its facets has code. A facet's is always
-/// a plain copy: `deploy` belongs to the router.
-fn creation(
-    checked: &Checked,
-    plan: &Plan,
-    runtime: Vec<u8>,
-    marks: &[Mark],
-    optimize: bool,
-    shape: &Shape,
-) -> Result<(Vec<u8>, Vec<Facet>), Error> {
-    let mut g = Gen::new(checked, plan.clone(), shape)?;
-    let plain = !checked.prog.upgradeable && !shape.part;
-    // A dynamic immutable's bytes follow the code even when no `deploy` writes them.
-    let appended = plain && !checked.immutable_values.is_empty() && !marks.is_empty();
-    let Some(func) = g
-        .deploy_func()
-        .filter(|_| plain)
-        .map(Some)
-        .or_else(|| appended.then_some(None))
-    else {
-        let parts = shape.prerequisites();
-        if checked.prog.upgradeable && !marks.is_empty() {
-            let sites: Vec<usize> = marks.iter().map(|&(_, at, _)| at).collect();
-            return Ok((wrap_init_self(&runtime, &parts, &sites)?, Vec::new()));
-        }
-        return Ok((wrap_init(&runtime, &parts)?, Vec::new()));
-    };
-    g.emit_init(func, runtime, marks)?;
-    if optimize {
-        g.drop_unread_caches();
-        g.promote();
-    }
-    let mut code = g.resolve()?;
-    if optimize {
-        asm::optimize(&mut code);
-        let leaves = g.func_leaves_by_label();
-        asm::outline(&mut code, &g.entry_labels, true, true, |code| {
-            asm::track::pass(code, |c| asm::tail_calls(c, &leaves));
-            asm::track::pass(code, asm::rotate_loops);
-            asm::track::pass(code, asm::hoist);
-            asm::track::pass(code, asm::rotate_exits);
-        });
-    }
-    Ok((place_data(&code, &g.data)?, g.needs))
-}
-
-/// The immutables `deploy` always sets to a constant, found by building its code with
-/// every call inlined. The runtime reads those as constants.
-fn init_constants(checked: &Checked, shape: &Shape) -> Vec<Option<Word>> {
-    let n = checked.transient_from - checked.immutable_from;
-    let none = vec![None; n];
-    if n == 0 || checked.prog.upgradeable || shape.part {
-        return none;
-    }
-    let Ok(mut g) = Gen::new(checked, Plan::default(), shape) else {
-        return none;
-    };
-    let Some(func) = g.deploy_func() else {
-        return none;
-    };
-    if g.emit_init(Some(func), Vec::new(), &[]).is_err() {
-        return none;
-    }
-    (0..n as u32)
-        .map(|k| g.imm_stores.get(&k).copied().flatten())
-        .collect()
 }
 
 /// Assembles the code with the creation code it embeds appended, each placeholder replaced
@@ -1067,19 +182,6 @@ fn place_marked(
     Err(error(0, 0, "internal: embedded code did not settle"))
 }
 
-/// Every call inlined, memory as emitted, no bytecode passes. Only placement and encoding.
-#[cfg(test)]
-pub(crate) fn codegen_unoptimized(checked: Checked) -> Result<Vec<u8>, Error> {
-    // Unoptimized code may be past the size limit; it only runs in tests.
-    let mut shape = Shape::default();
-    shape.opts.size_limit = usize::MAX;
-    let mut g = Gen::new(&checked, Plan::default(), &shape)?;
-    g.emit()?;
-    let code = g.resolve()?;
-    let (runtime, marks) = immutable::place_runtime(&code, &g.data, &g.tail_blobs)?;
-    Ok(creation(&checked, &Plan::default(), runtime, &marks, false, &shape)?.0)
-}
-
 /// What an entrypoint's code belongs with: the router, or the facet of the module it
 /// comes from.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -1104,7 +206,7 @@ pub(crate) struct Entrypoint {
 /// Every selector the whole contract dispatches, in dispatch order.
 pub(crate) fn entrypoints(checked: &Checked) -> Result<Vec<Entrypoint>, Error> {
     let shape = Shape::default();
-    let mut g = Gen::new(checked, Plan::default(), &shape)?;
+    let mut g = Gen::new(checked, &shape)?;
     let funcs = &checked.prog.funcs;
     let group = |func: usize| match &funcs[func].promoted {
         Some(module) => Group::Module(module.clone()),
@@ -1144,7 +246,7 @@ pub(crate) fn entrypoints(checked: &Checked) -> Result<Vec<Entrypoint>, Error> {
 /// module's own source decides, so every contract that uses it finds the same.
 pub(crate) fn crossable(checked: &Checked, module: &str) -> Vec<crate::split::Crossing> {
     let shape = Shape::default();
-    let Ok(g) = Gen::new(checked, Plan::default(), &shape) else {
+    let Ok(g) = Gen::new(checked, &shape) else {
         return Vec::new();
     };
     let site = |f: &Func| (f.origin.clone(), f.line, f.col);
@@ -1241,7 +343,7 @@ pub(crate) fn callback_rules(checked: &Checked, facets: &[String]) -> Result<(),
         return Ok(());
     }
     let shape = Shape::default();
-    let g = Gen::new(checked, Plan::default(), &shape)?;
+    let g = Gen::new(checked, &shape)?;
     // A contract that isn't upgradeable has no code until `deploy` ends, so no facet `deploy`
     // calls across can call a hook back.
     if let Some(deploy) = funcs
@@ -1343,7 +445,7 @@ pub(crate) fn stray_call(
         return Ok((None, Vec::new()));
     }
     let shape = Shape::default();
-    let g = Gen::new(checked, Plan::default(), &shape)?;
+    let g = Gen::new(checked, &shape)?;
     let funcs = &checked.prog.funcs;
     let in_facet = |i: usize| funcs[i].module.as_ref().is_some_and(|m| facets.contains(m));
     let calls = |stmts: &[Stmt], tail: Option<&Expr>| -> Vec<(usize, u32, u32)> {
@@ -1437,507 +539,12 @@ pub(crate) fn stray_call(
     Ok((None, crossed))
 }
 
-/// A block of memory with a fixed purpose. Addresses are placed after codegen.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Region {
-    Scratch(u8),
-    Ret,
-    Hash,
-    Args,
-    Query,
-    Topic,
-    Tuple,
-    Journal,
-    JournalLen,
-    JournalAt,
-    BlobPtr,
-    Blob,
-    Image,
-    Dirty,
-    Local(usize),
-    FnRet(usize),
-    /// Per-body storage for captured deferred calls.
-    Arena(usize),
-    /// One deferred call's target and calldata, unless they are written where it runs.
-    Defer(usize),
-    /// Per-body flags that calls deferred under branches were deferred: every epilogue
-    /// reads them, so they get a region of their own.
-    Fired(usize),
-    /// One `emit`'s data words, laid out just before its log.
-    Log(usize),
-    /// An encoded error's head words, before they join its tails.
-    ErrorHead,
-    /// A call's return data, or an argument built in place, for one site.
-    Returned(usize),
-    /// A record read out of a map or about to be written to one, for one site.
-    Stored(usize),
-    /// The base64 lookup tables. Always placed at address zero, so a table index is its
-    /// own address.
-    Base64,
-    /// Immutables' values while `deploy` runs.
-    Immutables,
-    /// The runtime code, where creation code writes the immutables into it.
-    Deployed,
-    /// A list a push moved, with room past its elements, and where that room ends. The list
-    /// is the one a local held then, or one a nested write copied for a local, so the list
-    /// and its room are that local's alone.
-    Room,
-    /// A call that runs where it is deferred: its input words, then its target, value and
-    /// gas. Only the call reads them, and its result is decoded before anything else stages,
-    /// so every call shares them, results included.
-    Stage(u8),
-}
-
-/// Which bodies touch a region. Two regions can share memory when no body touches both.
-#[derive(Clone, PartialEq, Eq, Debug)]
-enum Users {
-    Nobody,
-    Bodies(std::collections::BTreeSet<usize>),
-    /// Bodies and functions compiled once, each as `FUNC_CTX` plus its key: two regions
-    /// can share memory when none of these that touch one can run while one that touches
-    /// the other does.
-    Shared(std::collections::BTreeSet<usize>),
-    Everyone,
-}
-
-/// Where the ids of functions compiled once start among a region's users.
-const FUNC_CTX: usize = 1 << if usize::BITS > 32 { 40 } else { 30 };
-
-struct Space {
-    region: Region,
-    /// Bytes the region needs regardless of the offsets code uses.
-    size: u32,
-    /// One past the highest byte a constant offset reaches.
-    extent: u32,
-    /// Instructions that name the region.
-    heat: u64,
-    users: Users,
-}
-
-/// Which functions become shared subroutines instead of being inlined at each call.
-#[derive(Default, Clone)]
-struct Plan {
-    /// Whether a map slot with fixed keys is hashed once per body and kept.
-    cache_slots: bool,
-    outline: std::collections::HashSet<usize>,
-    /// The outlined functions called in a loop, where a call's arguments and jumps cost
-    /// each run, and inlined copies may read their arguments in place.
-    looped: std::collections::HashSet<usize>,
-    /// Every function called more than once that can be outlined, for builds too big to fit.
-    outlinable: std::collections::HashSet<usize>,
-    /// The functions some call passes a constant, as the first pass, which inlines every
-    /// call, found them.
-    specializable: std::collections::HashSet<usize>,
-    /// The outlined functions compiled once for each set of constants their calls pass,
-    /// rather than once for all.
-    specialize: std::collections::HashSet<usize>,
-    /// The parameters every call binds to blobs only, as the first pass, which inlines every
-    /// call, found them.
-    blob_params: std::collections::HashSet<usize>,
-    /// The functions whose every result is blobs only, found the same way.
-    blob_rets: std::collections::HashSet<usize>,
-    /// Whether stored strings are written, and read, through one shared helper each.
-    shared_bytes: (bool, bool),
-    /// Whether `string` and `bytes` arguments are decoded by one shared helper.
-    shared_decode: bool,
-    /// Whether decoded strings are built by one shared helper per source, and strings
-    /// compared by one shared helper.
-    shared_value: [bool; 3],
-    shared_eq: bool,
-    /// Whether slices share one helper, for those with an end and for those without.
-    shared_slice: [bool; 2],
-    /// The options every `Base64` encoding uses, when they are all the same constants.
-    base64_fixed: Option<[bool; 2]>,
-    /// Whether unsigned checked multiplications share one helper.
-    shared_mul: bool,
-    /// Whether checked powers share one helper, unsigned and signed.
-    shared_exp: [bool; 2],
-    /// Whether queued deferred calls share one helper to allocate and link their nodes.
-    queue_helper: bool,
-    /// Queues with one `defer` site, by the order bodies begin them: their nodes carry no
-    /// site number, and their walk needs no dispatch. Not by their words' address, which
-    /// moves when the plan adds or drops a region before them.
-    single_queues: std::collections::HashSet<u32>,
-    /// The bodies, by id, and functions inlined in them more than once whose continuations
-    /// read their parameters or constants: each call binds those to words of its own.
-    split_insts: std::collections::HashSet<(usize, usize)>,
-    /// Constant raises with several sites, which share one block.
-    shared_raises: std::collections::HashSet<String>,
-    /// Whether a constant raise with one site also goes out of line, so the code around it
-    /// stays one straight run whose values can stay on the stack.
-    outline_raises: bool,
-    /// Whether each site takes its smallest form even where that keeps the outliner from
-    /// sharing it with other sites.
-    tight: bool,
-    /// Whether a body's own regions may overlap those of functions compiled once that it
-    /// never runs. Bodies then touch less memory, but alike bodies can place their regions
-    /// apart, which keeps the outliner from sharing their code, so both are built.
-    frames: bool,
-    /// Whether constants stored to locals are read as constants, which costs bytes over a
-    /// `DUP` unless the constant folds.
-    forward_consts: bool,
-    /// Whether allocations where the heap's top is known also bump it inline at a constant
-    /// address, which costs bytes over a call unless the helper goes or the address folds.
-    static_heap: bool,
-    /// Whether every allocation where the top is unknown bumps it inline too, not only
-    /// those the cost model picks, so tests reach each site.
-    every_bump: bool,
-    /// Whether calls that run where they are deferred stage their words in `Region::Stage`,
-    /// and every call decodes its fixed result from there.
-    stage: bool,
-    /// Whether a promoted word may sink under an operand an op takes from beneath it, and
-    /// a stored value be rotated under the items above it to stay on the stack. That holds
-    /// more words, but the swaps can keep the outliner from sharing code.
-    sink: bool,
-    /// Whether a promoted word stays on the stack across jumps to blocks that abandon it, as
-    /// reverts with an error's fields, whose loads of the word become `DUP`s. Blocks alike
-    /// before can then differ, which keeps them from being shared, so it is tried last.
-    abandon: bool,
-}
-
-/// A compiled function, whether it runs storage in place, whether it has calls across of its
-/// own, and, when it is specialized, the constant each call of the copy passes for each
-/// parameter.
-type FuncKey = (usize, bool, bool, Vec<Option<[u64; 4]>>);
-
-/// A function compiled once. Calls merge what it reads and writes into their body.
-struct FuncSub {
-    label: u32,
-    code: Vec<Inst>,
-    reads: std::collections::BTreeSet<u32>,
-    writes: std::collections::BTreeSet<u32>,
-    journal_stores: bool,
-    leaves: usize,
-    /// The argument words it takes from under its return address.
-    takes: usize,
-}
-
-/// Where ABI-encoded data is decoded from: memory or calldata, given the words holding
-/// the data's address and length, or the last call's return data.
-#[derive(Clone, Copy)]
-enum Src {
-    Mem(i32, i32),
-    Cd(i32, i32),
-    Ret,
-}
-
-/// Helpers compiled once and reached with a return address on the stack.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Sub {
-    JournalLoad,
-    JournalStore,
-    JournalFlush,
-    AllocBlob,
-    /// `[value, slot, ret]`: writes a string or bytes value to a stored leaf.
-    StoreBytes,
-    /// `[slot, ret]` becomes the stored string or bytes value.
-    LoadBytes,
-    /// `[ret]` becomes the last call's revert data as a `bytes` value.
-    RevertData,
-    /// `[x, y, d, ret]` becomes `x * y / d`, with the product kept in 512 bits.
-    MulDiv,
-    /// `[a, b, ret]` becomes `a * b`, or panics on overflow.
-    CheckedMul,
-    /// `[a, b, ret]` becomes `a ** b`, or panics on overflow: unsigned or signed.
-    CheckedExp(bool),
-    /// `[head, ret]` becomes a list decoded from the calldata argument at `head`, its
-    /// elements of the given type.
-    DecodeList(usize),
-    /// `[n, base, ret]` becomes a copy of the `n` elements stored from slot `base`: the
-    /// words per element, whether the slots are transient, whether the body is direct,
-    /// and whether each element is a `string` or `bytes` value.
-    LoadList(u32, bool, bool, bool),
-    /// `[ptr, old, base, ret]` writes a list over `old` stored elements from slot `base`.
-    StoreList(u32, bool, bool, bool),
-    /// `LoadList` for records whose fields share slots: the element type, whether the
-    /// slots are transient, and whether the body is direct.
-    LoadRecords(usize, bool, bool),
-    /// `StoreList` for records whose fields share slots.
-    StoreRecords(usize, bool, bool),
-    /// `LoadList` for elements that share slots: the first one's bytes, how many fit in a
-    /// slot, whether the slots are transient, and whether the body is direct.
-    LoadPacked(Pack, u64, bool, bool),
-    /// `StoreList` for elements that share slots.
-    StorePacked(Pack, u64, bool, bool),
-    /// `[n, base, ret]` zeroes the `n` slots from `base`.
-    ZeroSlots(bool, bool),
-    /// `[n, base, ret]` zeroes the `n` elements of this type stored from slot `base`, with
-    /// the data of their strings, bytes, and lists.
-    ClearElems(usize, bool, bool),
-    /// `[slot, ret]` becomes the string or bytes value stored at a computed slot: whether
-    /// the slot is transient, and whether the body is direct.
-    LoadSlotBytes(bool, bool),
-    /// `[value, slot, ret]` writes a string or bytes value to a computed slot.
-    StoreSlotBytes(bool, bool),
-    /// `[queue, site, size, ret]` becomes a new node of `size` bytes for `site`, linked at
-    /// the end of the list whose head and tail words are at `queue`.
-    QueuePush,
-    /// `[pos, ret]` becomes the calldata position of a `T[]` argument's length word, whose
-    /// head is at `pos`, with Solidity's bounds checked: the offset and the length fit in 64
-    /// bits, and every element is inside calldata.
-    ListHead,
-    /// Jumped to, not called: `[size, kinds, sel]` reverts with an encoded error.
-    RevertAbi,
-    /// `[word, ret]` becomes a blob of the bytes a short word packs.
-    ShortBlob,
-    /// `[ptr, ret]` becomes a list of strings or bytes ABI-encoded: a blob's data, the
-    /// length word, each element's offset, then each element's length and padded bytes.
-    BlobsAbi,
-    /// `[pos, ret]` becomes the `string` or `bytes` argument whose head is at `pos`.
-    DecodeBytes,
-    /// `[pos, ret]` becomes a copy of the `string` or `bytes` whose length word is at `pos`.
-    CopyCdBytes,
-    /// `[at, word, slot, ret]` becomes `[end]`: the string or bytes value stored at `slot`,
-    /// whose slot word is `word`, laid out at `at` as its length and zero-padded bytes.
-    StoredTail,
-    /// `[a, b, ret]` becomes whether two lists of strings or bytes are equal.
-    BlobsEq,
-    /// `[a, b, ret]` becomes whether two strings or bytes values hold the same bytes.
-    BytesEq,
-    /// `[at, len, ret]` becomes a `string` or `bytes` value of the bytes at `at`, in
-    /// memory, calldata, or the return data.
-    BytesValue(SrcKind),
-    /// `[data, fileSafe, noPadding, ret]` becomes `data` in base64, as a string. With the
-    /// options fixed, `[data, ret]`.
-    Base64Encode(Option<[bool; 2]>),
-    /// `[data, ret]` becomes the bytes a base64 string encodes.
-    Base64Decode,
-    /// `[data, upper, ret]` becomes `data` with its ASCII letters in lower or upper case.
-    StringCase,
-    /// `[quoted, len, src, ret]` becomes the `len` bytes at `src` escaped for a JSON string,
-    /// in double quotes when `quoted` is 1, or with `true`, for HTML.
-    StringEscape(bool),
-    /// `[data, needle, from, ret]` becomes where `needle` first starts in `data` at `from`
-    /// or later, or `Uint.max`.
-    IndexOf,
-    /// `[data, needle, replacement, ret]` becomes `data` with every `needle` replaced.
-    Replace,
-    /// `[list, ret]` becomes the strings or bytes of a list, one after another.
-    Join,
-    /// `[n, ret]` becomes `n` in decimal, as a string: signed or unsigned.
-    DecimalString(bool),
-    /// `[value, len, ret]` becomes `value` as `0x` and hex digits, in the fewest whole
-    /// bytes past `len`. `value` must fit in them if they are to be exactly `len + 1`.
-    HexString,
-    /// `[address, ret]` becomes its EIP-55 checksummed hex string.
-    ChecksumString,
-    /// `[value, start, end, ret]` becomes the slice between; without `end`, `[value,
-    /// start, ret]` becomes the slice to the end.
-    BytesSlice(bool),
-    /// `[x, cur, ret]` becomes `[end]`: a dynamic value of this type ABI-encoded at `cur`.
-    TreeEnc(usize),
-    /// `[at, dst, ret]` becomes `[]`: the dynamic value of this type at data position
-    /// `at` decoded into its words at `dst`: from where, and whether as an argument.
-    TreeDec(usize, SrcKind, bool),
-    /// `[acc, at, ret]` becomes `[]`: `TreeDec`'s checks of the value at `at`, with nothing
-    /// decoded, for a value read in place, after those `acc` holds.
-    TreeCheck(usize, SrcKind, bool),
-    /// `[pos, cur, ret]` becomes `[end]`: the value of this type at calldata position
-    /// `pos`, an argument checked on entry, ABI-encoded at `cur`.
-    TreeCdEnc(usize),
-    /// `[a, cur, ret]` becomes `[end]`: the payload of the variant of this type whose words
-    /// are at `a`, ABI-encoded as a lone value at `cur`; nothing for a case with none.
-    TreePayload(usize),
-    /// `[base, ret]` becomes the layout of the record of this frame's memory it saves from
-    /// slot `~(base | 2)`.
-    SaveRecord,
-    /// `[header, ret]` becomes a blob of the bytes a dynamic immutable's header locates in
-    /// the code: this code's, or, in a facet, its router's.
-    ImmutableBytes(bool),
-}
-
-impl Sub {
-    fn writes_storage(&self) -> bool {
-        match self {
-            Sub::JournalStore
-            | Sub::JournalFlush
-            | Sub::StoreBytes
-            | Sub::StoreList(..)
-            | Sub::StoreRecords(..)
-            | Sub::StorePacked(..)
-            | Sub::ZeroSlots(..)
-            | Sub::ClearElems(..)
-            | Sub::StoreSlotBytes(..) => true,
-            Sub::JournalLoad
-            | Sub::AllocBlob
-            | Sub::LoadBytes
-            | Sub::RevertData
-            | Sub::MulDiv
-            | Sub::CheckedMul
-            | Sub::CheckedExp(_)
-            | Sub::DecodeList(_)
-            | Sub::LoadList(..)
-            | Sub::LoadRecords(..)
-            | Sub::LoadPacked(..)
-            | Sub::LoadSlotBytes(..)
-            | Sub::QueuePush
-            | Sub::ListHead
-            | Sub::RevertAbi
-            | Sub::ShortBlob
-            | Sub::BlobsAbi
-            | Sub::DecodeBytes
-            | Sub::CopyCdBytes
-            | Sub::StoredTail
-            | Sub::BlobsEq
-            | Sub::BytesEq
-            | Sub::BytesValue(_)
-            | Sub::Base64Encode(_)
-            | Sub::Base64Decode
-            | Sub::StringCase
-            | Sub::StringEscape(_)
-            | Sub::IndexOf
-            | Sub::Replace
-            | Sub::Join
-            | Sub::DecimalString(_)
-            | Sub::HexString
-            | Sub::ChecksumString
-            | Sub::BytesSlice(_)
-            | Sub::TreeEnc(_)
-            | Sub::TreeDec(..)
-            | Sub::TreeCheck(..)
-            | Sub::TreeCdEnc(_)
-            | Sub::TreePayload(_)
-            | Sub::SaveRecord
-            | Sub::ImmutableBytes(_) => false,
-        }
-    }
-}
-
-/// Where a helper copies bytes from.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SrcKind {
-    Mem,
-    Cd,
-    Ret,
-}
-
-/// A deferred call whose target, value, and calldata were captured at the `defer`.
-#[derive(Clone)]
-struct OpSite {
-    to: i32,
-    value: Option<i32>,
-    gas: Option<i32>,
-    data: Option<i32>,
-    size: u64,
-    /// `data` holds a blob's address instead: calldata sized at the `defer`.
-    dynamic: bool,
-    /// `create`: the placeholder for where the contract's creation code sits in this
-    /// code, its length, and the words of the `CREATE2` salt and encoded arguments, if any.
-    /// `Evm.create` has no placeholder: `data` holds its creation code as a `bytes` value.
-    create: Option<(Word, u64, Option<i32>, Option<i32>)>,
-    fired: Option<i32>,
-    /// A method with no result, or an optional one nothing decodes, whose call to an
-    /// account without code would succeed: as in Solidity, the account must have code.
-    needs_code: bool,
-    /// The bytes of return data a result nothing decodes must have, as in Solidity.
-    unread: u64,
-    /// `Evm.call` or `Evm.delegateCall`: the opcode. `data` holds a `bytes` value, the
-    /// whole calldata, and the continuation gets the return data as it came back.
-    raw: Option<u8>,
-    /// `data` holds the calldata position of checked `bytes`, copied when the call runs.
-    cd_data: bool,
-    /// The phase that runs when the call returns, with its result.
-    then: Option<Then>,
-    /// The arena words the `defer` captured: where they start, and how many. A queued
-    /// body copies them into each call's node, and back before the call runs.
-    record: (i32, u32),
-    /// Locals declared inside enclosing loops that the continuation reads: where each
-    /// lives, and its words. Snapshotted with the record, since the loop rebinds them.
-    captures: Vec<(i32, u32)>,
-    /// The words of the inlined parameters and constants the continuation reads, as this
-    /// `defer` left them: another inlined call of the same function binds its own.
-    locals: Vec<(usize, i32)>,
-    /// Not a call but the calls a frame called across into left queued, from the function
-    /// called across: `to` holds the transient record they wait in.
-    drain: Option<usize>,
-    /// The code that wrote the target and calldata at the `defer`, and the
-    /// `Region::Defer` it wrote them to: `rebuild` may move it to where the call runs.
-    rebuild: Option<(usize, usize, i32)>,
-}
-
-/// What one entry body did, gathered while it compiles.
-#[derive(Default)]
-struct Body {
-    id: usize,
-    /// A continuation phase: memory still holds the earlier phase's image and journal.
-    nested: bool,
-    /// Where storage leaves get loaded once the body knows which it reads.
-    prologue: usize,
-    reads: std::collections::BTreeSet<u32>,
-    /// Each `image leaf MLOAD` in the body, by leaf, so a leaf never written can read
-    /// storage in place instead.
-    read_sites: Vec<(u32, usize)>,
-    /// Leaves read where a site cannot be rewritten: by a dynamic index or a shared function.
-    pinned: std::collections::BTreeSet<u32>,
-    writes: std::collections::BTreeSet<u32>,
-    /// Leaves written on every path that reaches the epilogue.
-    always: std::collections::BTreeSet<u32>,
-    /// Instruction index of each dirty-flag store, by leaf.
-    flags: Vec<(u32, usize)>,
-    ops: Vec<OpSite>,
-    /// Count checks, kept only when the sites could exceed the limit.
-    op_checks: Vec<(usize, usize)>,
-    arena_next: i32,
-    arena: i32,
-    /// The last word taken for a flag that a call under a branch was deferred, in the
-    /// body's `Region::Fired`, or zero before any.
-    fired: i32,
-    event_count: i32,
-    op_count: i32,
-    journal_stores: bool,
-    journal_loads: Vec<usize>,
-    /// A loop in this body defers calls, so each `defer` appends a node to a runtime
-    /// list instead of filling a slot of its own once.
-    queued: bool,
-    /// The list's head, tail, and cursor words, in the arena.
-    queue: i32,
-    /// The instructions that start the list, dropped when nothing joins it.
-    queue_init: (usize, usize),
-    /// Which queue this is, in the order bodies begin them, as the plan counts them.
-    queue_id: u32,
-    /// The word holding the first record a call across left for this body, counted from the
-    /// records of the frames nested in it, or zero before any.
-    first_record: i32,
-}
-
-/// A storage place past a key or an index, with its slot on the stack: its type, where
-/// a narrow word sits in the slot, and whether the slot is transient.
-#[derive(Clone, Copy)]
-struct Deep {
-    ty: usize,
-    pack: Pack,
-    transient: bool,
-}
-
 struct Gen<'a> {
     checked: &'a Checked,
-    plan: Plan,
     /// Which entrypoints this code runs, and which it forwards to facets.
     shape: &'a Shape,
     /// Parts of the contracts this code creates.
     needs: Vec<Facet>,
-    /// The label each entrypoint's code begins at.
-    entry_labels: Vec<u32>,
-    /// Inlined calls per function, the most bytes one inlined body took, and how often the
-    /// calls in each body run, each loop around one multiplying it by `asm::LOOP_RUNS`.
-    inlined: HashMap<usize, (usize, usize, HashMap<usize, f64>)>,
-    funcs: HashMap<FuncKey, FuncSub>,
-    /// The functions some call passes a constant.
-    const_sites: HashSet<usize>,
-    /// Code shared by every body: its memory overlaps only what never runs while it does.
-    shared: bool,
-    /// The function compiled once whose code is being emitted, as a region user.
-    func_ctx: Option<usize>,
-    /// Calls between region users: a body or function, or `usize::MAX` for code outside
-    /// both, and the function it calls.
-    func_calls: std::collections::HashSet<(usize, usize)>,
-    log_sites: usize,
-    return_sites: usize,
-    /// The body reads and writes storage in place. Nothing outside can run while it
-    /// computes, so no one can see the difference from writing at the end.
-    direct: bool,
-    /// The body being compiled is a view's: it writes nothing.
-    reading: bool,
     /// Every stored fixed list has consecutive slots, so an index is a slot offset.
     lists_in_order: bool,
     /// Some external function is `nonreentrant`, so every defer window must be marked.
@@ -1945,230 +552,36 @@ struct Gen<'a> {
     /// With a payable `fallback`, value reaches the selector table, so each entry that is
     /// not payable rejects it itself, jumping here.
     reject_value: Option<u32>,
-    /// Decoding a function's arguments, whose oversized lengths revert with no data.
-    decoding_args: bool,
-    /// Where the data the tree decoders read starts and ends, as positions.
-    tree_at: i32,
-    tree_end: i32,
     code: Vec<Inst>,
     next_label: u32,
-    /// The last mark a tracked build emitted.
-    next_mark: u32,
-    spaces: Vec<Space>,
-    image: i32,
-    dirty: i32,
-    local: Vec<i32>,
-    query_buf: i32,
-    in_query: bool,
-    /// The gas limit of the query being compiled, if it has one.
-    query_gas: Option<Expr>,
-    /// Nothing runs after the statement being compiled before its body ends.
-    tail: bool,
-    /// The `defer` being compiled is the last thing its body runs.
-    fire_tail: bool,
-    /// The loop being compiled ends its body and nothing in it can tell a call run now
-    /// from one run after the transition, so its `defer`s run where they stand.
-    fire_loop: bool,
-    /// A recoverable call's `Error` phase, by its statements' shape, for the `Ok` phase
-    /// about to compile: a tail of `Ok` shaped the same jumps to it instead.
-    next_share: Option<(String, u32)>,
-    /// That phase while its `Ok` phase compiles, with how many inlined calls deep it is.
-    share: Option<(String, u32, usize)>,
-    /// Queries issued at the start of the body, by source position: their buffer holds
-    /// whether each succeeded, then its word.
-    hoisted: HashMap<(u32, u32), i32>,
     /// Queries a body will issue first, which may follow its writes in the source.
     skip_queries: std::collections::HashSet<(u32, u32)>,
-    scratch_a: i32,
-    scratch_b: i32,
-    scratch_c: i32,
-    scratch_to: i32,
-    scratch_val: i32,
-    /// `Region::Stage`'s words: the input, the target, the value, the gas.
-    stage: [i32; 4],
-    /// Where a shared string helper keeps the slot it was given.
-    key_scratch: i32,
-    base64_tbl: i32,
     /// Creation code: arguments are read from a copy of what follows the code, not calldata.
     init: bool,
-    /// Where that copy sits, minus the 4 bytes a selector takes in calldata.
-    code_args: i32,
     /// Placeholder for the end of the creation code, where its arguments begin.
     code_end: Word,
-    /// Stored string writes and reads in direct bodies, and a leaf the helpers compile for.
-    bytes_sites: (usize, usize),
-    /// `string` and `bytes` arguments decoded so far.
-    decode_sites: usize,
-    /// Strings built from decoded bytes so far, per source, and strings compared.
-    value_sites: [usize; 3],
-    eq_sites: usize,
-    slice_sites: [usize; 2],
-    /// The option sets `Base64` encodings use: `None` for options known only at runtime.
-    base64_opts: std::collections::HashSet<Option<[bool; 2]>>,
-    mul_sites: usize,
-    exp_sites: [usize; 2],
-    /// `defer` sites inside loops, whose calls are queued.
-    queued_sites: usize,
-    /// How many sites each queue, by the order bodies begin them, gathered.
-    queue_sites: HashMap<u32, usize>,
-    /// How many queues bodies have begun so far.
-    queues_begun: u32,
-    /// The index being compiled is a loop counter below the list's length.
-    trusted_index: bool,
-    /// A map slot already hashed for `m[k] := ... m[k] ...`: its root, leaf, key, and where
-    /// the slot is kept, so the read inside the value reuses it.
-    slot_hint: Option<(usize, u32, Expr, i32)>,
     /// List parameters left in calldata: each local holds its length word's position.
     /// A parameter stays there when it is only walked by `for` and asked for its length.
     cd_lists: std::collections::HashSet<usize>,
     /// `bytes` and `string` parameters left in calldata for `Abi.decode`: each local holds
     /// its length word's position.
     cd_bytes: std::collections::HashSet<usize>,
-    /// Raw query answers read in place: `.length` is the return data's size, and the first
-    /// word is at `ret_scratch`.
-    rd_first: std::collections::HashSet<usize>,
-    /// Static parameters of the entrypoint being compiled, decoded from calldata.
-    cd_words: std::collections::HashSet<usize>,
-    /// Parameters and constants of inlined calls that continuations read, bound to fresh
-    /// arena words for the call.
-    inst_syms: std::collections::HashSet<usize>,
-    /// Where the call just emitted writes its result, for `after_call` to decode.
-    ret_out: Option<i32>,
-    /// Arguments with nested dynamic values left in calldata: each local holds the value's
-    /// calldata position, and encoding it copies from there.
-    cd_trees: std::collections::HashSet<usize>,
     /// Lists and records left in calldata, checked where they were decoded as decoding
     /// would check them: each local holds the value's calldata position, and every read
     /// is a calldata read.
     cd_checked: std::collections::HashSet<usize>,
-    bytes_rep: Option<(usize, u32)>,
-    /// A leaf whose slot is read from memory instead of pushed, inside a shared helper.
-    dyn_key: Option<(u32, i32)>,
-    /// Map parameters of an inlined call, bound to the stored map the call passes: the
-    /// body reaches it as if it named the map. An outlined body reads the slot instead.
-    slot_binds: HashMap<usize, (usize, u32)>,
-    /// Parameters of an inlined call that the call passes a local: the local, which cannot
-    /// change while the body runs, so a slot or word kept by one's name serves the other.
-    key_names: HashMap<usize, usize>,
-    /// Parameters of an inlined call that the call passes a literal word: the word.
-    const_params: HashMap<usize, Word>,
-    /// Parameters of an inlined call that the call passes a string literal: its bytes.
-    const_strs: HashMap<usize, Vec<u8>>,
-    /// Temporaries of shared code. Each serves one site, so only the code that made it
-    /// names it, and it can live on the stack as a body's words do.
-    shared_temps: std::collections::HashSet<usize>,
-    /// The bodies' copy, and each function's and helper's, of a scratch word, by the word's
-    /// region and the user, so the word is that code's alone and can live on the stack.
-    scratch_copies: HashMap<(usize, usize), i32>,
-    /// The helper being compiled, by its place in `subs`.
-    helper: Option<usize>,
-    /// The slot on the stack is a transient map entry's, for the next load or store.
-    transient_slot: bool,
     /// Creation code of contracts this one creates, appended after its own code: each
     /// one's placeholder, its bytes, and its contract's name.
     data: Vec<(Word, Vec<u8>, String)>,
     /// Creation code of the contracts this one creates or hashes, by name.
     peer_built: HashMap<String, Vec<u8>>,
-    /// Long literals among `data`, by their padded bytes.
-    literals: HashMap<Vec<u8>, Word>,
     /// An `Error` binding read straight from the return data: its phase only measures it
     /// or raises it again, and makes no call that would replace it.
     returned: Option<usize>,
-    /// Map slots already hashed on every path to here in the body: where each is kept,
-    /// the locals its keys read, and the `branch` it was kept at.
-    slot_cache: HashMap<(usize, u32, Vec<String>), (i32, Vec<usize>, u32)>,
-    /// Storage words already read or written on every path to here, each kept in a memory
-    /// word, by the place they are read from, with the locals the place's keys read and
-    /// the `branch` it was kept at.
-    /// Anything that may write storage it does not account for drops them all.
-    val_cache: HashMap<String, (i32, Vec<usize>, u32)>,
-    /// Set around a store `val_cache` already accounts for.
-    kept_store: bool,
-    /// Words holding a cached slot or value. A word nothing reads drops its store.
-    cache_words: Vec<i32>,
-    /// The words among them that hold a constant slot's word, with the slot.
-    leaf_words: Vec<(i32, Word)>,
-    /// Inside an assertion's failure block, which runs only when it fails.
-    failing: usize,
-    ret_scratch: i32,
-    args_buf: i32,
-    hash_buf: i32,
-    topic_buf: i32,
-    journal_len: i32,
-    journal_at: i32,
-    journal_base: i32,
-    blob_ptr: i32,
-    /// For each local holding a list, the words `room` names.
-    rooms: HashMap<i32, i32>,
     /// For each local that nested writes pass through lists of, the paths to those lists.
     owners: HashMap<usize, Vec<String>>,
-    /// The words `room` names for each local and path in `owners`.
-    owned: HashMap<(usize, String), i32>,
-    /// Locals the statements being compiled read lists out of: writes through them copy.
-    sharing: Vec<usize>,
-    blob_base: i32,
-    /// Where `resolve` placed the heap, when code uses it.
-    heap: Option<asm::Heap>,
-    fn_ret: Vec<i32>,
-    tuple_buf: i32,
-    compiling: Vec<usize>,
-    fails: Vec<(Option<u64>, u32)>,
-    /// Constant raises, each compiled once: its key, its block, and the raise.
-    raises: Vec<(String, u32, Raised)>,
-    /// Sites of each constant raise, for the plan.
-    raise_sites: HashMap<String, usize>,
-    /// Calls inlined in each body, by body id and function, of functions whose
-    /// continuations read their parameters or constants.
-    inst_sites: HashMap<(usize, usize), usize>,
-    subs: Vec<(Sub, u32, bool)>,
-    /// The payloads some encoded error reverts with: 1 for string or bytes values, 2 for
-    /// lists, and 4 for string literals, which reach it still packed in their words.
-    revert_kinds: u64,
-    /// Where an encoded error's head words wait for the helper that reverts with them.
-    revert_head: Option<i32>,
-    /// Runtime branches around the code being compiled.
-    branch: u32,
     /// Each immutable's value where `deploy` always sets it to one constant.
     imm_consts: Vec<Option<Word>>,
-    /// Whether the plan's `frames` placed any region apart from another, or kept it apart.
-    frames_decide: bool,
-    /// Whether the plan's `outline_raises` put a raise out of line, or kept one inline.
-    raises_decide: bool,
-    /// While building creation code: each immutable's value where every store so far
-    /// runs whenever `deploy` does and pushes a constant.
-    imm_stores: HashMap<u32, Option<Word>>,
-    /// The `branch` of code that runs whenever the current body or shared function does.
-    top_branch: u32,
-    body: Option<Body>,
-    bodies: usize,
-    /// The locals declared by each enclosing loop, innermost last.
-    loop_syms: Vec<Vec<usize>>,
-    /// Loop elements from a stored string list that are only asked for their length:
-    /// each holds its slot's word, not a copy of the string.
-    header_locals: std::collections::HashSet<usize>,
-    /// `bytes` and `string` locals a loop reads and never writes, with the words their
-    /// length and data address were read into before it.
-    span_temps: HashMap<usize, (i32, i32)>,
-    /// Widths `k` that a loop cuts `bytesN(b[i:i + k])` by and never writes, with the word
-    /// the mask of `k` leading bytes was computed into before it.
-    mask_temps: HashMap<usize, i32>,
-    /// `bytes` and `string` locals that hold a blob, never the empty word, as a decoded
-    /// argument does.
-    blobs: std::collections::HashSet<usize>,
-    /// Whether each parameter bound so far was bound to blobs only, at every call.
-    blob_sites: HashMap<usize, bool>,
-    /// Whether each function inlined so far left blobs only, at every call.
-    ret_sites: HashMap<usize, bool>,
-    /// The local whose blob the `Bytes.concat` being compiled may grow in place.
-    append_to: Option<usize>,
-    /// Whether each `bytes` or `string` local is `appendable`.
-    appendable: HashMap<usize, bool>,
-    /// The counters of the enclosing loops: each is below its limit while its loop runs.
-    loop_counters: Vec<usize>,
-    /// Orderings the enclosing guards prove, innermost last.
-    facts: range::Facts,
-    /// Where creation code keeps the immutables' values.
-    imm_mem: i32,
     /// A facet's immutables follow its calldata, from the router: their bytes, and where
     /// each word sits among them.
     cd_tail: u64,
@@ -2176,15 +589,6 @@ struct Gen<'a> {
     /// Immutables a router appends to a facet's calldata, copied from its code: each
     /// block's placeholder, and its words.
     tail_blobs: Vec<(Word, Vec<u32>)>,
-    /// The body being compiled runs in a frame called into while another frame's transition
-    /// runs: a hook's way back in, or a facet's entrypoint for a module function. Its
-    /// deferred calls wait for that frame, which owns the transition, to drain them.
-    crossed: bool,
-    /// The entrypoints that run in such a frame and may queue calls, by route, each with the
-    /// label its queue runs from when the owner drains it.
-    drains: Vec<(usize, u32)>,
-    /// Regions drained code reads, which must stay in the memory a queue saves.
-    drain_spaces: HashSet<usize>,
     /// What a stateful hook a facet calls back counts as for the walks that look for
     /// deferred calls: the contract's implementation may defer.
     queued_call: Stmt,
@@ -2265,27 +669,9 @@ enum Node<'e> {
     Expr(&'e Expr),
 }
 
-/// Where a `case` leaves its result: a word on the stack, a value of the given type
-/// written to memory, or nowhere, for a `case` run as a statement.
-#[derive(Clone, Copy)]
-enum Sink {
-    Stack,
-    Mem(i32, usize),
-    Discard,
-}
-
 /// The low `width` bytes set.
 fn byte_mask(width: u8) -> Word {
     Word::from_u64(0).not().shr(256 - u32::from(width) * 8)
-}
-
-fn dyn_from_word(w: Word, digits: Option<u8>) -> Word {
-    let be = w.to_be_bytes();
-    let start = match digits {
-        Some(d) => 32 - usize::from(d / 2),
-        None => be.iter().position(|b| *b != 0).unwrap_or(32),
-    };
-    Word::short_dyn(&be[start..])
 }
 
 pub(crate) const INIT_BYTES: usize = 10;
@@ -2409,103 +795,54 @@ fn wrap_init_self(runtime: &[u8], parts: &[Word], sites: &[usize]) -> Result<Vec
     Ok(code)
 }
 
-/// Whether two expressions name the same value: the same local, literal, field, element,
-/// or context read, with no call that could differ between evaluations.
-/// The one-word values of a record literal, nested literals included, in word order.
-/// False when a field is missing or is some other multi-word value.
-fn record_words<'e>(
-    types: &[crate::check::RType],
-    expr: &'e Expr,
-    ty: usize,
-    out: &mut Vec<&'e Expr>,
-) -> bool {
-    let Expr::Record { fields, .. } = expr else {
-        return false;
-    };
-    let mut layout: Vec<_> = types[ty].fields.iter().collect();
-    layout.sort_by_key(|f| f.slot);
-    layout.iter().all(|field| {
-        let Some((_, value)) = fields.iter().find(|(name, _)| *name == field.name) else {
-            return false;
+impl<'a> Gen<'a> {
+    pub(super) fn new(checked: &'a Checked, shape: &'a Shape) -> Result<Self, Error> {
+        let mut g = Self {
+            checked,
+            shape,
+            needs: Vec::new(),
+            lists_in_order: true,
+            any_nonreentrant: false,
+            reject_value: None,
+            code: Vec::new(),
+            next_label: 0,
+            skip_queries: std::collections::HashSet::new(),
+            imm_consts: Vec::new(),
+            init: false,
+            code_end: Word::from_u64(0),
+            cd_lists: std::collections::HashSet::new(),
+            cd_bytes: std::collections::HashSet::new(),
+            cd_checked: std::collections::HashSet::new(),
+            data: Vec::new(),
+            peer_built: HashMap::new(),
+            returned: None,
+            owners: HashMap::new(),
+            cd_tail: 0,
+            imm_tail: Vec::new(),
+            tail_blobs: Vec::new(),
+            queued_call: Stmt::Defer {
+                line: 0,
+                col: 0,
+                expr: Expr::Lit {
+                    line: 0,
+                    col: 0,
+                    lit: Lit::Zero,
+                    ty: 0,
+                },
+                value: None,
+                gas: None,
+                then: None,
+            },
+            untested_hooks: HashSet::new(),
         };
-        if out.len() != field.slot as usize {
-            return false;
+        g.lists_in_order = g.stored_lists_in_order();
+        g.any_nonreentrant = g.checked.routes.iter().any(|r| r.nonreentrant)
+            || g.checked.prog.funcs.iter().any(|f| f.nonreentrant);
+        if shape.part {
+            g.facet_tail();
         }
-        match value {
-            Expr::Record { .. } => {
-                let mut inner = Vec::new();
-                let ok = record_words(types, value, field.ty, &mut inner);
-                out.extend(inner);
-                ok
-            }
-            _ if types[field.ty].words == 1 => {
-                out.push(value);
-                true
-            }
-            _ => false,
-        }
-    })
-}
-
-fn same_expr(a: &Expr, b: &Expr) -> bool {
-    match (a, b) {
-        (Expr::Ident { sym: Some(x), .. }, Expr::Ident { sym: Some(y), .. }) => x == y,
-        (Expr::Lit { lit: x, .. }, Expr::Lit { lit: y, .. }) => x == y,
-        (
-            Expr::Field {
-                base: x, name: n, ..
-            },
-            Expr::Field {
-                base: y, name: m, ..
-            },
-        ) => n == m && same_expr(x, y),
-        (
-            Expr::Index {
-                base: x, index: i, ..
-            },
-            Expr::Index {
-                base: y, index: j, ..
-            },
-        ) => same_expr(x, y) && same_expr(i, j),
-        (
-            Expr::Call {
-                builtin: Some(x),
-                callee: None,
-                args: xs,
-                base: None,
-                ..
-            },
-            Expr::Call {
-                builtin: Some(y),
-                callee: None,
-                args: ys,
-                base: None,
-                ..
-            },
-        ) => x == y && xs.len() == ys.len() && xs.iter().zip(ys).all(|(p, q)| same_expr(p, q)),
-        // Fixed for the whole call, as `fixedKey` treats them: `Evm.sender()` and the like.
-        (
-            Expr::Call {
-                builtin: Some(x),
-                callee: None,
-                args: xs,
-                ..
-            },
-            Expr::Call {
-                builtin: Some(y),
-                callee: None,
-                args: ys,
-                ..
-            },
-        ) => {
-            x == y
-                && xs.is_empty()
-                && ys.is_empty()
-                && matches!(
-                    x,
-                    Builtin::Sender | Builtin::SelfAddr | Builtin::TxOrigin | Builtin::Value
-                )
-        }
-        _ => false,
+        g.owners = g.find_owners();
+        g.untested_hooks = g.find_untested_hooks();
+        Ok(g)
     }
 }

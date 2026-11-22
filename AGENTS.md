@@ -34,7 +34,9 @@ target/release/lithe prove <file>.lithe               # for every file with a .s
 ## Where things go
 
 - `src/`: compiler, CLI (`src/main.rs`), LSP. Codegen is in `src/gen` and `src/asm`, the prover in `src/prove`, and the runtime tests in `src/evm`.
+- `src/gen/mir`: the pipeline. `lower` turns the checked program into an SSA graph per function, `build` folds and numbers values as the graph is made, `emit` writes stack code. Around it in `src/gen`: `dispatch` (selector dispatch and routing), `body` (which queries a body issues early), `types` (type, ABI and layout queries), `walk`, `peers`, `immutable`, and `certify` (what a build tells the prover). `src/asm` holds the bytecode passes that run over the result. `LITHE_MIR_DUMP=1` prints each function's stack code and the inlining report; `LITHE_MIR_TIMES=1` times each phase of each build, and `lithe compile --timings` prints one line of totals.
 - `src/evm/matrix.rs` crosses every type with every place a value can live. Extend it when you add a type, a place, or a feature that touches either.
+- `tests/snapshots/`: a hash of every `bench/`, `examples/` and `fuzz/` contract's bytecode, and each bench suite's gas on the test EVM (`src/evm/snapshot.rs`, `src/evm/bench_gas.rs`). A change meant to move either regenerates them with `LITHE_UPDATE_SNAPSHOTS=1 cargo test --lib -- evm::snapshot evm::bench_gas` and says why in the commit.
 - `examples/reject/`: programs that must fail to compile. Each needs a rule in `src/evm/examples.rs`.
 - `bench/`: each contract in Lithe and Solidity. `python3 bench/run.py [name ...]` compares size and gas on anvil (needs Foundry and solc).
 - `docs/src/pages`: MDX docs. Mark a ```lithe block `fragment`, `rejects`, or `[file.lithe]` as described in `docs/README.md`.

@@ -105,7 +105,7 @@ thread_local! {
     /// in, innermost last. That code, not the running code, is what the account's size,
     /// hash, and calls to itself see.
     /// A call or creation into another account pushes `None`: that account runs its own code.
-    static ACCOUNT_CODE: std::cell::RefCell<Vec<Option<Vec<u8>>>> = const { std::cell::RefCell::new(Vec::new()) };
+    static HOST_CODE: std::cell::RefCell<Vec<Option<Vec<u8>>>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Deployed facets. A static call to one runs part of the caller's own code, a pure
     /// function of a module, so it is not an effect, and what that code does is the caller's.
     static FACETS: std::cell::RefCell<std::collections::HashSet<Word>> =
@@ -125,8 +125,8 @@ fn gas_limit(gas: Word) -> String {
 }
 
 /// The code of the account running `code`: its own, unless it runs by `delegatecall`.
-fn account_code(code: &[u8]) -> Vec<u8> {
-    ACCOUNT_CODE.with(|a| {
+fn host_code(code: &[u8]) -> Vec<u8> {
+    HOST_CODE.with(|a| {
         a.borrow()
             .last()
             .cloned()
@@ -137,11 +137,11 @@ fn account_code(code: &[u8]) -> Vec<u8> {
 
 /// Runs `f` as the account at `at`, which runs its own code.
 fn elsewhere<T>(at: Word, f: impl FnOnce() -> T) -> T {
-    ACCOUNT_CODE.with(|a| a.borrow_mut().push(None));
+    HOST_CODE.with(|a| a.borrow_mut().push(None));
     let was = SELF.replace(at);
     let out = f();
     SELF.set(was);
-    ACCOUNT_CODE.with(|a| a.borrow_mut().pop());
+    HOST_CODE.with(|a| a.borrow_mut().pop());
     out
 }
 
@@ -290,7 +290,21 @@ fn exec(
     value: Word,
     balance: Word,
 ) -> Result<Outcome, String> {
-    exec_state(
+    let at = SELF.get();
+    let previous = DEPLOYED.with(|d| {
+        d.borrow_mut().insert(
+            at,
+            (
+                if CONSTRUCTING.get() {
+                    Vec::new()
+                } else {
+                    code.to_vec()
+                },
+                storage.clone(),
+            ),
+        )
+    });
+    let out = exec_state(
         code,
         calldata,
         storage,
@@ -298,9 +312,21 @@ fn exec(
         value,
         balance,
         HashMap::new(),
-    )
+    );
+    DEPLOYED.with(|d| {
+        let mut d = d.borrow_mut();
+        if let Some(previous) = previous {
+            d.insert(at, previous);
+        } else {
+            d.remove(&at);
+        }
+    });
+    out
 }
 
+// Transient storage is frame-local here: self/delegate calls share it, but calls to
+// other accounts copy it without merging it back. This does not model EIP-1153
+// per-address transaction storage; reentrant transient locks need a shared world map.
 fn exec_state(
     code: &[u8],
     calldata: &[u8],
@@ -328,6 +354,7 @@ fn exec_state(
     let self_addr = SELF.get();
     let mut self_balance = balance;
     let mut storage = storage;
+    let metered = bench_gas::metering();
     for _ in 0..200_000 {
         // Running off the end of the code stops, as `STOP` does, with no output.
         if pc >= code.len() {
@@ -336,6 +363,9 @@ fn exec_state(
             break;
         }
         let op = code[pc];
+        if metered {
+            bench_gas::charge(op, &stack, &storage, self_addr);
+        }
         if (0x60..=0x7f).contains(&op) {
             let n = (op - 0x5f) as usize;
             if pc + 1 + n > code.len() {
@@ -348,8 +378,15 @@ fn exec_state(
             continue;
         }
         pc += 1;
-        if matches!(op, 0xf0 | 0xf1 | 0xf2 | 0xf4 | 0xf5 | 0xfa) && snap_world.is_none() {
-            snap_world = Some((DEPLOYED.with(|d| d.borrow().clone()), NONCE.get()));
+        if matches!(op, 0xf0 | 0xf1 | 0xf2 | 0xf4 | 0xf5 | 0xfa) {
+            if snap_world.is_none() {
+                snap_world = Some((DEPLOYED.with(|d| d.borrow().clone()), NONCE.get()));
+            }
+            DEPLOYED.with(|d| {
+                if let Some(entry) = d.borrow_mut().get_mut(&self_addr) {
+                    entry.1 = storage.clone();
+                }
+            });
         }
         let pop = |stack: &mut Vec<Word>| stack.pop().ok_or_else(|| "stack underflow".to_string());
         match op {
@@ -531,7 +568,7 @@ fn exec_state(
                 let off = word_usize(pop(&mut stack)?)?;
                 let len = word_usize(pop(&mut stack)?)?;
                 let src = if addr == self_addr {
-                    account_code(code)
+                    host_code(code)
                 } else {
                     DEPLOYED.with(|d| {
                         d.borrow()
@@ -550,7 +587,7 @@ fn exec_state(
                     } else if OPAQUE_CODE.get() {
                         1
                     } else {
-                        account_code(code).len() as u64
+                        host_code(code).len() as u64
                     }
                 } else if MOCKS.with(|m| m.borrow().contains_key(&addr)) {
                     // A mock stands in for a contract.
@@ -565,9 +602,9 @@ fn exec_state(
                 if addr == self_addr && OPAQUE_CODE.get() {
                     stack.push(Word::from_u64(1));
                 } else if addr == self_addr {
-                    stack.push(Word::from_be_bytes(crate::keccak::keccak256(
-                        &account_code(code),
-                    )));
+                    stack.push(Word::from_be_bytes(crate::keccak::keccak256(&host_code(
+                        code,
+                    ))));
                 } else {
                     stack.push(Word::from_u64(0));
                 }
@@ -730,7 +767,7 @@ fn exec_state(
                 }
                 let at = created_address(self_addr, salt, &init);
                 let was = CONSTRUCTING.replace(true);
-                let born = elsewhere(self_addr, || {
+                let born = elsewhere(at, || {
                     exec_state(
                         &init,
                         &[],
@@ -743,6 +780,11 @@ fn exec_state(
                 });
                 CONSTRUCTING.set(was);
                 let born = born?;
+                if let Some(current) =
+                    DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone()))
+                {
+                    storage = current;
+                }
                 if born.reverted {
                     returndata = born.returndata;
                     stack.push(Word::from_u64(0));
@@ -786,6 +828,11 @@ fn exec_state(
                             transient.clone(),
                         )
                     })?;
+                    if let Some(current) =
+                        DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone()))
+                    {
+                        storage = current;
+                    }
                     trace.push(Ev::Call { to, value: val });
                     returndata = nested.returndata.clone();
                     if nested.reverted {
@@ -806,7 +853,7 @@ fn exec_state(
                 } else if to == self_addr && in_size > 0 {
                     let input = read_slice(&mut mem, in_off, in_size);
                     let nested = exec_state(
-                        &account_code(code),
+                        &host_code(code),
                         &input,
                         storage.clone(),
                         self_addr,
@@ -881,6 +928,11 @@ fn exec_state(
                             transient.clone(),
                         )
                     })?;
+                    if let Some(current) =
+                        DEPLOYED.with(|d| d.borrow().get(&self_addr).map(|e| e.1.clone()))
+                    {
+                        storage = current;
+                    }
                     returndata = nested.returndata;
                     if ret_size > 0 {
                         let n = ret_size.min(returndata.len());
@@ -898,7 +950,7 @@ fn exec_state(
                 if to == self_addr && in_size > 0 {
                     // A read-only call back into this contract sees its storage as it is now.
                     let nested = exec_state(
-                        &account_code(code),
+                        &host_code(code),
                         &input,
                         storage.clone(),
                         self_addr,
@@ -994,8 +1046,8 @@ fn exec_state(
                     // A created contract's code runs in this account: its storage, balance,
                     // and transient storage. A router reaching its parts is not an effect.
                     let input = read_slice(&mut mem, in_off, in_size);
-                    let account = account_code(code);
-                    ACCOUNT_CODE.with(|a| a.borrow_mut().push(Some(account)));
+                    let host = host_code(code);
+                    HOST_CODE.with(|a| a.borrow_mut().push(Some(host)));
                     let nested = exec_state(
                         &child,
                         &input,
@@ -1005,7 +1057,7 @@ fn exec_state(
                         self_balance,
                         transient.clone(),
                     );
-                    ACCOUNT_CODE.with(|a| a.borrow_mut().pop());
+                    HOST_CODE.with(|a| a.borrow_mut().pop());
                     let nested = nested?;
                     returndata = nested.returndata.clone();
                     // Effects are recorded as they happen, reverted or not, as in one frame.
@@ -1038,7 +1090,7 @@ fn exec_state(
                 } else {
                     let input = read_slice(&mut mem, in_off, in_size);
                     let nested = exec_state(
-                        &account_code(code),
+                        &host_code(code),
                         &input,
                         storage.clone(),
                         caller,
@@ -1094,6 +1146,9 @@ fn exec_state(
     if !stopped {
         return Err("step limit".into());
     }
+    if metered {
+        bench_gas::charge_memory(mem.len());
+    }
     if reverted {
         storage = snap_storage;
         transient = snap_transient;
@@ -1114,6 +1169,58 @@ fn exec_state(
         detail,
         self_balance,
     })
+}
+
+#[test]
+fn reentrant_storage_and_rollback() {
+    let zero = Word::from_u64(0);
+    let one = Word::from_u64(1);
+    let b = Word::from_u64(0xb);
+    for (revert_a, revert_b) in [(false, false), (false, true), (true, false)] {
+        // A's callback saves the value it observed, then replaces it.
+        let mut a = vec![0x36, 0x60, 0, 0x57, 0x60, 1, 0x5f, 0x55];
+        a.extend([0x5f, 0x5f, 0x5f, 0x5f, 0x5f, 0x60, 0xb, 0x5a, 0xf1, 0x50]);
+        // Read after returning from B, rather than just inspecting the world map.
+        a.extend([0x5f, 0x54, 0x60, 2, 0x55]);
+        if revert_a {
+            a.extend([0x5f, 0x5f, 0xfd]);
+        } else {
+            a.push(0x00);
+        }
+        a[2] = a.len() as u8;
+        a.extend([0x5b, 0x5f, 0x54, 0x60, 1, 0x55, 0x60, 2, 0x5f, 0x55, 0x00]);
+        let mut child = vec![0x60, 9, 0x5f, 0x55];
+        child.extend([
+            0x5f, 0x5f, 0x60, 1, 0x5f, 0x5f, 0x61, 0x10, 0x00, 0x5a, 0xf1, 0x50,
+        ]);
+        if revert_b {
+            child.extend([0x5f, 0x5f, 0xfd]);
+        }
+        DEPLOYED.with(|d| d.borrow_mut().insert(b, (child, HashMap::new())));
+        let out = exec(&a, &[], HashMap::new(), one, zero, zero).unwrap();
+        assert_eq!(out.reverted, revert_a);
+        let slot = |key| {
+            out.storage
+                .get(&Word::from_u64(key))
+                .copied()
+                .unwrap_or(zero)
+        };
+        if revert_a {
+            assert!(out.storage.is_empty());
+        } else {
+            assert_eq!(slot(0), Word::from_u64(if revert_b { 1 } else { 2 }));
+            assert_eq!(slot(1), if revert_b { zero } else { one });
+            assert_eq!(slot(2), slot(0));
+        }
+        DEPLOYED.with(|d| {
+            let mut d = d.borrow_mut();
+            let (_, storage) = d.remove(&b).unwrap();
+            assert_eq!(
+                storage.get(&zero).copied().unwrap_or(zero),
+                Word::from_u64(if revert_a || revert_b { 0 } else { 9 })
+            );
+        });
+    }
 }
 
 fn need_dest(code: &[u8], dest: usize) -> Result<(), String> {
@@ -1562,6 +1669,7 @@ fn abi_string(sig: &str, data: &[u8]) -> Vec<u8> {
 mod abi;
 mod abi_tree;
 mod basics;
+mod bench_gas;
 mod calls;
 mod differential;
 mod dispatch;
@@ -1576,6 +1684,7 @@ mod matrix;
 mod precompiles;
 mod prove;
 mod raw;
+mod snapshot;
 mod solady_math;
 mod specs;
 mod split;

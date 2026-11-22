@@ -247,6 +247,7 @@ pub(super) fn hints(setup: &Setup, creation: bool) -> Vec<LoopHint> {
                 id: Some(id),
                 label: format!("the loop at {}", info.place),
                 counted: info.invariants.is_empty(),
+                counter: info.cert.counter,
             })
         })
         .collect()
@@ -307,6 +308,16 @@ impl InvHook<'_, '_> {
                 (Err(_), Some(_)) => None,
                 (Err(_), None) => continue,
             };
+            // A list by where its elements start and its length: two words of the stack.
+            if let (Loc::List(data, len), Some(elem)) = (loc, list) {
+                let st = Machine::stack_of(at);
+                let word = |d: &usize| st.len().checked_sub(d + 1).and_then(|i| st.get(i));
+                if let (Some(&data), Some(&len)) = (word(data), word(len)) {
+                    r.locals
+                        .insert(*sym, bspec::SVal::List(data, len, elem, true));
+                }
+                continue;
+            }
             let w = match loc {
                 Loc::Stack(d) => {
                     let st = Machine::stack_of(at);
@@ -322,7 +333,11 @@ impl InvHook<'_, '_> {
                     let s = m.a.num(256, u64::from(*shift));
                     m.a.lshr(w, s)
                 }
-                Loc::Dead => continue,
+                Loc::Env(op) => match env_word(m, *op) {
+                    Some(w) => w,
+                    None => continue,
+                },
+                Loc::Dead | Loc::List(..) => continue,
             };
             let v = match (kind, list) {
                 (Some(kind), _) => bspec::decode(m, w, WORD, kind),
@@ -351,6 +366,18 @@ impl InvHook<'_, '_> {
             out.push(r.boolean(m, e)?);
         }
         Ok(out)
+    }
+}
+
+/// What an operator of no operands gives in the run: the caller, this contract, the
+/// origin, or the value sent.
+pub(super) fn env_word(m: &Machine, op: u8) -> Option<super::super::bv::T> {
+    match op {
+        0x33 => Some(m.env.caller),
+        0x30 => Some(m.env.address),
+        0x32 => Some(m.env.origin),
+        0x34 => Some(m.env.value),
+        _ => None,
     }
 }
 

@@ -1,0 +1,147 @@
+(* Fuzz target: lists the code builds and changes in memory. A list bound to a second
+   variable is a copy, so a write through either leaves the other as it was; pushes in a
+   loop keep every element whatever else the pass puts in memory; a list changed on one
+   path of a condition is the same list after it; and a list passed to a function is
+   what the caller had, during the call and after. *)
+
+import "std/list";
+
+error Odd of list(uint);
+
+event Built of record {
+  indexed n : uint;
+  items     : list(uint);
+}
+
+storage is record {
+  saved : list(uint);
+  total : uint;
+}
+
+pure function sum(const xs : list(uint)) : uint is {
+  var s : uint := 0;
+  for x : uint in xs bound 64 do {
+    s := (s + x) % 1000003;
+  }
+} with s
+
+(* Takes a list and changes its own copy. *)
+pure function bumped(const xs : list(uint); const by : uint) : uint is {
+  var ys : list(uint) := xs;
+  if ys.length > 0 then {
+    ys[0] := by;
+  }
+  List.push(ys, by);
+} with (sum(ys) + ys.length) % 1000003
+
+(* Pushes in a loop, with nothing else kept in memory. *)
+external pure function squares(const n : uint) : list(uint) is {
+  var out : list(uint) := [];
+  for i : uint in 0 .. n % 9 bound 9 do {
+    List.push(out, i * i);
+  }
+} with out
+
+(* Two lists grown in the same loop: each push finds the other in the way. *)
+external pure function twins(const n : uint; const k : uint) : (list(uint), list(uint)) is {
+  var evens : list(uint) := [];
+  var odds : list(uint) := [k % 7];
+  for i : uint in 0 .. n % 7 bound 7 do {
+    List.push(evens, 2 * i);
+    List.push(odds, 2 * i + 1);
+  }
+} with (evens, odds)
+
+(* A list read, summed and compared on every pass while it grows. *)
+external pure function running(const xs : list(uint); const n : uint) : list(uint) is {
+  var out : list(uint) := [];
+  for i : uint in 0 .. n % 6 bound 6 do {
+    const fresh : list(uint) := [i, sum(out)];
+    List.push(out, sum(fresh) + sum(xs) % 97);
+    if out = fresh then {
+      List.push(out, 7);
+    }
+  }
+} with out
+
+(* A second variable is a copy: writes through one do not reach the other. *)
+external pure function copies(const a : uint; const b : uint; const i : uint) : (list(uint), list(uint), uint) is {
+  var xs : list(uint) := [a, b, a % 5];
+  var ys : list(uint) := xs;
+  List.push(xs, 1);
+  ys[i % 3] := b % 11;
+  const kept : list(uint) := ys;
+  ys[0] := 99;
+  xs[i % 4] := a % 13;
+} with (xs, ys, sum(kept))
+
+(* The same, with lists that came from calldata and went through a loop first. *)
+external pure function grown(const xs : list(uint); const i : uint) : (list(uint), list(uint)) is {
+  var ys : list(uint) := xs;
+  for j : uint in 0 .. i % 4 bound 4 do {
+    List.push(ys, j);
+  }
+  var zs : list(uint) := ys;
+  if zs.length > 0 then {
+    zs[i % zs.length] := 5;
+  }
+  if ys.length > 1 then {
+    ys[1] := 6;
+    List.pop(ys);
+  }
+} with (ys, zs)
+
+(* A list changed on one path, grown on the other, and read after both. *)
+external pure function either(const xs : list(uint); const pick : uint) : list(uint) is {
+  var out : list(uint) := [pick % 3];
+  if pick % 3 = 0 then {
+    List.push(out, 10);
+    List.push(out, 11);
+  } else if pick % 3 = 1 then {
+    out := xs;
+  } else {
+    for i : uint in 0 .. pick % 5 bound 5 do {
+      List.push(out, i);
+    }
+  }
+  List.push(out, 12);
+} with out
+
+(* A function that changes its own copy leaves the caller's list alone. *)
+external pure function passed(const xs : list(uint); const by : uint) : (uint, uint, list(uint)) is {
+  var ys : list(uint) := xs;
+  List.push(ys, by % 17);
+  const first : uint := bumped(ys, by % 5);
+  const second : uint := bumped(xs, by % 3);
+} with (first, second, ys)
+
+(* Popping to nothing and past it. *)
+external pure function drained(const n : uint; const extra : uint) : list(uint) is {
+  var out : list(uint) := [1, 2, 3];
+  for i : uint in 0 .. n % 5 bound 5 do {
+    List.pop(out);
+  }
+  List.push(out, extra % 19);
+} with out
+
+(* Built in a loop, then stored, logged and compared with what was stored. *)
+external function keep(const xs : list(uint); const n : uint) : bool
+  raises Odd
+is {
+  var out : list(uint) := xs;
+  for i : uint in 0 .. n % 4 bound 4 do {
+    List.push(out, i + xs.length);
+    out[0] := i;
+  }
+  assert(out.length % 2 = 0, Odd(out));
+  const before : bool := out = storage.saved;
+  storage.saved := out;
+  storage.total += sum(out);
+  emit Built { n = out.length; items = out; };
+} with before
+
+external view function saved() : list(uint) is
+  storage.saved
+
+external view function total() : uint is
+  storage.total

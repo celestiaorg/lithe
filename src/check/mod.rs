@@ -36,9 +36,8 @@ use place::*;
 use types::*;
 
 pub(crate) use abi::{
-    abi_dynamic, abi_fields, abi_nested, abi_parts, abi_record, abi_value, bytes_abi, bytes_option,
-    flat_record, int_abi, is_static_aggregate, is_static_value, is_stored_aggregate, is_value,
-    static_abi, uint_abi, AbiField,
+    abi_dynamic, abi_fields, abi_nested, abi_parts, abi_value, bytes_abi, int_abi, is_static_value,
+    is_stored_aggregate, is_value, static_abi, uint_abi, AbiField,
 };
 pub(crate) use builtins::intrinsic_tag;
 pub(crate) use compose::{module_transient_slot, several_contracts, Header};
@@ -129,9 +128,6 @@ pub(crate) struct Sym {
     pub mutable: bool,
     pub storage: bool,
     pub slot: u32,
-    /// Memory words occupied when that differs from the type layout.
-    /// A local dynamic list uses one word for the length, then one per element.
-    pub span: u32,
 }
 
 #[derive(Clone)]
@@ -329,14 +325,6 @@ impl Checked {
     pub(crate) fn immutable_leaf(&self, leaf: u32) -> bool {
         (self.immutable_from..self.transient_from).contains(&(leaf as usize))
     }
-
-    /// Whether a leaf of a storage symbol is transient, for a map parameter as well.
-    pub(crate) fn sym_leaf_transient(&self, sym: usize, leaf: u32) -> bool {
-        match self.slot_syms.get(&sym) {
-            Some(&transient) => transient,
-            None => self.transient_leaf(self.syms[sym].slot + leaf),
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -516,6 +504,7 @@ pub(crate) fn check_in(
     require_entries: bool,
     evm: crate::EvmVersion,
 ) -> Result<Checked, Error> {
+    let _span = crate::timings::span(crate::timings::Phase::Check);
     let origin = prog.origin.clone();
     check_program(prog, require_entries, evm).map_err(|err| err.in_file(&origin))
 }
@@ -1124,7 +1113,14 @@ fn check_program(
     let original = c.work.len();
     let mut index = 0;
     while index < original {
-        let mut func = c.work[index].clone();
+        // Only what a function declares is read from `work` while it is checked, so its
+        // body is taken, not copied.
+        let slot = &mut c.work[index];
+        let mut func = Func {
+            stmts: std::mem::take(&mut slot.stmts),
+            tail: slot.tail.take(),
+            ..slot.clone()
+        };
         c.cur_fn = index;
         c.check_func(&mut func)?;
         c.work[index] = func;
@@ -1761,7 +1757,6 @@ fn mark_immutable_reads(
                                 mutable: false,
                                 storage: false,
                                 slot: 0,
-                                span: 0,
                             });
                             let local = Expr::Ident {
                                 line: base.line(),

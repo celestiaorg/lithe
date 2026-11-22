@@ -25,6 +25,11 @@ pub(crate) enum Place {
     Dead,
     /// On the stack, under this many items.
     Stack(usize),
+    /// A list in memory: where its elements start and how many they are, each on the
+    /// stack under this many items.
+    Pair(usize, usize),
+    /// What an operator of no operands gives wherever it runs: the caller, the value sent.
+    Env(u8),
 }
 
 /// What a site is.
@@ -63,6 +68,9 @@ pub(crate) struct Track {
     pub sites: Vec<Site>,
     /// Labels whose jumps go to another now: old to new.
     pub renamed: HashMap<u32, u32>,
+    /// Each loop head whose test moved to the loop's bottom, and the label the test has
+    /// there: every pass reaches it with the stack the head had.
+    pub tests: HashMap<u32, u32>,
     /// What a label has on the stack that a site names: each word, or `COUNTER`, and how
     /// many items are above it.
     pub held: HashMap<u32, Vec<(u32, usize)>>,
@@ -90,10 +98,6 @@ pub(crate) fn take() -> Option<Track> {
     TRACK.with(|t| t.borrow_mut().take())
 }
 
-pub(crate) fn put(track: Track) {
-    TRACK.with(|t| *t.borrow_mut() = Some(track));
-}
-
 pub(crate) fn on() -> bool {
     TRACK.with(|t| t.borrow().is_some())
 }
@@ -108,19 +112,6 @@ pub(crate) fn before(code: &[Inst]) -> Before {
             .filter(|t| !t.marks.is_empty())
             .map(|t| (code.to_vec(), t.held.clone()))
     })
-}
-
-/// Carries the marks from the code `before` a pass to `code`, the code it made.
-#[track_caller]
-pub(crate) fn carry(before: Before, code: &[Inst]) {
-    let caller = std::panic::Location::caller();
-    if PASS.with(|p| p.get().is_none()) {
-        PASS.with(|p| p.set(Some(caller)));
-        carry_from(before, code);
-        PASS.with(|p| p.set(None));
-    } else {
-        carry_from(before, code);
-    }
 }
 
 fn carry_from(before: Before, code: &[Inst]) {
