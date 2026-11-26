@@ -36,7 +36,7 @@ jobs:
           workspaces: |
             . -> target
             playground -> target
-      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-machete,cargo-audit,cargo-deny,shellcheck,zizmor
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
